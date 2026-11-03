@@ -11,7 +11,7 @@
  */
 
 import { execFileSync } from 'node:child_process';
-import { copyFileSync, existsSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { copyFileSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
 
 const [outDir, resultDir] = process.argv.slice(2);
@@ -29,7 +29,12 @@ rmSync(resultDir, { recursive: true, force: true });
 mkdirSync(resultDir, { recursive: true });
 
 const summaryFile = path.join(outDir, 'summary.json');
-const summary = existsSync(summaryFile) ? JSON.parse(readFileSync(summaryFile, 'utf8')) : null;
+let summary = null;
+try {
+  summary = JSON.parse(readFileSync(summaryFile, 'utf8'));
+} catch {
+  // No summary: the heal step failed before writing one.
+}
 const results = summary?.results ?? [];
 
 let changed = [];
@@ -46,7 +51,13 @@ writeFileSync(path.join(resultDir, 'changed-files.txt'), changed.length ? `${cha
 
 // Only the files the publish job uses.
 const keep = /^(pr-body\.md|comment\.md|job-summary\.md|issues\.json|events\.json|summary\.json|issue-\d+\.md)$/;
-if (existsSync(outDir)) for (const name of readdirSync(outDir)) if (keep.test(name)) copyFileSync(path.join(outDir, name), path.join(resultDir, name));
+let names = [];
+try {
+  names = readdirSync(outDir);
+} catch {
+  names = [];
+}
+for (const name of names) if (keep.test(name)) copyFileSync(path.join(outDir, name), path.join(resultDir, name));
 
 const count = (status) => results.filter((r) => r.status === status).length;
 const meta = {

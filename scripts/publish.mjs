@@ -14,7 +14,7 @@
 
 import { execFileSync } from 'node:child_process';
 import { createHmac } from 'node:crypto';
-import { appendFileSync, closeSync, constants, existsSync, fstatSync, lstatSync, mkdtempSync, openSync, readFileSync, realpathSync, writeFileSync } from 'node:fs';
+import { appendFileSync, closeSync, constants, fstatSync, lstatSync, mkdtempSync, openSync, readFileSync, realpathSync, writeFileSync } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -132,11 +132,11 @@ export function checkFiles(root, files, changedList) {
     const abs = path.join(realRoot, f.path);
     // Every existing folder on the way must be a real folder inside the repo.
     let dir = path.dirname(abs);
-    while (dir !== realRoot && !existsSync(dir)) dir = path.dirname(dir);
+    while (dir !== realRoot && !lstatOrNull(dir)) dir = path.dirname(dir);
     if (realpathSync(dir) !== dir || !(dir === realRoot || dir.startsWith(realRoot + path.sep))) throw new Refused(`${f.path} goes through a symlink`);
-    if (existsSync(abs) || isLink(abs)) {
+    const st = lstatOrNull(abs);
+    if (st) {
       if (f.isNew) throw new Refused(`${f.path} already exists`);
-      const st = lstatSync(abs);
       if (!st.isFile()) throw new Refused(`${f.path} is not a regular file`);
     } else if (!f.isNew) {
       throw new Refused(`${f.path} does not exist in the checkout`);
@@ -144,11 +144,11 @@ export function checkFiles(root, files, changedList) {
   }
 }
 
-function isLink(p) {
+function lstatOrNull(p) {
   try {
-    return lstatSync(p).isSymbolicLink();
+    return lstatSync(p);
   } catch {
-    return false;
+    return null;
   }
 }
 

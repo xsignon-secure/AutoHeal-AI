@@ -23,4 +23,9 @@ jobs:
         with:
           languages: javascript-typescript
           queries: security-extended
+          # dist/ is the compiled copy of src/; scanning it only duplicates alerts.
+          config: |
+            paths-ignore:
+              - dist
+              - simulation/work
       - uses: github/codeql-action/analyze@v3
