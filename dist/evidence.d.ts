@@ -11,6 +11,8 @@ export declare function fitGithub(text: string, max?: number): string;
 export declare function issueTitle(r: FailureResult): string;
 export declare function issueBody(summary: HealSummary, r: FailureResult): string;
 export declare function commentBody(summary: HealSummary): string;
+/** Makes text safe inside a Markdown table cell: backslashes first, then pipes and line breaks. */
+export declare function cell(text: string): string;
 export declare function jobSummary(summary: HealSummary): string;
 /** A short diff excerpt of two versions of a file (changed lines with a little context). */
 export declare function shortDiff(file: string, before: string, after: string, context?: number, maxLines?: number): string;

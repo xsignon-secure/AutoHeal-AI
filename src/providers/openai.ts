@@ -61,13 +61,22 @@ export function toWireMessages(request: ChatRequest): WireMessage[] {
   return out;
 }
 
+/** True only for the real OpenAI API host (not a lookalike such as api.openai.com.example.net). */
+function isOfficialOpenAI(baseURL: string): boolean {
+  try {
+    return new URL(baseURL).hostname === 'api.openai.com';
+  } catch {
+    return false;
+  }
+}
+
 export class OpenAIProvider implements Provider {
   readonly name: string;
   readonly model: string;
 
   constructor(private readonly options: OpenAIOptions) {
     this.model = options.model;
-    this.name = /api\.openai\.com/.test(options.baseURL) ? 'openai' : 'openai-compatible';
+    this.name = isOfficialOpenAI(options.baseURL) ? 'openai' : 'openai-compatible';
   }
 
   async chat(request: ChatRequest): Promise<ChatResponse> {

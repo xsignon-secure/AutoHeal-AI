@@ -6,7 +6,7 @@ export { aiFix, aiTriage, safePath, relativeImports, estimateTokens, openingPart
 export { failureScreenshot, frameFromTrace, readZip, pngSize, jpegSize, imageTokens, visionEnabled, MAX_IMAGE_BYTES } from './vision.js';
 export { Budget, PRICES, priceFor } from './budget.js';
 export { loadMemory, remember, relevantMemory, memoryText, memoryEntryPath, MEMORY_DIR, LEGACY_MEMORY_PATH } from './memory.js';
-export { prBody, issueBody, issueTitle, commentBody, jobSummary, shortDiff } from './evidence.js';
+export { prBody, issueBody, issueTitle, commentBody, jobSummary, shortDiff, cell } from './evidence.js';
 export { McpTools, engineEntry, engineEnv } from './mcp.js';
 export { findReport } from './report-files.js';
 export { sign, verifySignature } from './signing.js';

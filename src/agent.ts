@@ -82,11 +82,11 @@ export function relativeImports(file: string, source: string): string[] {
       for (const e of ['/index.ts', '/index.js']) out.add(stem + e);
     }
   }
-  for (const m of source.matchAll(/^\s*from\s+(\.+)([\w.]*)\s+import/gm)) {
+  for (const m of source.matchAll(/^[ \t]*from[ \t]+(\.+)(\w[\w.]*)?[ \t]+import/gm)) {
     const dots = (m[1] as string).length;
     let base = dir;
     for (let i = 1; i < dots; i++) base = path.posix.dirname(base);
-    const mod = (m[2] as string).replace(/\./g, '/');
+    const mod = (m[2] ?? '').replace(/\./g, '/');
     if (mod) out.add(path.posix.join(base, `${mod}.py`));
   }
   return [...out];
@@ -303,7 +303,7 @@ export async function aiFix(ctx: AgentContext): Promise<AgentResult> {
               results.push({
                 type: 'tool_result',
                 id: call.id,
-                content: `You may only change ${[...allowed].filter((f) => f === failingFile || !/\/index\.|\.(mjs|cjs|jsx)$/.test(f)).slice(0, 8).join(', ')}.`,
+                content: `You may only change ${[...allowed].filter((f) => f === failingFile || !(f.includes('/index.') || /\.(mjs|cjs|jsx)$/.test(f))).slice(0, 8).join(', ')}.`,
                 isError: true,
               });
               break;

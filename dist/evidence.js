@@ -31,7 +31,7 @@ function resultBlock(r) {
     out.push(`| | |`, `|---|---|`);
     out.push(`| File | \`${where}\` |`);
     out.push(`| Triage | **${r.category}** · ${r.rootCause} · confidence ${(r.confidence * 100).toFixed(0)}% |`);
-    out.push(`| Why | ${r.reasons.join('; ').replace(/\|/g, '\\|')} |`);
+    out.push(`| Why | ${cell(r.reasons.join('; '))} |`);
     if (r.guard)
         out.push(`| Anti-cheat | engine heal guard: **${r.guard.engine}**, local scan: **${r.guard.local}** |`);
     if (r.stability)
@@ -117,8 +117,12 @@ export function commentBody(summary) {
         FOOTER,
     ].join('\n'));
 }
+/** Makes text safe inside a Markdown table cell: backslashes first, then pipes and line breaks. */
+export function cell(text) {
+    return text.replace(/\\/g, '\\\\').replace(/\|/g, '\\|').replace(/[\r\n]+/g, ' ');
+}
 export function jobSummary(summary) {
-    const rows = summary.results.map((r) => `| ${BADGE[r.status] ?? r.status} | \`${r.failure.file}\` | ${r.failure.title.replace(/\|/g, '\\|')} | ${r.category} / ${r.rootCause} | ${(r.confidence * 100).toFixed(0)}% |`);
+    const rows = summary.results.map((r) => `| ${BADGE[r.status] ?? r.status} | \`${r.failure.file}\` | ${cell(r.failure.title)} | ${r.category} / ${r.rootCause} | ${(r.confidence * 100).toFixed(0)}% |`);
     return [
         '## AutoHeal AI',
         '',
