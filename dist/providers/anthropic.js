@@ -16,6 +16,8 @@ function toBlocks(parts) {
             return { type: 'text', text: part.text };
         if (part.type === 'tool_call')
             return { type: 'tool_use', id: part.id, name: part.name, input: part.input };
+        if (part.type === 'image')
+            return { type: 'image', source: { type: 'base64', media_type: part.mediaType, data: part.data } };
         return { type: 'tool_result', tool_use_id: part.id, content: part.content, ...(part.isError ? { is_error: true } : {}) };
     });
 }

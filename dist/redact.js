@@ -39,6 +39,9 @@ export function secretValues(env = process.env) {
     for (const [name, value] of Object.entries(env)) {
         if (!value || value.length < 8 || !SECRET_NAME.test(name))
             continue;
+        // PWD/OLDPWD are the shell's working folder, not a password.
+        if (/^(OLD)?PWD$/i.test(name))
+            continue;
         if (/^(true|false|\d+)$/i.test(value))
             continue;
         values.add(value);

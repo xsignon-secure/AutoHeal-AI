@@ -42,7 +42,8 @@ heal options (each also reads the AUTOHEAL_* variable in brackets):
   --allow-warn           accept anti-cheat WARN findings (default: block them)
 
 Also read: AUTOHEAL_PRICE_IN, AUTOHEAL_PRICE_OUT (USD per million tokens; required
-for models with no built-in price), AUTOHEAL_OPEN_ISSUES, AUTOHEAL_ISSUE_MIN_CONFIDENCE.
+for models with no built-in price), AUTOHEAL_OPEN_ISSUES, AUTOHEAL_ISSUE_MIN_CONFIDENCE,
+AUTOHEAL_VISION (auto | true | false: show the AI the failure screenshot).
 
 AI provider (bring your own key; none = deterministic fixes only):
   ANTHROPIC_API_KEY (default model claude-opus-5-5), or OPENAI_API_KEY + AUTOHEAL_MODEL,

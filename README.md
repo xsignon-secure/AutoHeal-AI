@@ -2,6 +2,8 @@
 
 **A free, self-hosted AI agent that fixes failing Playwright tests in your own CI, with your own AI key, and refuses to cheat.**
 
+Think of it as autonomous quality maintenance: your suite keeps itself green between releases, and every change still comes to you as a reviewable PR with proof.
+
 When your Playwright workflow fails, AutoHeal reads the report and traces, decides *why* each test failed, and acts on it:
 
 | What it found | What it does |
@@ -26,6 +28,7 @@ It is MIT licensed and runs entirely on your GitHub runner. No AutoHeal server, 
   On top of those rules, a fix may only *add* locators, waits, literals and names the file already uses (a token-level allowlist), so a fake comment inside a string or a split-up string cannot hide new code. Fixed waits, `force: true` and retries are blocked; raised timeouts are blocked unless you allow warnings. The scan is a strong filter, not a proof. The stability rerun and your review of the draft PR are the other two layers.
 - **Stability proof.** A fix is kept only if the test passes `--repeat-each=5` and the rest of the file does not get worse. A fix to a page object or helper also reruns every spec that imports it. A rerun that crashes or runs no tests counts as a failure. Anything else is reverted before the model even sees the result. The repeats run back to back, so tests must clean up after themselves. If a test shares a database or other state without resetting it, a good fix can fail the proof and be reverted (lower `repeat-each`, or isolate the data). A bad fix is never kept because of this.
 - **Secrets are scrubbed.** Before anything goes to the AI or into a PR, issue, comment or job summary, AutoHeal redacts known credential shapes: API keys, GitHub, AWS, Slack and Stripe tokens, JWTs, private keys, `Bearer` headers, `password=` values and passwords in URLs. It also redacts the value of every secret-looking environment variable on the runner.
+- **It sees the page.** When a test fails, the AI is shown the page at that moment: Playwright's own failure screenshot, or the last frame from the trace before the failing step. So it can tell that a button moved, was renamed or is hidden behind a dialog, instead of guessing from the error text. The image comes from your run's own files (no extra browser run) and goes only to your AI provider. It never goes into a PR, issue, comment or the dashboard. It is on for Anthropic and OpenAI; turn it off with `vision: false`. Keep `screenshot: 'only-on-failure'` or a trace with screenshots in your config so there is something to see.
 - **Triage first, AI second.** Most failures are classified with no AI at all. Locator fixes that the engine can verify against the trace are applied by rules, using no tokens. The model is only asked when it is actually needed.
 - **Repo memory.** Fixes that worked are saved in your repo, one small file per fix under `.autoheal/memory/`, so two open fix PRs never conflict. The agent reads them next time, so it learns your app's naming habits.
 - **Hard budgets.** The cost limit per job (`max-usd`, default $1), the number of AI calls and the number of tokens are all capped. Each failure gets an equal share of what is left, so one hard failure cannot use up the whole job. Before every AI call, AutoHeal checks that call's worst case (its estimated input plus the full output allowance), so no single call can cross the limit. The cost is an estimate from public prices; set `price-in` and `price-out` if yours differ (required for models it has no price for). When a limit stops the job, the report says so and nothing half-done is kept.
@@ -39,7 +42,7 @@ It is built on [playwright-e2e-mcp](https://www.npmjs.com/package/playwright-e2e
 
 ```ts
 reporter: [['list'], ['json', { outputFile: 'playwright-report/results.json' }]],
-use: { trace: 'retain-on-failure' },
+use: { trace: 'retain-on-failure', screenshot: 'only-on-failure' },
 ```
 
 and at the end of your test job:
@@ -85,7 +88,7 @@ PRs opened with the default `GITHUB_TOKEN` do not start other workflows; GitHub 
   with:
     app-id: ${{ vars.AUTOHEAL_APP_ID }}
     private-key: ${{ secrets.AUTOHEAL_APP_KEY }}
-- uses: xsignon-secure/AutoHeal-AI/publish@v0.2.0
+- uses: xsignon-secure/AutoHeal-AI/publish@v0.3.0
   with:
     github-token: ${{ steps.app-token.outputs.token }}
     # ...the other inputs from the template
@@ -105,7 +108,7 @@ AutoHeal never pushes to your base branch, never auto-merges, and never runs on 
 
 ## Inputs
 
-**Heal action** (`xsignon-secure/AutoHeal-AI@v0.2.0`):
+**Heal action** (`xsignon-secure/AutoHeal-AI@v0.3.0`):
 
 | Input | Default | |
 |---|---|---|
@@ -119,6 +122,7 @@ AutoHeal never pushes to your base branch, never auto-merges, and never runs on 
 | `model` | | Model id |
 | `price-in`, `price-out` | | USD per million tokens, required for a model AutoHeal has no price for (`0` for a local model) |
 | `effort` | `medium` | Anthropic effort: `low` to `max` |
+| `vision` | `auto` | Show the AI the failure screenshot: `auto` (on for Anthropic and OpenAI, off for other endpoints), `true` or `false` |
 | `max-failures` | `3` | Failures to work on per run |
 | `repeat-each` | `5` | Runs in a row a fix must pass |
 | `max-usd` | `1.00` | AI cost limit per job (estimate) |
@@ -133,7 +137,7 @@ AutoHeal never pushes to your base branch, never auto-merges, and never runs on 
 
 Outputs: `outcome` (`fixed`, `blocked`, `app-bug`, `quarantined`, `unfixed`, `nothing-to-do` or `error`), `fixed`, `blocked`, `has-result`.
 
-**Publish action** (`xsignon-secure/AutoHeal-AI/publish@v0.2.0`): `result-dir`, `mode`, `base-branch`, `run-id`, `commit`, `pr-number`, `blocked`, `open-issues`, `github-token`, `dashboard-url`, `dashboard-secret`. Output: `pr-url`.
+**Publish action** (`xsignon-secure/AutoHeal-AI/publish@v0.3.0`): `result-dir`, `mode`, `base-branch`, `run-id`, `commit`, `pr-number`, `blocked`, `open-issues`, `github-token`, `dashboard-url`, `dashboard-secret`. Output: `pr-url`.
 
 If a fix is blocked by the anti-cheat guard, the publish job fails, so that someone looks at it. The good fixes from the same run still get their PR.
 

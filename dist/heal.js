@@ -26,6 +26,7 @@ import { loadMemory, memoryEntryPath, memoryText, relevantMemory, remember } fro
 import { triage as triageFailure } from './triage.js';
 import { MINUTES_SAVED } from './types.js';
 import { VERSION } from './version.js';
+import { failureScreenshot, visionEnabled } from './vision.js';
 const run = promisify(execFile);
 const NEW_FILE = '\u0000AUTOHEAL_NEW_FILE';
 export function escapeRegex(text) {
@@ -163,6 +164,8 @@ function failureFrom(index, data, text) {
     }
     if (typeof f.project === 'string')
         info.project = f.project;
+    if (typeof f.tracePath === 'string')
+        info.tracePath = f.tracePath;
     return info;
 }
 /**
@@ -428,8 +431,14 @@ export async function heal(options) {
             if (flakyVerdict !== undefined)
                 triageInput.flakyVerdict = flakyVerdict;
             let t = triageFailure(triageInput);
+            // Visual grounding: the page as it was when the test failed, read from the run's own artifacts.
+            const screenshot = provider && visionEnabled(provider.name) ? await failureScreenshot(root, failure.tracePath) : null;
+            if (screenshot) {
+                failure.screenshot = screenshot.source;
+                log(`  screenshot: ${screenshot.source} (${screenshot.width ?? '?'}×${screenshot.height ?? '?'})`);
+            }
             if (provider && t.confidence < 0.6 && t.category !== 'FLAKY')
-                t = await aiTriage(provider, budget, failure, t);
+                t = await aiTriage(provider, budget, failure, t, screenshot);
             log(`  triage: ${t.category}/${t.rootCause} ${(t.confidence * 100).toFixed(0)}%`);
             const { detail: _detail, ...failureLite } = failure;
             const result = {
@@ -485,6 +494,7 @@ export async function heal(options) {
                         memory: memoryText(relevantMemory(memory, failure.file)),
                         budget,
                         ...(options.appUrl ? { appUrl: options.appUrl } : {}),
+                        screenshot,
                         verify: (file, content) => verify(failure, file, content),
                     });
                     if (agent.guard)

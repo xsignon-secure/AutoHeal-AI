@@ -20,6 +20,10 @@ export interface FailureInfo {
   expected?: string;
   actual?: string;
   project?: string;
+  /** The Playwright trace for this failure, when the run kept one. */
+  tracePath?: string;
+  /** Where the AI's screenshot of the failure came from, when it got one. */
+  screenshot?: 'attachment' | 'trace';
   /** The engine's Markdown for this failure (trace steps, network, console). */
   detail: string;
 }

@@ -2,6 +2,18 @@
 
 All notable changes to AutoHeal AI. Versions follow [semantic versioning](https://semver.org/).
 
+## 0.3.0 (2026-11-03)
+
+### Added
+- **Visual grounding.** The AI now sees the page at the moment of failure: Playwright's `test-failed-*.png` when there is one, otherwise the last screencast frame in `trace.zip` before the failing step ended (old and new trace formats). It is used for triage and for the fix, sent as an image to Anthropic and OpenAI, and counted in the budget by its size. New input `vision` (`auto`, `true`, `false`; env `AUTOHEAL_VISION`). The image never leaves for anywhere but your AI provider, and the PR evidence notes when the AI saw it.
+
+### Changed
+- The workflow template uses `actions/checkout@v7`, `setup-node@v7`, `download-artifact@v8`, and the heal action uploads with `upload-artifact@v7`. These run on Node 24: self-hosted runners need 2.327.1 or newer.
+- Dependabot no longer proposes major updates of `typescript` and `@types/node`.
+
+### Fixed
+- Paths in reports were redacted when the shell's `PWD` looked like a password variable.
+
 ## 0.2.0 (2026-11-03)
 
 Breaking: the workflow is now two jobs. Copy the new [`templates/autoheal.yml`](templates/autoheal.yml), and tick **Allow GitHub Actions to create and approve pull requests** in the repo's Actions settings.

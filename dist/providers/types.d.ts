@@ -21,6 +21,14 @@ export type Part = {
     id: string;
     content: string;
     isError?: boolean;
+}
+/** A screenshot (base64). Only ever sent in user turns. */
+ | {
+    type: 'image';
+    mediaType: 'image/png' | 'image/jpeg';
+    data: string;
+    width?: number;
+    height?: number;
 };
 export interface Turn {
     role: 'user' | 'assistant';

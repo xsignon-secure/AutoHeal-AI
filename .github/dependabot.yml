@@ -8,6 +8,12 @@ updates:
     groups:
       dev:
         dependency-type: development
+    ignore:
+      # Major versions of these change the build; bump them by hand.
+      - dependency-name: typescript
+        update-types: ["version-update:semver-major"]
+      - dependency-name: "@types/node"
+        update-types: ["version-update:semver-major"]
   - package-ecosystem: github-actions
     directory: /
     schedule:
