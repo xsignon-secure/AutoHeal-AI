@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { mkdtempSync, readFileSync } from 'node:fs';
+import { mkdtempSync, readFileSync, mkdirSync, writeFileSync } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { test } from 'node:test';
@@ -43,6 +43,18 @@ test('memory: remember, cap and relevance', async () => {
   assert.equal(memoryText([]), 'No earlier fixes are recorded for this repo.');
 });
 
+test('memory: one file per fix, so parallel PRs never conflict; the 0.1.0 file is still read', async () => {
+  const dir = mkdtempSync(path.join(os.tmpdir(), 'autoheal-mem-'));
+  mkdirSync(path.join(dir, '.autoheal'));
+  writeFileSync(path.join(dir, '.autoheal', 'memory.json'), JSON.stringify({ version: 1, entries: [{ at: '2026-01-01T00:00:00.000Z', file: 'old.spec.ts', test: 'old', rootCause: 'TIMING' }] }));
+  const a = await remember(dir, { file: 'a.spec.ts', test: 'a', rootCause: 'LOCATOR_DRIFT', after: 'x' });
+  const b = await remember(dir, { file: 'b.spec.ts', test: 'b', rootCause: 'LOCATOR_DRIFT', after: 'y' });
+  assert.notEqual(a, b);
+  assert.match(a, /^\.autoheal\/memory\/[0-9a-f]{16}\.json$/);
+  const mem = await loadMemory(dir);
+  assert.deepEqual(mem.entries.map((e) => e.test), ['old', 'a', 'b']);
+});
+
 test('shortDiff shows only the changed lines with context', () => {
   const a = 'l1\nl2\nl3\nold\nl5\nl6\n';
   const d = shortDiff('f.ts', a, a.replace('old', 'new'));
@@ -84,4 +96,16 @@ test('findReport finds a JSON report and trace folders in an artifacts tree', as
   assert.deepEqual(found?.traceDirs, [path.join(dir, 'playwright-results', 'test-results')]);
   const empty = mkdtempSync(path.join(os.tmpdir(), 'autoheal-none-'));
   assert.equal(await findReport(empty), null);
+});
+
+test('budget: the next call is refused when its worst case could break a limit', () => {
+  const b = new Budget({ maxSteps: 10, maxTokens: 100_000, maxUsd: 100 }, [4, 20]);
+  assert.equal(b.wouldExceed(10_000, 16_000), null);
+  b.record({ inputTokens: 70_000, outputTokens: 10_000 });
+  assert.equal(b.exceeded(), null, 'not over yet');
+  assert.match(b.wouldExceed(10_000, 16_000), /token limit/, 'but the next call could be');
+  const c = new Budget({ maxSteps: 10, maxTokens: 1e9, maxUsd: 1 }, [4, 20]);
+  c.record({ inputTokens: 50_000, outputTokens: 20_000 }); // $0.60
+  assert.equal(c.wouldExceed(10_000, 10_000), null); // + $0.24
+  assert.match(c.wouldExceed(10_000, 20_000), /cost limit/); // + $0.44
 });

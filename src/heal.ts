@@ -21,7 +21,7 @@ import { Budget, EMPTY_SNAPSHOT, priceFor, type BudgetLimits, type BudgetSnapsho
 import { scanChange, type Verdict } from './cheat.js';
 import { shortDiff } from './evidence.js';
 import { McpTools, type ToolCaller } from './mcp.js';
-import { loadMemory, memoryText, MEMORY_PATH, relevantMemory, remember } from './memory.js';
+import { loadMemory, memoryEntryPath, memoryText, relevantMemory, remember } from './memory.js';
 import type { Provider } from './providers/types.js';
 import { triage as triageFailure, type Triage } from './triage.js';
 import { MINUTES_SAVED, type FailureInfo, type FailureResult, type FixInfo, type GuardInfo, type HealSummary, type Mode, type Outcome, type Status } from './types.js';
@@ -511,15 +511,15 @@ export async function heal(options: HealOptions): Promise<HealSummary> {
     // Repo memory for kept fixes.
     if (options.mode !== 'comment') {
       const kept = summary.results.filter((r) => r.status === 'FIXED');
-      const memRel = MEMORY_PATH.split(path.sep).join('/');
-      if (kept.length && !originals.has(memRel)) {
-        const memAbs = path.join(root, memRel);
-        originals.set(memRel, (await exists(memAbs)) ? await readFile(memAbs, 'utf8') : NEW_FILE);
-      }
       for (const r of kept) {
         const before = r.fix?.before;
         const after = r.fix?.after;
-        await remember(root, {
+        const rel = memoryEntryPath({ file: r.failure.file, test: r.failure.title, ...(after !== undefined ? { after } : {}) });
+        if (!originals.has(rel)) {
+          const abs = path.join(root, rel);
+          originals.set(rel, (await exists(abs)) ? await readFile(abs, 'utf8') : NEW_FILE);
+        }
+        const written = await remember(root, {
           file: r.failure.file,
           test: r.failure.title,
           rootCause: r.rootCause,
@@ -527,6 +527,7 @@ export async function heal(options: HealOptions): Promise<HealSummary> {
           ...(after !== undefined ? { after } : {}),
           note: r.fix?.explanation ?? '',
         });
+        if (written !== rel) throw new Error(`memory path mismatch: ${written} vs ${rel}`);
       }
     }
 

@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import { spawnSync } from 'node:child_process';
 import { mkdtempSync } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -134,4 +135,24 @@ test('eventsFrom sends labels and links only', () => {
 
 test('escapeHtml', () => {
   assert.equal(escapeHtml(`<a href="x">'&`), '&lt;a href=&quot;x&quot;&gt;&#39;&amp;');
+});
+
+test('repeated failed sign-ins and bad signatures are locked out for a while', async () => {
+  await withServer(
+    async (url) => {
+      for (let i = 0; i < 20; i++) assert.equal((await fetch(`${url}/api/stats`, { headers: { authorization: 'Bearer wrong' } })).status, 401);
+      assert.equal((await fetch(`${url}/api/stats`, { headers: { authorization: 'Bearer view-token-1234567890' } })).status, 429, 'even the right token waits');
+      assert.equal((await fetch(`${url}/healthz`)).status, 200);
+    },
+    { viewToken: 'view-token-1234567890' },
+  );
+});
+
+test('cli: the dashboard refuses to start without a view token unless made public on purpose', () => {
+  const cli = path.join(import.meta.dirname, '..', 'dist', 'cli.js');
+  const r = spawnSync(process.execPath, [cli, 'dashboard', '--port', '18765', '--db', path.join(mkdtempSync(path.join(os.tmpdir(), 'autoheal-cli-')), 'x.db')], { encoding: 'utf8', env: { ...process.env, AUTOHEAL_DASHBOARD_SECRET: SECRET, AUTOHEAL_DASHBOARD_VIEW_TOKEN: '', AUTOHEAL_DASHBOARD_PUBLIC: '' } });
+  assert.equal(r.status, 2);
+  assert.match(r.stderr, /AUTOHEAL_DASHBOARD_VIEW_TOKEN/);
+  const short = spawnSync(process.execPath, [cli, 'dashboard', '--port', '18765', '--db', path.join(mkdtempSync(path.join(os.tmpdir(), 'autoheal-cli-')), 'x.db')], { encoding: 'utf8', env: { ...process.env, AUTOHEAL_DASHBOARD_SECRET: SECRET, AUTOHEAL_DASHBOARD_VIEW_TOKEN: 'short' } });
+  assert.equal(short.status, 2);
 });

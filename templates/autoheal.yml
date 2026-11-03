@@ -91,7 +91,7 @@ jobs:
           path: autoheal-artifacts
 
       - name: AutoHeal
-        uses: xsignon-secure/AutoHeal-AI@v0.1.0
+        uses: xsignon-secure/AutoHeal-AI@v0.1.1
         with:
           report: autoheal-artifacts
           mode: ${{ github.event.inputs.mode || 'draft-pr' }}

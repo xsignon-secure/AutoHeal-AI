@@ -21,9 +21,14 @@ import { Store } from './store.js';
 import { validateBatch } from './validate.js';
 
 export const MAX_BODY_BYTES = 256 * 1024;
+/** Failed sign-ins or bad signatures allowed per client address per window. */
+export const MAX_FAILURES = 20;
+const FAILURE_WINDOW_MS = 10 * 60_000;
 
 export interface DashboardOptions {
   store: Store;
+  /** Use the X-Forwarded-For address (only behind your own reverse proxy). */
+  trustProxy?: boolean;
   secret: string;
   viewToken?: string;
   repos?: string[];
@@ -74,6 +79,30 @@ async function readBody(req: http.IncomingMessage): Promise<string> {
 export function createDashboard(options: DashboardOptions): http.RequestListener {
   if (options.secret.length < MIN_SECRET_LENGTH) throw new Error(`AUTOHEAL_DASHBOARD_SECRET must be at least ${MIN_SECRET_LENGTH} characters.`);
   const allowedRepos = options.repos?.length ? new Set(options.repos.map((r) => r.toLowerCase())) : null;
+  const failures = new Map<string, { count: number; since: number }>();
+
+  function clientOf(req: http.IncomingMessage): string {
+    if (options.trustProxy) {
+      const forwarded = String(req.headers['x-forwarded-for'] ?? '').split(',')[0]?.trim();
+      if (forwarded) return forwarded;
+    }
+    return req.socket.remoteAddress ?? 'unknown';
+  }
+  function lockedOut(client: string): boolean {
+    const f = failures.get(client);
+    if (!f) return false;
+    if (Date.now() - f.since > FAILURE_WINDOW_MS) {
+      failures.delete(client);
+      return false;
+    }
+    return f.count >= MAX_FAILURES;
+  }
+  function recordFailure(client: string): void {
+    const f = failures.get(client);
+    if (!f || Date.now() - f.since > FAILURE_WINDOW_MS) failures.set(client, { count: 1, since: Date.now() });
+    else f.count++;
+    if (failures.size > 10_000) failures.clear(); // bound memory under a flood
+  }
 
   function canView(req: http.IncomingMessage, url: URL): 'yes' | 'no' | 'set-cookie' {
     if (!options.viewToken) return 'yes';
@@ -91,6 +120,8 @@ export function createDashboard(options: DashboardOptions): http.RequestListener
       const url = new URL(req.url ?? '/', 'http://localhost');
       try {
         if (url.pathname === '/healthz') return json(res, 200, { ok: true });
+        const client = clientOf(req);
+        if (lockedOut(client)) return json(res, 429, { ok: false, error: 'too many failed attempts; try again later' });
 
         if (url.pathname === '/api/heal') {
           if (req.method !== 'POST') return json(res, 405, { ok: false, error: 'POST only' });
@@ -101,7 +132,10 @@ export function createDashboard(options: DashboardOptions): http.RequestListener
             req.headers[SIGNATURE_HEADER] as string | undefined,
             req.headers[TIMESTAMP_HEADER] as string | undefined,
           );
-          if (failure) return json(res, 401, { ok: false, error: `signature ${failure}` });
+          if (failure) {
+            recordFailure(client);
+            return json(res, 401, { ok: false, error: `signature ${failure}` });
+          }
           let events;
           try {
             events = validateBatch(JSON.parse(body));
@@ -119,6 +153,7 @@ export function createDashboard(options: DashboardOptions): http.RequestListener
         if (req.method !== 'GET' && req.method !== 'HEAD') return json(res, 405, { ok: false, error: 'GET only' });
         const view = canView(req, url);
         if (view === 'no') {
+          recordFailure(client);
           return url.pathname.startsWith('/api/')
             ? json(res, 401, { ok: false, error: 'view token required' })
             : send(res, 401, '<!doctype html><title>AutoHeal</title><p>Open this page with ?token=YOUR_VIEW_TOKEN once.</p>', 'text/html; charset=utf-8');

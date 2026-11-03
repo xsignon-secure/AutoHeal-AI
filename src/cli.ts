@@ -236,14 +236,22 @@ async function cmdDashboard(argv: string[]): Promise<number> {
   const secret = process.env.AUTOHEAL_DASHBOARD_SECRET ?? '';
   const port = intOption(values.port, process.env.PORT, 8080, '--port', 1, 65535);
   const host = values.host ?? process.env.HOST ?? '0.0.0.0';
-  const store = new Store(values.db ?? process.env.AUTOHEAL_DB ?? 'autoheal.db');
   const repos = (process.env.AUTOHEAL_DASHBOARD_REPOS ?? '').split(',').map((r) => r.trim()).filter(Boolean);
+  const viewToken = process.env.AUTOHEAL_DASHBOARD_VIEW_TOKEN;
+  if (!viewToken && process.env.AUTOHEAL_DASHBOARD_PUBLIC !== '1') {
+    throw new ConfigError('Set AUTOHEAL_DASHBOARD_VIEW_TOKEN (16+ characters) so only you can read the dashboard, or AUTOHEAL_DASHBOARD_PUBLIC=1 to make it public on purpose.');
+  }
+  if (viewToken && viewToken.length < 16) throw new ConfigError('AUTOHEAL_DASHBOARD_VIEW_TOKEN must be at least 16 characters.');
+  const { MIN_SECRET_LENGTH } = await import('./signing.js');
+  if (secret.length < MIN_SECRET_LENGTH) throw new ConfigError(`AUTOHEAL_DASHBOARD_SECRET must be at least ${MIN_SECRET_LENGTH} characters.`);
+  const store = new Store(values.db ?? process.env.AUTOHEAL_DB ?? 'autoheal.db');
   const server = await startDashboard({
     store,
     secret,
     port,
     host,
-    ...(process.env.AUTOHEAL_DASHBOARD_VIEW_TOKEN ? { viewToken: process.env.AUTOHEAL_DASHBOARD_VIEW_TOKEN } : {}),
+    ...(viewToken ? { viewToken } : {}),
+    ...(process.env.AUTOHEAL_TRUST_PROXY === '1' ? { trustProxy: true } : {}),
     ...(repos.length ? { repos } : {}),
   });
   process.stderr.write(`[autoheal] Dashboard on http://${host}:${port}\n`);

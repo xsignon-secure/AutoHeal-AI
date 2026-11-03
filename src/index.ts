@@ -3,7 +3,7 @@ export { triage, type Triage, type TriageInput, type Category, type RootCause } 
 export { scanChange, stripComments, type CheatReport, type CheatFinding, type Verdict } from './cheat.js';
 export { aiFix, aiTriage, safePath, relativeImports, SYSTEM_PROMPT } from './agent.js';
 export { Budget, PRICES, priceFor, type BudgetLimits, type BudgetSnapshot } from './budget.js';
-export { loadMemory, remember, relevantMemory, memoryText, MEMORY_PATH } from './memory.js';
+export { loadMemory, remember, relevantMemory, memoryText, memoryEntryPath, MEMORY_DIR, LEGACY_MEMORY_PATH } from './memory.js';
 export { prBody, issueBody, issueTitle, commentBody, jobSummary, shortDiff } from './evidence.js';
 export { McpTools, engineEntry, engineEnv, type ToolCaller, type ToolResult } from './mcp.js';
 export { findReport } from './report-files.js';

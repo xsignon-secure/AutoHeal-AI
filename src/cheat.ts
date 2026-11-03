@@ -9,6 +9,9 @@
  *        variables, child processes, the file system, raw network calls,
  *        eval): a fix runs on the CI runner, so this is how a prompt-injected
  *        AI could leak secrets.
+ *        A changed expected value, an assertion that cannot fail, faked
+ *        network answers, injected scripts or DOM edits, and dynamic or
+ *        obfuscated access that could hide any of the above.
  * WARN:  raised timeouts, waitForTimeout, force: true, weaker matchers,
  * flipped .not, retries. AutoHeal treats WARN as blocking unless
  * AUTOHEAL_ALLOW_WARN=1.
@@ -73,7 +76,53 @@ const ESCAPE: Array<[RegExp, string]> = [
   [/\bfetch\s*\(|\bXMLHttpRequest\b|\bWebSocket\s*\(|\bnavigator\.sendBeacon\b/, 'makes a raw network call'],
   [/\beval\s*\(|\bnew\s+Function\s*\(|\bexec\s*\(\s*(?:compile|open|['"])/, 'evaluates code from a string'],
   [/\.git\/|\.env\b|\/proc\/|~\/\.ssh|GITHUB_TOKEN|GH_TOKEN|ACTIONS_RUNTIME_TOKEN|ACTIONS_ID_TOKEN/, 'touches secrets or repo internals'],
+  [
+    /\bglobalThis\b|\b(?:window|self|global)\s*\[|\bReflect\s*\.|\.constructor\b|\b__proto__\b|\bString\.fromCharCode\b|\batob\s*\(|\bBuffer\.from\s*\(|\[\s*(?:['"`][^\]]*['"`]\s*\+|[^\]]*\+\s*['"`])|\bgetattr\s*\(|\b__import__\b|\bimportlib\b|\b__builtins__\b|\bglobals\s*\(\s*\)/,
+    'uses dynamic or obfuscated access (built names, globals, decoding)',
+  ],
 ];
+
+/**
+ * Ways to make a test pass by changing what the app shows instead of the
+ * test: faking network answers, injecting scripts, or editing the DOM.
+ */
+const TAMPER = /\.(?:route|routeFromHAR|route_from_har|unroute|addInitScript|add_init_script|evaluate|evaluateHandle|evaluate_handle|\$eval|\$\$eval|eval_on_selector|eval_on_selector_all|exposeFunction|expose_function|exposeBinding|expose_binding|setContent|set_content)\s*\(|\.fulfill\s*\(/;
+
+/** An assertion that cannot fail, e.g. expect(true).toBe(true). */
+const TRIVIAL = /\bexpect(?:\.soft)?\s*\(\s*(?:true|false|null|undefined|-?\d+(?:\.\d+)?|'[^']*'|"[^"]*"|`[^`$]*`)\s*\)|^\s*assert\s+(?:True|1|not\s+False|"[^"]*"|'[^']*')\s*$/m;
+
+/**
+ * What each assertion expects: the arguments of value matchers and the body
+ * of Python asserts. A fix may change how an element is found, never what the
+ * test expects to see; a changed expectation is how an app bug gets hidden.
+ */
+const EXPECTATION = /\.(?:not\.)?(?:toHaveText|toContainText|toHaveValue|toHaveValues|toHaveURL|toHaveTitle|toHaveCount|toHaveAttribute|toHaveClass|toHaveCSS|toHaveId|toHaveJSProperty|toHaveAccessibleName|toHaveAccessibleDescription|toHaveRole|toEqual|toStrictEqual|toBe|toMatch|toContain|toHaveLength|toHaveProperty|toBeGreaterThan|toBeGreaterThanOrEqual|toBeLessThan|toBeLessThanOrEqual|toBeCloseTo|to_have_text|to_contain_text|to_have_value|to_have_values|to_have_url|to_have_title|to_have_count|to_have_attribute|to_have_class|to_have_css|to_have_id|to_have_js_property|to_have_accessible_name|to_have_role)\s*\(([^()]*(?:\([^()]*\)[^()]*)*)\)|^\s*assert\s+(.+)$/gm;
+
+export function expectations(source: string): string[] {
+  const out: string[] = [];
+  for (const m of source.matchAll(EXPECTATION)) {
+    let value = m[1] ?? m[2] ?? '';
+    if (m[2] !== undefined) {
+      // Python: keep only what is compared against, so a locator change on the left is fine.
+      const parts = value.split(/\s(?:==|!=|>=|<=|>|<|not in|in|is not|is)\s/);
+      value = parts.length > 1 ? (parts[parts.length - 1] ?? value) : value;
+    }
+    out.push(value.replace(/\s+/g, ' ').trim());
+  }
+  return out;
+}
+
+function missing(before: string[], after: string[]): string[] {
+  const left = new Map<string, number>();
+  for (const x of after) left.set(x, (left.get(x) ?? 0) + 1);
+  const gone: string[] = [];
+  for (const x of before) {
+    const n = left.get(x) ?? 0;
+    if (n > 0) left.set(x, n - 1);
+    else gone.push(x);
+  }
+  return gone;
+}
 
 const STRONG = /\.(?:toHaveText|toHaveValue|toHaveURL|toHaveTitle|toHaveCount|toHaveAttribute|toContainText|toEqual|toStrictEqual|toBe|toMatchAriaSnapshot|toHaveScreenshot)\s*\(/;
 const WEAK = /\.(?:toBeTruthy|toBeDefined|toBeFalsy|not\.toBeNull|toBeAttached)\s*\(/;
@@ -106,6 +155,13 @@ export function scanChange(before: string, after: string): CheatReport {
   if (count(b, /\.catch\s*\(\s*\(\s*\)\s*=>\s*(\{\s*\}|undefined|null|false)\s*\)/) > count(a, /\.catch\s*\(\s*\(\s*\)\s*=>\s*(\{\s*\}|undefined|null|false)\s*\)/)) {
     block('swallowed-error', 'a promise error is now swallowed with .catch(() => {})');
   }
+
+  const changed = missing(expectations(a), expectations(b));
+  if (changed.length) {
+    block('expectation-changed', `what the test expects changed (${changed.slice(0, 3).map((x) => JSON.stringify(x.slice(0, 60))).join(', ')}); if the app now shows something else, that is for a person to decide`);
+  }
+  if (count(b, TRIVIAL) > count(a, TRIVIAL)) block('trivial-assertion', 'an assertion that cannot fail was added');
+  if (count(b, TAMPER) > count(a, TAMPER)) block('app-tampered', 'the change fakes network answers, injects scripts or edits the page instead of testing it');
 
   for (const [pattern, what] of ESCAPE) {
     if (count(b, pattern) > count(a, pattern)) block('unsafe-code', `the change ${what}, which a test fix never needs`);

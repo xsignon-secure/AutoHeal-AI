@@ -23,7 +23,7 @@
  */
 
 import { execFileSync, spawnSync } from 'node:child_process';
-import { cpSync, existsSync, mkdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
+import { cpSync, existsSync, mkdirSync, readdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { fakeGh, runAction } from './action-harness.mjs';
@@ -150,14 +150,14 @@ const scenarios = {
     check(byTest(summary, 'pro plan price')?.status === 'APP_BUG', 'price change still APP_BUG');
     check(file(dir, 'tests/login.spec.ts').includes("name: 'Sign in'"), 'login file has the fix');
     check(file(dir, 'pages/profile.ts').includes('#welcome-message'), 'page object has the fix');
-    check(existsSync(path.join(dir, '.autoheal', 'memory.json')), 'repo memory written');
-    const mem = existsSync(path.join(dir, '.autoheal', 'memory.json')) ? JSON.parse(file(dir, '.autoheal/memory.json')) : { entries: [] };
-    check(mem.entries.length === 2, `memory has 2 entries (got ${mem.entries.length})`);
+    const memFiles = existsSync(path.join(dir, '.autoheal', 'memory')) ? readdirSync(path.join(dir, '.autoheal', 'memory')) : [];
+    check(memFiles.length === 2, `repo memory: one file per fix (got ${memFiles.length})`);
     const body = existsSync(path.join(dir, '.autoheal-out', 'pr-body.md')) ? file(dir, '.autoheal-out/pr-body.md') : '';
     check(/Stability proof/.test(body) && /Anti-cheat/.test(body) && /Sign in/.test(body), 'PR body has stability, anti-cheat and the diff');
     check(summary?.spend.inputTokens > 0 && summary.spend.usd > 0, `spend recorded ($${summary?.spend.usd})`);
     check(
-      ['.autoheal/memory.json', 'pages/profile.ts', 'playwright-quarantine.json', 'tests/login.spec.ts'].every((f) => summary?.changedFiles.includes(f)),
+      ['pages/profile.ts', 'playwright-quarantine.json', 'tests/login.spec.ts'].every((f) => summary?.changedFiles.includes(f)) &&
+        summary.changedFiles.filter((f) => f.startsWith('.autoheal/memory/')).length === 2,
       `changed files listed (${summary?.changedFiles.join(', ')})`,
     );
     const rerun = spawnSync('npx', ['playwright', 'test', 'tests/login.spec.ts', 'tests/profile.spec.ts'], { cwd: dir, encoding: 'utf8' });
@@ -261,7 +261,11 @@ const scenarios = {
     const pushed = execFileSync('git', ['--git-dir', remote, 'show', '--name-only', '--format=%s', 'autoheal/4242'], { encoding: 'utf8' });
     check(/AutoHeal fixes for failed run 4242/.test(pushed), 'fix commit pushed to the bot branch');
     const pushedFiles = pushed.trim().split('\n').slice(1).filter(Boolean).sort();
-    check(JSON.stringify(pushedFiles) === JSON.stringify(['.autoheal/memory.json', 'pages/profile.ts', 'playwright-quarantine.json', 'tests/login.spec.ts']), `only healed files committed (${pushedFiles.join(', ')})`);
+    const pushedCode = pushedFiles.filter((f) => !f.startsWith('.autoheal/memory/'));
+    check(
+      JSON.stringify(pushedCode) === JSON.stringify(['pages/profile.ts', 'playwright-quarantine.json', 'tests/login.spec.ts']) && pushedFiles.length === 5,
+      `only healed files and their 2 memory entries committed (${pushedFiles.join(', ')})`,
+    );
     const mainHead = execFileSync('git', ['--git-dir', remote, 'log', '-1', '--format=%s', 'main'], { encoding: 'utf8' }).trim();
     check(mainHead === 'dummy shop', 'base branch untouched');
     check(steps['Post the report (comment mode)']?.skipped && steps['Send results to your dashboard']?.skipped && steps['Fail when a fix was blocked']?.skipped, 'comment, dashboard and blocked steps skipped');
@@ -289,7 +293,7 @@ const scenarios = {
     const secret = 'sim-secret-0123456789-abcdefghijklmnop';
     const port = 4399;
     const server = spawn(process.execPath, [cli, 'dashboard', '--port', String(port), '--host', '127.0.0.1', '--db', path.join(dbDir, 'a.db')], {
-      env: { ...process.env, AUTOHEAL_DASHBOARD_SECRET: secret, AUTOHEAL_DASHBOARD_VIEW_TOKEN: 'view-token-123' },
+      env: { ...process.env, AUTOHEAL_DASHBOARD_SECRET: secret, AUTOHEAL_DASHBOARD_VIEW_TOKEN: 'view-token-1234567890' },
       stdio: 'pipe',
     });
     try {
@@ -308,9 +312,9 @@ const scenarios = {
       check(bad.status === 401, `unsigned upload rejected (HTTP ${bad.status})`);
       const noView = await fetch(`http://127.0.0.1:${port}/api/stats`);
       check(noView.status === 401, 'stats need the view token');
-      const stats = await (await fetch(`http://127.0.0.1:${port}/api/stats`, { headers: { authorization: 'Bearer view-token-123' } })).json();
+      const stats = await (await fetch(`http://127.0.0.1:${port}/api/stats`, { headers: { authorization: 'Bearer view-token-1234567890' } })).json();
       check(stats.stats.fixed === 2 && stats.stats.fixPrs === 1 && stats.stats.appBugs === 1 && stats.stats.quarantined === 1, `stats: ${JSON.stringify(stats.stats)}`);
-      const page = await (await fetch(`http://127.0.0.1:${port}/`, { headers: { authorization: 'Bearer view-token-123' } })).text();
+      const page = await (await fetch(`http://127.0.0.1:${port}/`, { headers: { authorization: 'Bearer view-token-1234567890' } })).text();
       check(page.includes('AutoHeal Dashboard') && page.includes('LOCATOR_DRIFT') && page.includes('pull/7'), 'dashboard page lists the results');
     } finally {
       server.kill();
