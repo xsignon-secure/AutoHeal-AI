@@ -33,6 +33,15 @@ inputs:
   github-token:
     description: Token for pushing the fix branch and opening PRs and issues. A PAT or GitHub App token also lets your CI run on the fix PR.
     default: ${{ github.token }}
+  allowed-paths:
+    description: "Globs (comma or newline separated) of files a fix may change. Default: **/tests/**, **/test/**, **/e2e/**, **/playwright/**, **/*.spec.*, **/*.test.*, **/test_*.py, **/*_test.py. Set it if your page objects live elsewhere."
+    default: ''
+  allow-warn:
+    description: Accept fixes with WARN findings (raised timeouts). Keep it the same as the heal action's allow-warn.
+    default: 'false'
+  quarantine-days:
+    description: Longest quarantine a patch may set (days, at most 90). Keep it the same as the heal action's quarantine-days.
+    default: '14'
   dashboard-url:
     description: Your self-hosted AutoHeal dashboard (optional).
     default: ''
@@ -63,4 +72,7 @@ runs:
         GH_TOKEN: ${{ inputs.github-token }}
         DASHBOARD_URL: ${{ inputs.dashboard-url }}
         DASHBOARD_SECRET: ${{ inputs.dashboard-secret }}
+        ALLOWED_PATHS: ${{ inputs.allowed-paths }}
+        ALLOW_WARN: ${{ inputs.allow-warn }}
+        QUARANTINE_DAYS: ${{ inputs.quarantine-days }}
       run: node "$GITHUB_ACTION_PATH/../scripts/publish.mjs"

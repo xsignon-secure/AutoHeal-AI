@@ -277,7 +277,7 @@ const scenarios = {
     };
     const publish = (inputs, resultDir = result) => {
       freshClone();
-      return runAction({ actionDir: path.join(repo, 'publish'), projectDir: publishDir, inputs: { 'result-dir': resultDir, 'base-branch': 'main', 'run-id': '4242', commit: 'a'.repeat(40), blocked: run.ctx.steps.heal.blocked, ...inputs }, github, env });
+      return runAction({ actionDir: path.join(repo, 'publish'), projectDir: publishDir, inputs: { 'result-dir': resultDir, 'allowed-paths': 'tests/**, pages/**', 'base-branch': 'main', 'run-id': '4242', commit: 'a'.repeat(40), blocked: run.ctx.steps.heal.blocked, ...inputs }, github, env });
     };
     const pub = publish({});
     if (!pub.ok || process.env.SIM_VERBOSE) for (const s of pub.log) console.log(`    [publish ${s.step}] exit ${s.code}\n${s.stderr ?? ''}${s.stdout ?? ''}`);

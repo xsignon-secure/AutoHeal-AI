@@ -97,6 +97,25 @@ const ESCAPE: Array<[RegExp, string]> = [
   ],
 ];
 
+/** A computed property on test/it/describe, e.g. test['skip'](): a way to write skip without the word after a dot. */
+const COMPUTED_TEST = /\b(?:test|it|describe)(?:\s*\.\s*describe)?\s*\[/;
+
+/**
+ * Where the test goes: a fix may find an element differently, never point the
+ * test at another page (a data: URL that just shows the expected text, or an
+ * attacker's site). The arguments of these calls must stay exactly the same.
+ */
+const NAVIGATION = /\.(?:goto|waitForURL|wait_for_url|route|routeFromHAR|route_from_har|newPage|new_page|setContent|set_content|expect_navigation|waitForNavigation)\s*\(([^()]*(?:\([^()]*\)[^()]*)*)\)/g;
+
+/** A URL written into the test. Locators never need one. */
+const URL_LITERAL = /['"`]\s*(?:data|javascript|blob|file|about|https?|wss?|ftp):[^'"`]*['"`]/gi;
+
+/** User actions. Deleting one removes a step of what the test checks. */
+const ACTION = /\.(?:click|dblclick|fill|press|pressSequentially|press_sequentially|type|check|uncheck|setChecked|set_checked|hover|tap|selectOption|select_option|setInputFiles|set_input_files|dragTo|drag_to|dispatchEvent|dispatch_event|focus|blur|clear|goto|selectText|select_text|down|up|insertText|insert_text)\s*\(/;
+
+/** Ways to make a locator match more than it did: .or(), or a whole-page selector. */
+const WIDENING = /\.or_?\s*\(|\b(?:locator|\$\$?|querySelector(?:All)?|query_selector(?:_all)?)\s*\(\s*['"`]\s*(?:body|html|\*|:root|:scope|div|span)\s*['"`]/;
+
 /**
  * Ways to make a test pass by changing what the app shows instead of the
  * test: faking network answers, injecting scripts, or editing the DOM.
@@ -174,6 +193,22 @@ export function scanChange(before: string, after: string, file?: string): CheatR
   if (testsAfter < testsBefore) block('test-removed', `tests went from ${testsBefore} to ${testsAfter}`);
 
   if (count(b, SKIP) > count(a, SKIP)) block('skip-added', 'a skip, only, fixme, fail or xfail marker was added');
+  if (count(b, COMPUTED_TEST) > count(a, COMPUTED_TEST)) block('skip-added', "test[...] was added, which can call skip, only or fixme without naming them");
+
+  const navBefore = [...a.matchAll(NAVIGATION)].map((m) => (m[1] ?? '').replace(/\s+/g, ' ').trim());
+  const navAfter = [...b.matchAll(NAVIGATION)].map((m) => (m[1] ?? '').replace(/\s+/g, ' ').trim());
+  const navChanged = missing(navBefore, navAfter).concat(missing(navAfter, navBefore));
+  if (navChanged.length) {
+    block('navigation-changed', `where the test navigates changed (${navChanged.slice(0, 2).map((x) => JSON.stringify(x.slice(0, 60))).join(', ')}); a fix may change how an element is found, never which page is tested`);
+  }
+  const urls = missing((b.match(URL_LITERAL) ?? []).map((u) => u.toLowerCase()), (a.match(URL_LITERAL) ?? []).map((u) => u.toLowerCase()));
+  if (urls.length) block('url-added', `a URL was written into the test (${urls[0]?.slice(0, 60)}); locators never need one`);
+
+  const actionsBefore = count(a, ACTION);
+  const actionsAfter = count(b, ACTION);
+  if (actionsAfter < actionsBefore) block('step-removed', `user actions went from ${actionsBefore} to ${actionsAfter}; a fix may retarget a step, not delete it`);
+
+  if (count(b, WIDENING) > count(a, WIDENING)) block('locator-widened', 'a locator was widened with .or() or a whole-page selector, so it can match something other than the intended element');
 
   const added = addedLines(a, b);
   if (added.some((line) => /^return\b\s*;?$|^if\s*\(.*\)\s*\{?\s*return\b|^if .*:\s*return\b/.test(line))) {
