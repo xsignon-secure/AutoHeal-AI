@@ -34,10 +34,23 @@ export interface CheatReport {
 
 /** Strip comments so commented-out code neither counts nor hides. */
 export function stripComments(source: string): string {
-  return source
-    .replace(/\/\*[\s\S]*?\*\//g, '')
+  return stripBlockComments(source)
     .replace(/(^|[^:"'`\\/])\/\/[^\n]*/g, '$1')
     .replace(/^\s*#[^\n]*$/gm, '');
+}
+
+/** Removes block comments in one linear pass (a lazy regex is quadratic on an unclosed "/*"). */
+function stripBlockComments(source: string): string {
+  let out = '';
+  let i = 0;
+  for (;;) {
+    const start = source.indexOf('/*', i);
+    if (start === -1) return out + source.slice(i);
+    const end = source.indexOf('*/', start + 2);
+    if (end === -1) return out + source.slice(i); // unclosed: left as is, like the old regex
+    out += source.slice(i, start);
+    i = end + 2;
+  }
 }
 
 function count(source: string, pattern: RegExp): number {
