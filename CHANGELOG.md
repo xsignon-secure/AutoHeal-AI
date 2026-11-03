@@ -2,6 +2,16 @@
 
 All notable changes to AutoHeal AI. Versions follow [semantic versioning](https://semver.org/).
 
+## 0.3.1 (2026-11-03)
+
+### Security
+Clears the 8 CodeQL alerts open on `main`:
+- Markdown table cells in PRs, issues and the job summary escape backslashes as well as pipes, so a test title cannot break out of its cell.
+- The provider is treated as the official OpenAI API only when the host is exactly `api.openai.com`.
+- The dashboard's `Bearer` header, the dashboard URL and the Python import scan no longer use regexes that can be slowed down by crafted input.
+- The page-object check that limits which files a fix may touch now tests `/index.` and the file extension separately.
+- The simulation's flaky fixture creates its marker file atomically.
+
 ## 0.3.0 (2026-11-03)
 
 ### Added

@@ -137,7 +137,7 @@ jobs:
 
       - name: AutoHeal
         id: autoheal
-        uses: xsignon-secure/AutoHeal-AI@v0.3.0
+        uses: xsignon-secure/AutoHeal-AI@v0.3.1
         with:
           report: autoheal-artifacts
           mode: ${{ github.event.inputs.mode || 'draft-pr' }}
@@ -174,7 +174,7 @@ jobs:
           path: autoheal-result
 
       - name: Publish
-        uses: xsignon-secure/AutoHeal-AI/publish@v0.3.0
+        uses: xsignon-secure/AutoHeal-AI/publish@v0.3.1
         with:
           result-dir: autoheal-result
           mode: ${{ github.event.inputs.mode || 'draft-pr' }}

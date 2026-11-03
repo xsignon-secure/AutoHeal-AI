@@ -46,7 +46,10 @@ export function eventsFrom(summary, links = {}) {
 export async function uploadEvents(url, secret, events, timeoutMs = 20_000) {
     const body = JSON.stringify({ version: 1, events });
     const ts = Math.floor(Date.now() / 1000);
-    const endpoint = `${url.replace(/\/+$/, '')}/api/heal`;
+    let base = url;
+    while (base.endsWith('/'))
+        base = base.slice(0, -1);
+    const endpoint = `${base}/api/heal`;
     const res = await fetch(endpoint, {
         method: 'POST',
         headers: { 'content-type': 'application/json', [SIGNATURE_HEADER]: sign(secret, ts, body), [TIMESTAMP_HEADER]: String(ts) },

@@ -124,7 +124,8 @@ export function createDashboard(options: DashboardOptions): http.RequestListener
 
   function canView(req: http.IncomingMessage, url: URL): 'yes' | 'no' | 'set-cookie' {
     if (!options.viewToken) return 'yes';
-    const bearer = /^Bearer\s+(.+)$/i.exec(req.headers.authorization ?? '')?.[1];
+    const auth = req.headers.authorization ?? '';
+    const bearer = auth.slice(0, 7).toLowerCase() === 'bearer ' ? auth.slice(7).trim() : undefined;
     if (bearer && sameSecret(bearer, options.viewToken)) return 'yes';
     const fromCookie = cookie(req, 'autoheal_view');
     if (fromCookie && sameSecret(fromCookie, viewCookieValue(options.viewToken))) return 'yes';

@@ -88,7 +88,7 @@ PRs opened with the default `GITHUB_TOKEN` do not start other workflows; GitHub 
   with:
     app-id: ${{ vars.AUTOHEAL_APP_ID }}
     private-key: ${{ secrets.AUTOHEAL_APP_KEY }}
-- uses: xsignon-secure/AutoHeal-AI/publish@v0.3.0
+- uses: xsignon-secure/AutoHeal-AI/publish@v0.3.1
   with:
     github-token: ${{ steps.app-token.outputs.token }}
     # ...the other inputs from the template
@@ -108,7 +108,7 @@ AutoHeal never pushes to your base branch, never auto-merges, and never runs on 
 
 ## Inputs
 
-**Heal action** (`xsignon-secure/AutoHeal-AI@v0.3.0`):
+**Heal action** (`xsignon-secure/AutoHeal-AI@v0.3.1`):
 
 | Input | Default | |
 |---|---|---|
@@ -137,7 +137,7 @@ AutoHeal never pushes to your base branch, never auto-merges, and never runs on 
 
 Outputs: `outcome` (`fixed`, `blocked`, `app-bug`, `quarantined`, `unfixed`, `nothing-to-do` or `error`), `fixed`, `blocked`, `has-result`.
 
-**Publish action** (`xsignon-secure/AutoHeal-AI/publish@v0.3.0`): `result-dir`, `mode`, `base-branch`, `run-id`, `commit`, `pr-number`, `blocked`, `open-issues`, `github-token`, `dashboard-url`, `dashboard-secret`. Output: `pr-url`.
+**Publish action** (`xsignon-secure/AutoHeal-AI/publish@v0.3.1`): `result-dir`, `mode`, `base-branch`, `run-id`, `commit`, `pr-number`, `blocked`, `open-issues`, `github-token`, `dashboard-url`, `dashboard-secret`. Output: `pr-url`.
 
 If a fix is blocked by the anti-cheat guard, the publish job fails, so that someone looks at it. The good fixes from the same run still get their PR.
 
