@@ -101,7 +101,7 @@ const TRIVIAL = /\bexpect(?:\.soft)?\s*\(\s*(?:true|false|null|undefined|-?\d+(?
 const EXPECTATION = /\.(?:not\.)?(?:toHaveText|toContainText|toHaveValue|toHaveValues|toHaveURL|toHaveTitle|toHaveCount|toHaveAttribute|toHaveClass|toHaveCSS|toHaveId|toHaveJSProperty|toHaveAccessibleName|toHaveAccessibleDescription|toHaveRole|toEqual|toStrictEqual|toBe|toMatch|toContain|toHaveLength|toHaveProperty|toBeGreaterThan|toBeGreaterThanOrEqual|toBeLessThan|toBeLessThanOrEqual|toBeCloseTo|to_have_text|to_contain_text|to_have_value|to_have_values|to_have_url|to_have_title|to_have_count|to_have_attribute|to_have_class|to_have_css|to_have_id|to_have_js_property|to_have_accessible_name|to_have_role)\s*\(([^()]*(?:\([^()]*\)[^()]*)*)\)|^\s*assert\s+(.+)$/gm;
 
 function declaration(source: string, name: string): string | undefined {
-  const n = name.replace(/\$/g, '\\$');
+  const n = name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
   const js = new RegExp(`\\b(?:const|let|var)\\s+${n}\\s*(?::[^=\\n]+)?=\\s*([^;\\n]+)`).exec(source);
   if (js?.[1] !== undefined) return js[1].trim();
   const py = new RegExp(`^\\s*${n}\\s*(?::[^=\\n]+)?=\\s*(?!=)(.+)$`, 'm').exec(source);

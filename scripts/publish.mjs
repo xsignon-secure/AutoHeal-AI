@@ -14,7 +14,8 @@
 
 import { execFileSync } from 'node:child_process';
 import { createHmac } from 'node:crypto';
-import { appendFileSync, existsSync, lstatSync, readFileSync, realpathSync, writeFileSync } from 'node:fs';
+import { appendFileSync, closeSync, constants, existsSync, fstatSync, lstatSync, mkdtempSync, openSync, readFileSync, realpathSync, writeFileSync } from 'node:fs';
+import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -34,10 +35,30 @@ const summaryLine = (line) => {
   if (env.GITHUB_STEP_SUMMARY) appendFileSync(env.GITHUB_STEP_SUMMARY, `${line}\n`);
 };
 
+/**
+ * Reads a regular file without following symlinks. The check and the read use
+ * the same open file, so the file cannot be swapped in between.
+ */
+function readRegular(file, maxBytes) {
+  let fd;
+  try {
+    fd = openSync(file, constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0));
+  } catch {
+    return null;
+  }
+  try {
+    const st = fstatSync(fd);
+    if (!st.isFile()) return null;
+    if (st.size > maxBytes) throw new Refused(`${path.basename(file)} is larger than ${maxBytes} bytes`);
+    return readFileSync(fd, 'utf8');
+  } finally {
+    closeSync(fd);
+  }
+}
+
 function readText(dir, name, max = MAX_BODY) {
-  const file = path.join(dir, name);
-  if (!existsSync(file) || !lstatSync(file).isFile()) return null;
-  const text = readFileSync(file, 'utf8');
+  const text = readRegular(path.join(dir, name), 8 * 1024 * 1024);
+  if (text === null) return null;
   return text.length > max ? `${text.slice(0, max)}\n\n_(cut to ${max} characters)_\n` : text;
 }
 
@@ -145,10 +166,8 @@ function pushAuth() {
 /** Applies the checked patch on a fresh branch and opens or updates the PR. */
 export function publishPatch({ root, dir, mode, base, runId, fixed }) {
   const patchFile = path.join(dir, 'patch.diff');
-  if (!existsSync(patchFile)) return null;
-  if (lstatSync(patchFile).size > MAX_PATCH_BYTES) throw new Refused('the patch is larger than 2 MB');
-  const patch = readFileSync(patchFile, 'utf8');
-  if (!patch.trim()) return null;
+  const patch = readRegular(patchFile, MAX_PATCH_BYTES);
+  if (!patch?.trim()) return null;
   if (base.startsWith('autoheal/')) {
     console.log('Refusing to open a PR against another AutoHeal branch.');
     return null;
@@ -160,8 +179,11 @@ export function publishPatch({ root, dir, mode, base, runId, fixed }) {
 
   const branch = `autoheal/${runId}`;
   git(['checkout', '-q', '-B', branch], { cwd: root });
-  git(['apply', '--check', '--whitespace=nowarn', patchFile], { cwd: root });
-  git(['apply', '--whitespace=nowarn', patchFile], { cwd: root });
+  // Apply exactly the text that was checked, from a private copy.
+  const checked = path.join(mkdtempSync(path.join(os.tmpdir(), 'autoheal-')), 'checked.diff');
+  writeFileSync(checked, patch, { mode: 0o600 });
+  git(['apply', '--check', '--whitespace=nowarn', checked], { cwd: root });
+  git(['apply', '--whitespace=nowarn', checked], { cwd: root });
   git(['add', '--', ...files.map((f) => f.path)], { cwd: root });
   const staged = git(['diff', '--cached', '--name-only'], { cwd: root }).split('\n').filter(Boolean).sort();
   const expected = files.map((f) => f.path).sort();
