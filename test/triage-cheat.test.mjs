@@ -141,3 +141,11 @@ test('cheat scan: trivial assertions, faked network answers, DOM edits and obfus
     }
   }
 });
+
+test('cheat scan: an expected value moved into a variable is still followed', () => {
+  const t = "const price = '$10';\ntest('p', async ({ page }) => {\n  await expect(page.getByTestId('price')).toHaveText(price);\n});\n";
+  assert.equal(scanChange(t, t.replace("'$10'", "'$12'")).verdict, 'BLOCK');
+  assert.equal(scanChange(t, t.replace("getByTestId('price')", "getByRole('status')")).verdict, 'PASS');
+  const py = 'EXPECTED = "$10"\ndef test_p(page):\n    expect(page.locator("#p")).to_have_text(EXPECTED)\n';
+  assert.equal(scanChange(py, py.replace('"$10"', '"$12"')).verdict, 'BLOCK');
+});

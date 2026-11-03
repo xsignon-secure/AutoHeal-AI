@@ -21,10 +21,12 @@ AutoHeal runs an AI model against your code inside CI with write access, so it i
 - **Dashboard.** Uploads are HMAC-signed with a 5 minute window and strictly validated before anything touches the database. They carry no code, diffs or error text.
   - A view token is required unless you make it public on purpose.
   - After 20 failed attempts, a client is locked out for 10 minutes.
-  - Bodies are capped at 256 KB.
+  - Bodies are capped at 256 KB, and the database keeps at most 100,000 results.
+  - Every query uses bound parameters.
   - The page sends a strict Content-Security-Policy and runs no scripts.
   - Run it behind HTTPS.
-- **Known limits.** The mock check compares shapes only, so it is a triage hint, not proof. The cost limit is an estimate from public prices.
+- **Secrets are scrubbed** from everything that leaves the runner: the AI prompt, PRs, issues, comments, the job summary and `summary.json`. The scrubber knows common credential shapes and the values of every secret-looking environment variable. It is pattern based, so keep secrets out of test output in the first place.
+- **Known limits.** Reruns assume tests are isolated; shared state can make a good fix fail its proof, but it cannot make a bad fix pass. The mock check compares shapes only, so it is a triage hint, not proof. The cost limit is an estimate from public prices.
 
 ## Reporting a vulnerability
 

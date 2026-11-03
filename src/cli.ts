@@ -12,6 +12,7 @@ import { parseArgs } from 'node:util';
 import { commentBody, issueBody, issueTitle, jobSummary, prBody } from './evidence.js';
 import { heal } from './heal.js';
 import { ConfigError, providerFromEnv } from './providers/index.js';
+import { redactDeep } from './redact.js';
 import { findReport } from './report-files.js';
 import type { HealSummary, Mode } from './types.js';
 import { eventsFrom, uploadEvents } from './upload.js';
@@ -144,7 +145,7 @@ async function cmdHeal(argv: string[]): Promise<number> {
   log(`AutoHeal ${VERSION} · mode ${mode} · provider ${provider ? `${provider.name} (${provider.model})` : 'none (deterministic fixes only)'}`);
   const appUrl = values['app-url'] ?? env.AUTOHEAL_APP_URL;
   const mocksBaseUrl = values['mocks-base-url'] ?? env.AUTOHEAL_MOCKS_BASE_URL;
-  const summary = await heal({
+  const rawSummary = await heal({
     projectRoot,
     report,
     ...(traceDirs ? { traceDirs } : {}),
@@ -167,6 +168,8 @@ async function cmdHeal(argv: string[]): Promise<number> {
     run: runInfo(),
     log,
   });
+  // Belt and braces: scrub every string before anything is written or posted.
+  const summary = redactDeep(rawSummary);
 
   await mkdir(outDir, { recursive: true });
   await writeFile(path.join(outDir, 'summary.json'), `${JSON.stringify(summary, null, 2)}\n`);
@@ -244,7 +247,10 @@ async function cmdDashboard(argv: string[]): Promise<number> {
   if (viewToken && viewToken.length < 16) throw new ConfigError('AUTOHEAL_DASHBOARD_VIEW_TOKEN must be at least 16 characters.');
   const { MIN_SECRET_LENGTH } = await import('./signing.js');
   if (secret.length < MIN_SECRET_LENGTH) throw new ConfigError(`AUTOHEAL_DASHBOARD_SECRET must be at least ${MIN_SECRET_LENGTH} characters.`);
-  const store = new Store(values.db ?? process.env.AUTOHEAL_DB ?? 'autoheal.db');
+  const store = new Store(
+    values.db ?? process.env.AUTOHEAL_DB ?? 'autoheal.db',
+    intOption(undefined, process.env.AUTOHEAL_DASHBOARD_MAX_EVENTS, 100_000, 'AUTOHEAL_DASHBOARD_MAX_EVENTS', 100, 10_000_000),
+  );
   const server = await startDashboard({
     store,
     secret,

@@ -19,6 +19,7 @@ import { promisify } from 'node:util';
 import { aiFix, aiTriage, safePath, type VerifyOutcome } from './agent.js';
 import { Budget, EMPTY_SNAPSHOT, priceFor, type BudgetLimits, type BudgetSnapshot } from './budget.js';
 import { scanChange, type Verdict } from './cheat.js';
+import { redact } from './redact.js';
 import { shortDiff } from './evidence.js';
 import { McpTools, type ToolCaller } from './mcp.js';
 import { loadMemory, memoryEntryPath, memoryText, relevantMemory, remember } from './memory.js';
@@ -114,8 +115,9 @@ function failureFrom(index: number, data: Record<string, unknown>, text: string)
     file: f.file.replace(/\\/g, '/'),
     title: f.title,
     kind: typeof f.kind === 'string' ? f.kind : 'unknown',
-    message: typeof f.message === 'string' ? f.message : '',
-    detail: text,
+    // Redacted on the way in, so no secret printed by a test reaches the AI or a PR.
+    message: typeof f.message === 'string' ? redact(f.message) : '',
+    detail: redact(text),
   };
   if (typeof f.line === 'number') info.line = f.line;
   if (typeof f.expected === 'string') info.expected = f.expected;

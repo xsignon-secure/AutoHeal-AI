@@ -60,7 +60,11 @@ export interface EventRow extends HealEvent {
 export class Store {
   private readonly db: DatabaseSync;
 
-  constructor(file: string) {
+  /**
+   * @param maxEvents rows kept; the oldest received are dropped beyond it, so
+   *   even a leaked upload secret cannot grow the database without bound.
+   */
+  constructor(file: string, private readonly maxEvents = 100_000) {
     this.db = new DatabaseSync(file);
     this.db.exec('PRAGMA journal_mode = WAL;');
     this.db.exec(SCHEMA);
@@ -88,6 +92,9 @@ export class Store {
           e.tokens, e.usd, e.minutes_saved, e.created_at, now,
         );
       }
+      this.db.exec(
+        `DELETE FROM heal_events WHERE id IN (SELECT id FROM heal_events ORDER BY received_at DESC, id DESC LIMIT -1 OFFSET ${Math.max(1, Math.floor(this.maxEvents))})`,
+      );
       this.db.exec('COMMIT');
     } catch (error) {
       this.db.exec('ROLLBACK');

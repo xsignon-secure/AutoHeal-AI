@@ -8,6 +8,7 @@ export { prBody, issueBody, issueTitle, commentBody, jobSummary, shortDiff } fro
 export { McpTools, engineEntry, engineEnv, type ToolCaller, type ToolResult } from './mcp.js';
 export { findReport } from './report-files.js';
 export { sign, verifySignature } from './signing.js';
+export { redact, makeRedactor, redactDeep, secretValues, REDACTED } from './redact.js';
 export { eventsFrom, uploadEvents, type HealEvent } from './upload.js';
 export * from './providers/index.js';
 export type * from './types.js';

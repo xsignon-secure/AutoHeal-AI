@@ -24,7 +24,8 @@ It is MIT licensed and runs entirely on your GitHub runner. No AutoHeal server, 
   - adds code a test fix never needs (environment variables, processes, system modules, raw network calls) or hides such code behind built-up names and globals.
 
   Raised timeouts, fixed waits, `force: true` and retries are blocked too, unless you allow warnings. The scan is a strong filter, not a proof. The stability rerun and your review of the draft PR are the other two layers.
-- **Stability proof.** A fix is kept only if the test passes `--repeat-each=5` and the rest of the file does not get worse. Anything else is reverted before the model even sees the result.
+- **Stability proof.** A fix is kept only if the test passes `--repeat-each=5` and the rest of the file does not get worse. Anything else is reverted before the model even sees the result. The repeats run back to back, so tests must clean up after themselves. If a test shares a database or other state without resetting it, a good fix can fail the proof and be reverted (lower `repeat-each`, or isolate the data). A bad fix is never kept because of this.
+- **Secrets are scrubbed.** Before anything goes to the AI or into a PR, issue, comment or job summary, AutoHeal redacts known credential shapes: API keys, GitHub, AWS, Slack and Stripe tokens, JWTs, private keys, `Bearer` headers, `password=` values and passwords in URLs. It also redacts the value of every secret-looking environment variable on the runner.
 - **Triage first, AI second.** Most failures are classified with no AI at all. Locator fixes that the engine can verify against the trace are applied by rules, using no tokens. The model is only asked when it is actually needed.
 - **Repo memory.** Fixes that worked are saved in your repo, one small file per fix under `.autoheal/memory/`, so two open fix PRs never conflict. The agent reads them next time, so it learns your app's naming habits.
 - **Hard budgets.** The cost limit per job (`max-usd`, default $1), the number of AI calls and the number of tokens are all capped. Before every AI call, AutoHeal checks that call's worst case (its estimated input plus the full output allowance), so no single call can cross the limit. The cost is an estimate from public prices; set `AUTOHEAL_PRICE_IN` and `AUTOHEAL_PRICE_OUT` if yours differ. When a limit stops the job, the report says so and nothing half-done is kept.
@@ -73,7 +74,7 @@ PRs opened with the default `GITHUB_TOKEN` do not start other workflows; GitHub 
   with:
     app-id: ${{ vars.AUTOHEAL_APP_ID }}
     private-key: ${{ secrets.AUTOHEAL_APP_KEY }}
-- uses: xsignon-secure/AutoHeal-AI@v0.1.1
+- uses: xsignon-secure/AutoHeal-AI@v0.1.2
   with:
     github-token: ${{ steps.app-token.outputs.token }}
 ```
@@ -160,6 +161,7 @@ Securing it:
 - **Rate limiting.** After 20 failed sign-ins or bad signatures, a client address is locked out for 10 minutes. Bodies are capped at 256 KB, and nothing touches the database before the signature checks out.
 - **HTTPS.** Put the dashboard behind an HTTPS reverse proxy (Caddy, nginx, Cloudflare Tunnel) and never expose port 8080 directly. Behind your own proxy, set `AUTOHEAL_TRUST_PROXY=1` so lockouts apply to the real client address.
 - **Allowlist.** Set `AUTOHEAL_DASHBOARD_REPOS` so only your repos can upload.
+- **Size cap.** The database keeps the newest 100,000 results (`AUTOHEAL_DASHBOARD_MAX_EVENTS`), so even a leaked secret cannot fill the disk. Every query uses bound parameters.
 
 ## What it costs
 

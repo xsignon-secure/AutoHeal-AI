@@ -156,3 +156,11 @@ test('cli: the dashboard refuses to start without a view token unless made publi
   const short = spawnSync(process.execPath, [cli, 'dashboard', '--port', '18765', '--db', path.join(mkdtempSync(path.join(os.tmpdir(), 'autoheal-cli-')), 'x.db')], { encoding: 'utf8', env: { ...process.env, AUTOHEAL_DASHBOARD_SECRET: SECRET, AUTOHEAL_DASHBOARD_VIEW_TOKEN: 'short' } });
   assert.equal(short.status, 2);
 });
+
+test('the store keeps at most maxEvents rows, dropping the oldest', () => {
+  const dir = mkdtempSync(path.join(os.tmpdir(), 'autoheal-dash-'));
+  const store = new Store(path.join(dir, 'db.sqlite'), 3);
+  for (let i = 0; i < 5; i++) store.upsert([event({ id: `event-${String(i).padStart(4, '0')}` })]);
+  assert.equal(store.stats().events, 3);
+  store.close();
+});
