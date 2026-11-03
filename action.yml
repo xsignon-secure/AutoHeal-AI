@@ -27,6 +27,9 @@ inputs:
   model:
     description: Model id. Default for Anthropic is claude-opus-5-5.
     default: ''
+  vision:
+    description: "Show the AI the page at the moment of failure (Playwright's failure screenshot or the trace's last frame). auto (default) = on for Anthropic and OpenAI, off for other endpoints; true or false."
+    default: auto
   effort:
     description: Anthropic effort (low, medium, high, xhigh, max).
     default: medium
@@ -116,6 +119,7 @@ runs:
         AUTOHEAL_BASE_URL: ${{ inputs.base-url }}
         AUTOHEAL_MODEL: ${{ inputs.model }}
         AUTOHEAL_EFFORT: ${{ inputs.effort }}
+        AUTOHEAL_VISION: ${{ inputs.vision }}
         AUTOHEAL_MAX_FAILURES: ${{ inputs.max-failures }}
         AUTOHEAL_REPEAT_EACH: ${{ inputs.repeat-each }}
         AUTOHEAL_MAX_USD: ${{ inputs.max-usd }}
@@ -159,7 +163,7 @@ runs:
     # push never shares a job with your tests or the AI's proposed fixes.
     - name: Upload the result for the publish job
       if: always() && steps.package.outputs.result-dir != ''
-      uses: actions/upload-artifact@v4
+      uses: actions/upload-artifact@v7
       with:
         name: ${{ inputs.result-name }}
         path: ${{ steps.package.outputs.result-dir }}

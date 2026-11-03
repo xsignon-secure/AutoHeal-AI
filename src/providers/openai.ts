@@ -22,10 +22,12 @@ interface WireToolCall {
 
 interface WireMessage {
   role: 'system' | 'user' | 'assistant' | 'tool';
-  content: string | null;
+  content: string | WireContentPart[] | null;
   tool_calls?: WireToolCall[];
   tool_call_id?: string;
 }
+
+export type WireContentPart = { type: 'text'; text: string } | { type: 'image_url'; image_url: { url: string } };
 
 export function toWireMessages(request: ChatRequest): WireMessage[] {
   const out: WireMessage[] = [{ role: 'system', content: request.system }];
@@ -43,14 +45,18 @@ export function toWireMessages(request: ChatRequest): WireMessage[] {
       continue;
     }
     const texts: string[] = [];
+    const images: WireContentPart[] = [];
     for (const part of turn.parts) {
       if (part.type === 'tool_result') {
         out.push({ role: 'tool', tool_call_id: part.id, content: part.isError ? `ERROR: ${part.content}` : part.content });
       } else if (part.type === 'text') {
         texts.push(part.text);
+      } else if (part.type === 'image') {
+        images.push({ type: 'image_url', image_url: { url: `data:${part.mediaType};base64,${part.data}` } });
       }
     }
-    if (texts.length) out.push({ role: 'user', content: texts.join('\n\n') });
+    if (images.length) out.push({ role: 'user', content: [...(texts.length ? [{ type: 'text' as const, text: texts.join('\n\n') }] : []), ...images] });
+    else if (texts.length) out.push({ role: 'user', content: texts.join('\n\n') });
   }
   return out;
 }

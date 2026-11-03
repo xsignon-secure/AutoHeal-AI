@@ -20,6 +20,7 @@ export function toWireMessages(request) {
             continue;
         }
         const texts = [];
+        const images = [];
         for (const part of turn.parts) {
             if (part.type === 'tool_result') {
                 out.push({ role: 'tool', tool_call_id: part.id, content: part.isError ? `ERROR: ${part.content}` : part.content });
@@ -27,8 +28,13 @@ export function toWireMessages(request) {
             else if (part.type === 'text') {
                 texts.push(part.text);
             }
+            else if (part.type === 'image') {
+                images.push({ type: 'image_url', image_url: { url: `data:${part.mediaType};base64,${part.data}` } });
+            }
         }
-        if (texts.length)
+        if (images.length)
+            out.push({ role: 'user', content: [...(texts.length ? [{ type: 'text', text: texts.join('\n\n') }] : []), ...images] });
+        else if (texts.length)
             out.push({ role: 'user', content: texts.join('\n\n') });
     }
     return out;

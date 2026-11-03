@@ -139,7 +139,9 @@ const scenarios = {
     const po = file(dir, 'pages/profile.ts');
     const script = fixScript(login, po);
     writeFileSync(path.join(dir, 'script.json'), JSON.stringify(script));
-    const { code, summary } = heal(dir, ['--mode', 'draft-pr'], { AUTOHEAL_PROVIDER: 'scripted', AUTOHEAL_SCRIPT: path.join(dir, 'script.json'), AUTOHEAL_PRICE_IN: '4', AUTOHEAL_PRICE_OUT: '20' });
+    const requestLog = path.join(workRoot, 'ai-requests.log');
+    writeFileSync(requestLog, '');
+    const { code, summary } = heal(dir, ['--mode', 'draft-pr'], { AUTOHEAL_PROVIDER: 'scripted', AUTOHEAL_SCRIPT: path.join(dir, 'script.json'), AUTOHEAL_SCRIPT_LOG: requestLog, AUTOHEAL_PRICE_IN: '4', AUTOHEAL_PRICE_OUT: '20' });
     check(code === 0, `exit code 0 (got ${code})`);
     const l = byTest(summary, 'user can log in');
     const p = byTest(summary, 'profile greets');
@@ -155,6 +157,13 @@ const scenarios = {
     const body = existsSync(path.join(dir, '.autoheal-out', 'pr-body.md')) ? file(dir, '.autoheal-out/pr-body.md') : '';
     check(/Stability proof/.test(body) && /Anti-cheat/.test(body) && /Sign in/.test(body), 'PR body has stability, anti-cheat and the diff');
     check(summary?.spend.inputTokens > 0 && summary.spend.usd > 0, `spend recorded ($${summary?.spend.usd})`);
+    // Visual grounding: the agent's first request carried the trace's failure frame.
+    const requests = readFileSync(requestLog, 'utf8').trim().split('\n').filter(Boolean).map((l) => JSON.parse(l));
+    const firstFix = requests.find((r) => r.tools > 0);
+    check(firstFix?.images?.length === 1 && /image\/(png|jpeg)/.test(firstFix.images[0].mediaType) && firstFix.images[0].bytes > 1000, `the AI got the failure screenshot (${JSON.stringify(firstFix?.images)})`);
+    check(Boolean(l?.failure?.screenshot) && /Visual grounding/.test(body), `PR body says the AI saw the page at the moment of failure (${l?.failure?.screenshot})`);
+    const out = readFileSync(path.join(dir, '.autoheal-out', 'summary.json'), 'utf8') + body;
+    check(!/[A-Za-z0-9+/]{2000}/.test(out), 'no image data in summary.json or the PR body');
     check(
       ['pages/profile.ts', 'playwright-quarantine.json', 'tests/login.spec.ts'].every((f) => summary?.changedFiles.includes(f)) &&
         summary.changedFiles.filter((f) => f.startsWith('.autoheal/memory/')).length === 2,

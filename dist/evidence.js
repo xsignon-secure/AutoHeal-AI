@@ -38,6 +38,8 @@ function resultBlock(r) {
         out.push(`| Stability proof | ${r.stability.passed ? 'passed' : 'failed'} ${r.stability.runs}× in a row |`);
     if (r.quarantine)
         out.push(`| Quarantine | ${r.quarantine.days} days, then it counts again |`);
+    if (r.failure.screenshot && r.spend.steps > 0)
+        out.push(`| Visual grounding | the AI saw the page at the moment of failure (${r.failure.screenshot === 'attachment' ? 'Playwright failure screenshot' : 'trace frame'}) |`);
     out.push(`| AI spend | ${r.spend.inputTokens + r.spend.outputTokens} tokens · ${money(r.spend.usd, r.spend.priced)} |`);
     out.push('');
     out.push(r.summary, '');

@@ -13,7 +13,9 @@ export interface ToolSpec {
 export type Part =
   | { type: 'text'; text: string }
   | { type: 'tool_call'; id: string; name: string; input: Record<string, unknown> }
-  | { type: 'tool_result'; id: string; content: string; isError?: boolean };
+  | { type: 'tool_result'; id: string; content: string; isError?: boolean }
+  /** A screenshot (base64). Only ever sent in user turns. */
+  | { type: 'image'; mediaType: 'image/png' | 'image/jpeg'; data: string; width?: number; height?: number };
 
 export interface Turn {
   role: 'user' | 'assistant';

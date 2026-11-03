@@ -28,6 +28,7 @@ import type { Provider } from './providers/types.js';
 import { triage as triageFailure, type Triage } from './triage.js';
 import { MINUTES_SAVED, type FailureInfo, type FailureResult, type FixInfo, type GuardInfo, type HealSummary, type Mode, type Outcome, type Status } from './types.js';
 import { VERSION } from './version.js';
+import { failureScreenshot, visionEnabled } from './vision.js';
 
 const run = promisify(execFile);
 
@@ -189,6 +190,7 @@ function failureFrom(index: number, data: Record<string, unknown>, text: string)
     if (info.actual === undefined && received !== undefined) info.actual = received.trim();
   }
   if (typeof f.project === 'string') info.project = f.project;
+  if (typeof f.tracePath === 'string') info.tracePath = f.tracePath;
   return info;
 }
 
@@ -461,7 +463,13 @@ export async function heal(options: HealOptions): Promise<HealSummary> {
       if (failure.actual !== undefined) triageInput.actual = failure.actual;
       if (flakyVerdict !== undefined) triageInput.flakyVerdict = flakyVerdict;
       let t: Triage = triageFailure(triageInput);
-      if (provider && t.confidence < 0.6 && t.category !== 'FLAKY') t = await aiTriage(provider, budget, failure, t);
+      // Visual grounding: the page as it was when the test failed, read from the run's own artifacts.
+      const screenshot = provider && visionEnabled(provider.name) ? await failureScreenshot(root, failure.tracePath) : null;
+      if (screenshot) {
+        failure.screenshot = screenshot.source;
+        log(`  screenshot: ${screenshot.source} (${screenshot.width ?? '?'}×${screenshot.height ?? '?'})`);
+      }
+      if (provider && t.confidence < 0.6 && t.category !== 'FLAKY') t = await aiTriage(provider, budget, failure, t, screenshot);
       log(`  triage: ${t.category}/${t.rootCause} ${(t.confidence * 100).toFixed(0)}%`);
 
       const { detail: _detail, ...failureLite } = failure;
@@ -516,6 +524,7 @@ export async function heal(options: HealOptions): Promise<HealSummary> {
             memory: memoryText(relevantMemory(memory, failure.file)),
             budget,
             ...(options.appUrl ? { appUrl: options.appUrl } : {}),
+            screenshot,
             verify: (file, content) => verify(failure, file, content),
           });
           if (agent.guard) result.guard = agent.guard;

@@ -9,7 +9,8 @@
  */
 import type { Budget } from './budget.js';
 import type { ToolCaller } from './mcp.js';
-import type { Provider, ToolSpec, Turn } from './providers/types.js';
+import type { Part, Provider, ToolSpec, Turn } from './providers/types.js';
+import { type Screenshot } from './vision.js';
 import type { Triage } from './triage.js';
 import type { FailureInfo, GuardInfo } from './types.js';
 export interface VerifyOutcome {
@@ -32,6 +33,8 @@ export interface AgentContext {
     memory: string;
     budget: Budget;
     appUrl?: string;
+    /** The page at the moment of failure, for visual grounding. */
+    screenshot?: Screenshot | null;
     maxTokensPerTurn?: number;
     verify(file: string, content: string, explanation: string): Promise<VerifyOutcome>;
 }
@@ -59,10 +62,12 @@ export declare const SYSTEM_PROMPT = "You are AutoHeal, a careful senior test en
 export declare function dataBlock(tag: string, text: string): string;
 /** A deliberately high estimate of a request's input tokens (about 3 characters per token). */
 export declare function estimateTokens(system: string, turns: Turn[], tools: ToolSpec[]): number;
+/** The user turn that opens a conversation: text, plus the failure screenshot when there is one. */
+export declare function openingParts(text: string, shot: Screenshot | null | undefined): Part[];
 export declare function aiFix(ctx: AgentContext): Promise<AgentResult>;
 /**
  * Ask the model to settle a low-confidence triage. It can confirm or change
  * the call, but the confidence it gets is capped, and a result it cannot
  * parse leaves the deterministic triage untouched.
  */
-export declare function aiTriage(provider: Provider, budget: Budget, failure: FailureInfo, current: Triage): Promise<Triage>;
+export declare function aiTriage(provider: Provider, budget: Budget, failure: FailureInfo, current: Triage, screenshot?: Screenshot | null): Promise<Triage>;
