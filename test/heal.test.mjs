@@ -4,7 +4,7 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 
 import os from 'node:os';
 import path from 'node:path';
 import { test } from 'node:test';
-import { ScriptedProvider, heal, outcomeOf } from '../dist/index.js';
+import { ScriptedProvider, heal, loadMemory, outcomeOf } from '../dist/index.js';
 
 const LOGIN = "test('login', async ({ page }) => {\n  await page.getByRole('button', { name: 'Log in' }).click();\n  await expect(page.getByRole('status')).toHaveText('ok');\n});\n";
 const PRICE = "test('price', async ({ page }) => {\n  await expect(page.getByTestId('price')).toHaveText('$10');\n});\n";
@@ -100,7 +100,9 @@ test('rules fix: kept after guard and stability; app bug untouched; no-op engine
   assert.equal(price.status, 'APP_BUG');
   assert.equal(readFileSync(path.join(dir, 'tests/price.spec.ts'), 'utf8'), PRICE);
   assert.match(readFileSync(path.join(dir, 'tests/login.spec.ts'), 'utf8'), /Sign in/);
-  assert.deepEqual(s.changedFiles, ['.autoheal/memory.json', 'tests/login.spec.ts']);
+  assert.equal(s.changedFiles.length, 2);
+  assert.match(s.changedFiles[0], /^\.autoheal\/memory\/[0-9a-f]{16}\.json$/);
+  assert.equal(s.changedFiles[1], 'tests/login.spec.ts');
   assert.equal(s.outcome, 'fixed');
   assert.equal(s.minutesSaved, 60);
   const stability = engine.calls.find((c) => c.name === 'run-test' && c.args.args);
@@ -116,8 +118,9 @@ test('AI fix path with a scripted provider, then repo memory', async () => {
   const s = await heal(opts(dir, fakeEngine(dir), { provider }));
   assert.equal(s.results[0].status, 'FIXED');
   assert.equal(s.results[0].fix.by, 'ai');
-  const memory = JSON.parse(readFileSync(path.join(dir, '.autoheal/memory.json'), 'utf8'));
+  const memory = await loadMemory(dir);
   assert.equal(memory.entries[0].note, 'renamed button');
+  assert.ok(s.changedFiles.some((f) => f.startsWith('.autoheal/memory/')));
 });
 
 test('a fix that never passes is reverted and reported as unfixed', async () => {

@@ -7,6 +7,7 @@
 import { Client } from '@modelcontextprotocol/client';
 import { StdioClientTransport } from '@modelcontextprotocol/client/stdio';
 import { fileURLToPath } from 'node:url';
+import { VERSION } from './version.js';
 
 export interface ToolResult {
   ok: boolean;
@@ -60,7 +61,7 @@ export class McpTools implements ToolCaller {
       env: childEnv,
       stderr: env.AUTOHEAL_DEBUG ? 'inherit' : 'ignore',
     });
-    const client = new Client({ name: 'autoheal-ai', version: '0.1.0' });
+    const client = new Client({ name: 'autoheal-ai', version: VERSION });
     await client.connect(transport);
     return new McpTools(client);
   }

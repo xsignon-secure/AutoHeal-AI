@@ -52,6 +52,6 @@ jobs:
       - run: docker build -t autoheal-dashboard .
       - name: Smoke test
         run: |
-          docker run -d --name dash -p 8080:8080 -e AUTOHEAL_DASHBOARD_SECRET=ci-secret-0123456789-abcdefghijklmnop autoheal-dashboard
+          docker run -d --name dash -p 8080:8080 -e AUTOHEAL_DASHBOARD_SECRET=ci-secret-0123456789-abcdefghijklmnop -e AUTOHEAL_DASHBOARD_VIEW_TOKEN=ci-view-token-0123456789 autoheal-dashboard
           for i in $(seq 1 30); do curl -fsS http://127.0.0.1:8080/healthz && exit 0; sleep 1; done
           docker logs dash; exit 1

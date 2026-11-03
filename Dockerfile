@@ -1,6 +1,6 @@
 # Self-hosted AutoHeal dashboard.
 #   docker build -t autoheal-dashboard .
-#   docker run -p 8080:8080 -v autoheal-data:/data -e AUTOHEAL_DASHBOARD_SECRET=... autoheal-dashboard
+#   docker run -p 8080:8080 -v autoheal-data:/data -e AUTOHEAL_DASHBOARD_SECRET=... -e AUTOHEAL_DASHBOARD_VIEW_TOKEN=... autoheal-dashboard
 FROM node:22-slim AS build
 WORKDIR /app
 COPY package.json package-lock.json tsconfig.json ./

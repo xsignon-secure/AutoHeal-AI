@@ -15,11 +15,19 @@ It is MIT licensed and runs entirely on your GitHub runner. No AutoHeal server, 
 
 ## Why it is different
 
-- **Anti-cheat guard.** Every proposed change goes through two independent scans: the engine's heal guard and a local scan. A fix is blocked if it removes or weakens an assertion, deletes a test, adds `skip`, `only`, `fixme` or `xfail`, adds an early return, or swallows errors. It is also blocked if it adds code a test fix never needs, such as reading environment variables, starting processes, loading system modules or making raw network calls. Raised timeouts, fixed waits, `force: true` and retries are blocked too, unless you allow warnings.
+- **Anti-cheat guard.** Every proposed change goes through two independent scans: the engine's heal guard and a local scan. A fix may change *how* an element is found or waited for, never *what* the test expects. A fix is blocked if it does any of these:
+  - changes an expected text, value, URL or count;
+  - removes or weakens an assertion, or adds one that cannot fail;
+  - deletes a test, or adds `skip`, `only`, `fixme` or `xfail`;
+  - adds an early return, or swallows errors;
+  - fakes network answers, injects scripts or edits the page;
+  - adds code a test fix never needs (environment variables, processes, system modules, raw network calls) or hides such code behind built-up names and globals.
+
+  Raised timeouts, fixed waits, `force: true` and retries are blocked too, unless you allow warnings. The scan is a strong filter, not a proof. The stability rerun and your review of the draft PR are the other two layers.
 - **Stability proof.** A fix is kept only if the test passes `--repeat-each=5` and the rest of the file does not get worse. Anything else is reverted before the model even sees the result.
 - **Triage first, AI second.** Most failures are classified with no AI at all. Locator fixes that the engine can verify against the trace are applied by rules, using no tokens. The model is only asked when it is actually needed.
-- **Repo memory.** Fixes that worked are saved in `.autoheal/memory.json` in your repo. The agent reads them next time, so it learns your app's naming habits.
-- **Hard budgets.** The cost limit per job (`max-usd`, default $1), the number of AI calls and the number of tokens are all capped.
+- **Repo memory.** Fixes that worked are saved in your repo, one small file per fix under `.autoheal/memory/`, so two open fix PRs never conflict. The agent reads them next time, so it learns your app's naming habits.
+- **Hard budgets.** The cost limit per job (`max-usd`, default $1), the number of AI calls and the number of tokens are all capped. Before every AI call, AutoHeal checks that call's worst case (its estimated input plus the full output allowance), so no single call can cross the limit. The cost is an estimate from public prices; set `AUTOHEAL_PRICE_IN` and `AUTOHEAL_PRICE_OUT` if yours differ. When a limit stops the job, the report says so and nothing half-done is kept.
 - **Bring your own model.** Claude by default (`claude-opus-5-5`). OpenAI, or any OpenAI-compatible server (Ollama, vLLM, LM Studio), also works. With no key at all, it still triages, quarantines and applies rule-based fixes.
 
 It is built on [playwright-e2e-mcp](https://www.npmjs.com/package/playwright-e2e-mcp), which does the report reading, trace analysis, heal guard, flaky detection and quarantine.
@@ -57,13 +65,20 @@ That is it. The next failed run gets healed. You can also start it by hand from 
 
 ### Let your CI run on the fix PR
 
-PRs opened with the default `GITHUB_TOKEN` do not start other workflows; GitHub does this to prevent loops. If you want your tests to run on AutoHeal's PR, create a fine-grained PAT or a GitHub App token with *contents* and *pull requests* write access. Pass it as `github-token`:
+PRs opened with the default `GITHUB_TOKEN` do not start other workflows; GitHub does this to prevent loops. If you want your tests to run on AutoHeal's PR, use a token from a GitHub App. Install the App on this one repository only, with *contents* and *pull requests* write access. Its tokens expire after an hour:
 
 ```yaml
-- uses: xsignon-secure/AutoHeal-AI@v0.1.0
+- uses: actions/create-github-app-token@v1
+  id: app-token
   with:
-    github-token: ${{ secrets.AUTOHEAL_TOKEN }}
+    app-id: ${{ vars.AUTOHEAL_APP_ID }}
+    private-key: ${{ secrets.AUTOHEAL_APP_KEY }}
+- uses: xsignon-secure/AutoHeal-AI@v0.1.1
+  with:
+    github-token: ${{ steps.app-token.outputs.token }}
 ```
+
+A fine-grained PAT limited to this repository works too, but it lives longer, so prefer the App. Either way, AutoHeal keeps the token away from your tests and from every proposed fix: it is used only after them, to push the branch and open the PR.
 
 ## Modes
 
@@ -93,7 +108,7 @@ AutoHeal never pushes to your base branch, never auto-merges, and never runs on 
 | `quarantine-days` | `14` | Quarantine length for flaky tests |
 | `allow-warn` | `false` | Accept WARN findings (raised timeouts, fixed waits, `force`) |
 | `app-url` | | A running copy of the app, so the agent can check locators live |
-| `mocks-base-url` | | Live API to compare your mocks with |
+| `mocks-base-url` | | Live API to compare your mocks with (a shallow shape check, used as a triage hint only) |
 | `base-branch` | failed branch | Branch the fix PR targets |
 | `github-token` | `github.token` | Token for the fix branch, PRs and issues |
 | `dashboard-url`, `dashboard-secret` | | Your optional self-hosted dashboard |
@@ -133,12 +148,18 @@ The dashboard is a small Node server with SQLite that shows fixes, quarantines, 
 docker build -t autoheal-dashboard .
 docker run -p 8080:8080 -v autoheal-data:/data \
   -e AUTOHEAL_DASHBOARD_SECRET="$(openssl rand -hex 32)" \
-  -e AUTOHEAL_DASHBOARD_VIEW_TOKEN="choose-a-view-token" \
+  -e AUTOHEAL_DASHBOARD_VIEW_TOKEN="$(openssl rand -hex 24)" \
   -e AUTOHEAL_DASHBOARD_REPOS="your-org/your-repo" \
   autoheal-dashboard
 ```
 
 Then set `dashboard-url` and `dashboard-secret` in the workflow. Uploads are signed (HMAC-SHA256 with a 5 minute window). They carry labels, test titles, file paths and links only: no code, diffs, error text or secrets. Open the page once with `?token=<view token>`, and a cookie keeps you signed in.
+
+Securing it:
+- **A view token is required.** The dashboard refuses to start without one, unless you set `AUTOHEAL_DASHBOARD_PUBLIC=1` on purpose.
+- **Rate limiting.** After 20 failed sign-ins or bad signatures, a client address is locked out for 10 minutes. Bodies are capped at 256 KB, and nothing touches the database before the signature checks out.
+- **HTTPS.** Put the dashboard behind an HTTPS reverse proxy (Caddy, nginx, Cloudflare Tunnel) and never expose port 8080 directly. Behind your own proxy, set `AUTOHEAL_TRUST_PROXY=1` so lockouts apply to the real client address.
+- **Allowlist.** Set `AUTOHEAL_DASHBOARD_REPOS` so only your repos can upload.
 
 ## What it costs
 

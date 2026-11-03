@@ -58,6 +58,23 @@ export class Budget {
     return (this.inputTokens * this.price[0] + this.outputTokens * this.price[1]) / 1_000_000;
   }
 
+  /**
+   * The limit that the next call could break, judged by its worst case
+   * (estimated input plus the full output allowance), so a single call can
+   * never push the job past max-usd or max-tokens.
+   */
+  wouldExceed(estimatedInputTokens: number, maxOutputTokens: number): string | null {
+    const now = this.exceeded();
+    if (now) return now;
+    const tokens = this.inputTokens + this.outputTokens + estimatedInputTokens + maxOutputTokens;
+    if (tokens > this.limits.maxTokens) return `token limit (${this.limits.maxTokens}; the next call could need ${estimatedInputTokens + maxOutputTokens})`;
+    if (this.price) {
+      const next = (estimatedInputTokens * this.price[0] + maxOutputTokens * this.price[1]) / 1_000_000;
+      if (this.usd + next > this.limits.maxUsd) return `cost limit ($${this.limits.maxUsd.toFixed(2)}; the next call could cost up to $${next.toFixed(2)})`;
+    }
+    return null;
+  }
+
   /** The limit that was reached, or null while there is room left. */
   exceeded(): string | null {
     if (this.steps >= this.limits.maxSteps) return `step limit (${this.limits.maxSteps})`;

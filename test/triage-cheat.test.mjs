@@ -78,7 +78,8 @@ test('cheat scan: raised timeouts, fixed waits and force are warnings', () => {
   assert.equal(scanChange(base, base.replace('.click();', '.click({ timeout: 60000 });')).verdict, 'WARN');
   assert.equal(scanChange(base, base.replace("  await page.goto('/');", "  await page.goto('/');\n  await page.waitForTimeout(3000);")).verdict, 'WARN');
   assert.equal(scanChange(base, base.replace('.click();', '.click({ force: true });')).verdict, 'WARN');
-  assert.equal(scanChange(base, base.replace(".toHaveText('ok')", '.toBeTruthy()')).verdict, 'WARN');
+  // A weaker matcher also drops what the test expects, so it is now blocked outright.
+  assert.equal(scanChange(base, base.replace(".toHaveText('ok')", '.toBeTruthy()')).verdict, 'BLOCK');
 });
 
 test('cheat scan: python skips and xfail are blocked', () => {
@@ -106,4 +107,37 @@ test('cheat scan: code that reaches outside the test (secrets, processes, networ
   // Code that was already there and is only moved is fine.
   const withEnv = base.replace("  await page", "  const url = process.env.BASE_URL;\n  await page");
   assert.equal(scanChange(withEnv, withEnv.replace("name: 'Save'", "name: 'Save changes'")).verdict, 'PASS');
+});
+
+test('cheat scan: changing what the test expects is blocked (hiding an app bug), a locator change is not', () => {
+  const t = "test('p', async ({ page }) => {\n  await expect(page.getByTestId('price')).toHaveText('$10');\n  await expect(page).toHaveURL(/\\/pricing/);\n});\n";
+  const changed = scanChange(t, t.replace("'$10'", "'$12'"));
+  assert.equal(changed.verdict, 'BLOCK');
+  assert.ok(changed.findings.some((f) => f.rule === 'expectation-changed'));
+  assert.equal(scanChange(t, t.replace("toHaveText('$10')", "toContainText('$1')")).verdict, 'BLOCK');
+  assert.equal(scanChange(t, t.replace("getByTestId('price')", "getByRole('status', { name: 'Price' })")).verdict, 'PASS');
+  const py = 'def test_p(page):\n    assert page.locator("#price").inner_text() == "$10"\n';
+  assert.equal(scanChange(py, py.replace('#price', '[data-test=price]')).verdict, 'PASS');
+  assert.equal(scanChange(py, py.replace('"$10"', '"$12"')).verdict, 'BLOCK');
+});
+
+test('cheat scan: trivial assertions, faked network answers, DOM edits and obfuscated access are blocked', () => {
+  const t = "test('p', async ({ page }) => {\n  await page.goto('/pricing');\n  await expect(page.getByTestId('price')).toHaveText('$10');\n});\n";
+  const add = (line) => t.replace('  await expect', `${line}\n  await expect`);
+  const cases = {
+    'trivial-assertion': ['  expect(true).toBe(true);', "  expect('$10').toBe('$10');"],
+    'app-tampered': [
+      "  await page.route('**/api/price', (r) => r.fulfill({ body: '$10' }));",
+      "  await page.evaluate(() => { document.querySelector('[data-testid=price]').textContent = '$10'; });",
+      "  await page.addInitScript(() => {});",
+    ],
+    'unsafe-code': ["  const p = globalThis['pro' + 'cess'];", '  const k = this.constructor;', "  const x = window['fe' + 'tch'];"],
+  };
+  for (const [rule, lines] of Object.entries(cases)) {
+    for (const line of lines) {
+      const r = scanChange(t, add(line));
+      assert.equal(r.verdict, 'BLOCK', line);
+      assert.ok(r.findings.some((f) => f.rule === rule), `${line} → ${rule} (got ${r.findings.map((f) => f.rule)})`);
+    }
+  }
 });

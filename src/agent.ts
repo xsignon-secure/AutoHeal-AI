@@ -142,10 +142,10 @@ function toolSpecs(appUrl?: string): ToolSpec[] {
 export const SYSTEM_PROMPT = `You are AutoHeal, a careful senior test engineer fixing one failing Playwright test in CI.
 
 Rules you must follow:
-- Fix the test so it checks the same behaviour as before. Never delete, weaken or skip assertions, never add early returns, empty catch blocks, fixed waits (waitForTimeout/sleep), force: true, raised timeouts or retries. Such changes are blocked automatically and count against you.
+- Fix the test so it checks the same behaviour as before. Change how elements are found or waited for, never what the test expects to see: expected texts, values, URLs and counts stay exactly as they are. Never fake network answers (page.route), inject scripts or edit the page. Never delete, weaken or skip assertions, never add early returns, empty catch blocks, fixed waits (waitForTimeout/sleep), force: true, raised timeouts or retries. Such changes are blocked automatically and count against you.
 - Prefer user-facing locators: getByRole with an accessible name, getByLabel, getByText, then getByTestId. Avoid CSS chains and nth().
 - For timing problems, wait for the real condition with web-first assertions (await expect(locator).toBeVisible()) or waitForResponse, never a fixed delay.
-- If the evidence shows the app itself is wrong (for example the page shows a different value than the test expects), call give_up and say so. Hiding an app bug is the worst outcome.
+- If the evidence shows the app itself is wrong (for example the page shows a different value than the test expects), call give_up and say so. The same applies when the expected text itself changed in the app: a person decides whether that change is right. Hiding an app bug is the worst outcome.
 - Only change the failing test file or files it imports. Keep the rest of the file unchanged.
 - Be economical: read only what you need, and propose one complete fix at a time.`;
 
@@ -165,6 +165,13 @@ function initialPrompt(ctx: AgentContext): string {
     '',
     'Read the test file, then call propose_fix with the complete corrected file, or give_up.',
   ].join('\n');
+}
+
+/** A deliberately high estimate of a request's input tokens (about 3 characters per token). */
+export function estimateTokens(system: string, turns: Turn[], tools: ToolSpec[]): number {
+  let chars = system.length + JSON.stringify(tools).length;
+  for (const t of turns) chars += JSON.stringify(t.raw ?? t.parts).length;
+  return Math.ceil(chars / 3);
 }
 
 async function readText(abs: string): Promise<string> {
@@ -191,12 +198,13 @@ export async function aiFix(ctx: AgentContext): Promise<AgentResult> {
   let lastStability: AgentResult['stability'];
 
   for (;;) {
-    const limit = ctx.budget.exceeded();
+    const maxOut = ctx.maxTokensPerTurn ?? 16_000;
+    const limit = ctx.budget.wouldExceed(estimateTokens(SYSTEM_PROMPT, turns, tools), maxOut);
     if (limit) return { result: 'budget', explanation: `Stopped at the ${limit}.`, blockedAttempts, log, ...(lastGuard ? { guard: lastGuard } : {}), ...(lastStability ? { stability: lastStability } : {}) };
 
     let response;
     try {
-      response = await ctx.provider.chat({ system: SYSTEM_PROMPT, turns, tools, maxTokens: ctx.maxTokensPerTurn ?? 16_000 });
+      response = await ctx.provider.chat({ system: SYSTEM_PROMPT, turns, tools, maxTokens: maxOut });
     } catch (error) {
       const message = error instanceof ProviderError || error instanceof Error ? error.message : String(error);
       return { result: 'error', explanation: message, blockedAttempts, log };
@@ -330,7 +338,7 @@ const ROOT_CAUSES: RootCause[] = ['LOCATOR_DRIFT', 'HYDRATION_RACE', 'MOCK_DRIFT
  * parse leaves the deterministic triage untouched.
  */
 export async function aiTriage(provider: Provider, budget: Budget, failure: FailureInfo, current: Triage): Promise<Triage> {
-  if (budget.exceeded()) return current;
+  if (budget.wouldExceed(Math.ceil((failure.detail.slice(0, 8000).length + 1500) / 3), 2000)) return current;
   const prompt = [
     'Classify this Playwright test failure. Answer with JSON only:',
     '{"category": "TEST_BUG|APP_BUG|ENV", "rootCause": "LOCATOR_DRIFT|HYDRATION_RACE|MOCK_DRIFT|REGRESSION|TIMING|INFRA|UNKNOWN", "reason": "one sentence"}',
