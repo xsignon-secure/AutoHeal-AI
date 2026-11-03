@@ -4,6 +4,12 @@
 # with your own AI key. No XSignOn server is involved and nothing leaves the
 # runner except calls to the AI provider you choose.
 #
+# Two jobs:
+#   heal     runs your tests and the AI's proposed fixes with a READ-ONLY token
+#            and uploads a patch.
+#   publish  never runs your project's code: it checks the patch in a fresh
+#            checkout (paths, file types, no hooks) and opens the fix PR.
+#
 # Before you start:
 #   1. Set the name under `workflows:` below to the `name:` of your test workflow.
 #   2. In that test workflow, keep the report and traces as artifacts, e.g.
@@ -15,11 +21,21 @@
 #          with: { name: playwright-results, path: "playwright-report/\ntest-results/" }
 #   3. Add your AI key as a repository secret named ANTHROPIC_API_KEY
 #      (or OPENAI_API_KEY; see the README for local models).
+#   4. Settings > Actions > General > Workflow permissions: tick
+#      "Allow GitHub Actions to create and approve pull requests",
+#      or `gh pr create` fails with "not permitted to create pull requests".
+#   5. Make the heal job match your test job: the same Node or Python version,
+#      browsers, environment variables, secrets and services (database, app
+#      server). If AutoHeal cannot reproduce the failure it says so and changes
+#      nothing.
 #
 # Notes:
 #   - workflow_run only fires from the copy of this file on your default branch.
 #   - PRs opened with the default GITHUB_TOKEN do not start other workflows. Pass a
-#     PAT or GitHub App token as `github-token` if your CI should run on the fix PR.
+#     PAT or GitHub App token as `github-token` to the publish step if your CI
+#     should run on the fix PR.
+#   - Your AI key is in the heal job, where your tests and proposed fixes run.
+#     Use a key with a spend limit.
 
 name: AutoHeal AI
 
@@ -33,24 +49,22 @@ on:
         description: ID of the failed workflow run to heal
         required: true
       mode:
-        description: comment, draft-pr or pr
+        description: What AutoHeal should do with its fixes
+        type: choice
+        options: [draft-pr, pr, comment]
         default: draft-pr
 
-permissions:
-  contents: write
-  pull-requests: write
-  issues: write
-  actions: read
+permissions: {}
 
 concurrency:
-  # At most one heal attempt per commit; a second trigger waits.
-  group: autoheal-${{ github.event.workflow_run.head_sha || github.event.inputs.run_id }}
+  # At most one heal attempt per failed run; a second trigger waits.
+  group: autoheal-${{ github.event.workflow_run.id || github.event.inputs.run_id }}
   cancel-in-progress: false
 
 jobs:
   heal:
     # Only failed runs, never AutoHeal's own branches (no loops), and never
-    # runs from forks (their code would run with write access and your AI key).
+    # runs from forks (their code would run with your AI key).
     if: >-
       github.event_name == 'workflow_dispatch' ||
       (github.event.workflow_run.conclusion == 'failure' &&
@@ -58,12 +72,43 @@ jobs:
        github.event.workflow_run.head_repository.full_name == github.repository)
     runs-on: ubuntu-latest
     timeout-minutes: 45
+    permissions:
+      contents: read
+      actions: read
+    outputs:
+      run-id: ${{ steps.run.outputs.id }}
+      sha: ${{ steps.run.outputs.sha }}
+      branch: ${{ steps.run.outputs.branch }}
+      pr-number: ${{ steps.run.outputs.pr }}
+      blocked: ${{ steps.autoheal.outputs.blocked }}
+      has-result: ${{ steps.autoheal.outputs.has-result }}
     steps:
+      # Looks up the failed run, for manual runs too, so the right commit and
+      # branch are healed. Runs before any project code.
+      - name: Find the failed run
+        id: run
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RUN_ID: ${{ github.event.workflow_run.id || github.event.inputs.run_id }}
+        run: |
+          set -euo pipefail
+          [[ "$RUN_ID" =~ ^[0-9]+$ ]] || { echo "::error::run_id must be a number"; exit 1; }
+          info="$(gh api "repos/${GITHUB_REPOSITORY}/actions/runs/${RUN_ID}")"
+          head_repo="$(jq -r '.head_repository.full_name' <<< "$info")"
+          branch="$(jq -r '.head_branch' <<< "$info")"
+          if [ "$head_repo" != "$GITHUB_REPOSITORY" ]; then echo "::error::Run ${RUN_ID} is from a fork (${head_repo}); AutoHeal only heals runs from this repo."; exit 1; fi
+          if [[ "$branch" == autoheal/* ]]; then echo "::error::Run ${RUN_ID} is on an AutoHeal branch."; exit 1; fi
+          {
+            echo "id=${RUN_ID}"
+            echo "sha=$(jq -r '.head_sha' <<< "$info")"
+            echo "branch=${branch}"
+            echo "pr=$(jq -r '.pull_requests[0].number // ""' <<< "$info")"
+          } >> "$GITHUB_OUTPUT"
+
       - uses: actions/checkout@v4
         with:
-          ref: ${{ github.event.workflow_run.head_sha || github.sha }}
-          # No token on disk while tests and proposed fixes run; AutoHeal
-          # pushes the fix branch with its own token afterwards.
+          ref: ${{ steps.run.outputs.sha }}
+          # No token on disk while tests and proposed fixes run.
           persist-credentials: false
 
       - uses: actions/setup-node@v4
@@ -86,18 +131,58 @@ jobs:
       - name: Download the failed run's report and traces
         uses: actions/download-artifact@v4
         with:
-          run-id: ${{ github.event.workflow_run.id || github.event.inputs.run_id }}
+          run-id: ${{ steps.run.outputs.id }}
           github-token: ${{ github.token }}
           path: autoheal-artifacts
 
       - name: AutoHeal
-        uses: xsignon-secure/AutoHeal-AI@v0.1.2
+        id: autoheal
+        uses: xsignon-secure/AutoHeal-AI@v0.2.0
         with:
           report: autoheal-artifacts
           mode: ${{ github.event.inputs.mode || 'draft-pr' }}
+          run-id: ${{ steps.run.outputs.id }}
+          commit: ${{ steps.run.outputs.sha }}
+          branch: ${{ steps.run.outputs.branch }}
           anthropic-api-key: ${{ secrets.ANTHROPIC_API_KEY }}
           # openai-api-key: ${{ secrets.OPENAI_API_KEY }}
           # model: <your OpenAI model>
+          # price-in: '0'   # required for models AutoHeal has no price for
+          # price-out: '0'
           max-usd: '1.00'
+
+  publish:
+    needs: heal
+    if: always() && needs.heal.outputs.has-result == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: write
+      pull-requests: write
+      issues: write
+      actions: read
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.heal.outputs.sha }}
+          persist-credentials: false
+
+      - name: Download the heal result
+        uses: actions/download-artifact@v4
+        with:
+          name: autoheal-result
+          path: autoheal-result
+
+      - name: Publish
+        uses: xsignon-secure/AutoHeal-AI/publish@v0.2.0
+        with:
+          result-dir: autoheal-result
+          mode: ${{ github.event.inputs.mode || 'draft-pr' }}
+          base-branch: ${{ needs.heal.outputs.branch }}
+          run-id: ${{ needs.heal.outputs.run-id }}
+          commit: ${{ needs.heal.outputs.sha }}
+          pr-number: ${{ needs.heal.outputs.pr-number }}
+          blocked: ${{ needs.heal.outputs.blocked }}
+          # github-token: ${{ secrets.AUTOHEAL_TOKEN }}  # a PAT or App token lets CI run on the fix PR
           # dashboard-url: https://autoheal.example.com
           # dashboard-secret: ${{ secrets.AUTOHEAL_DASHBOARD_SECRET }}

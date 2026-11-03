@@ -17,6 +17,8 @@
  * AUTOHEAL_ALLOW_WARN=1.
  */
 
+import { checkAllowlist } from './allowlist.js';
+
 export type Verdict = 'PASS' | 'WARN' | 'BLOCK';
 
 export interface CheatFinding {
@@ -143,7 +145,7 @@ function missing(before: string[], after: string[]): string[] {
 const STRONG = /\.(?:toHaveText|toHaveValue|toHaveURL|toHaveTitle|toHaveCount|toHaveAttribute|toContainText|toEqual|toStrictEqual|toBe|toMatchAriaSnapshot|toHaveScreenshot)\s*\(/;
 const WEAK = /\.(?:toBeTruthy|toBeDefined|toBeFalsy|not\.toBeNull|toBeAttached)\s*\(/;
 
-export function scanChange(before: string, after: string): CheatReport {
+export function scanChange(before: string, after: string, file?: string): CheatReport {
   const a = stripComments(before);
   const b = stripComments(after);
   const findings: CheatFinding[] = [];
@@ -172,15 +174,19 @@ export function scanChange(before: string, after: string): CheatReport {
     block('swallowed-error', 'a promise error is now swallowed with .catch(() => {})');
   }
 
+  // The structural allowlist: locators, waits and literals only.
+  const allow = checkAllowlist(before, after, file);
+  for (const problem of allow.problems) block('outside-allowlist', `a fix may only change locators and waits; this change ${problem}`);
+
   const changed = missing(expectations(a), expectations(b));
   if (changed.length) {
     block('expectation-changed', `what the test expects changed (${changed.slice(0, 3).map((x) => JSON.stringify(x.slice(0, 60))).join(', ')}); if the app now shows something else, that is for a person to decide`);
   }
   if (count(b, TRIVIAL) > count(a, TRIVIAL)) block('trivial-assertion', 'an assertion that cannot fail was added');
-  if (count(b, TAMPER) > count(a, TAMPER)) block('app-tampered', 'the change fakes network answers, injects scripts or edits the page instead of testing it');
+  if (count(b, TAMPER) > count(a, TAMPER) || count(after, TAMPER) > count(before, TAMPER)) block('app-tampered', 'the change fakes network answers, injects scripts or edits the page instead of testing it');
 
   for (const [pattern, what] of ESCAPE) {
-    if (count(b, pattern) > count(a, pattern)) block('unsafe-code', `the change ${what}, which a test fix never needs`);
+    if (count(b, pattern) > count(a, pattern) || count(after, pattern) > count(before, pattern)) block('unsafe-code', `the change ${what}, which a test fix never needs`);
   }
 
   const timeoutPattern = /timeout\s*[:=]\s*(\d[\d_]*)/i;

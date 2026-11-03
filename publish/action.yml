@@ -1,0 +1,66 @@
+name: AutoHeal AI publish
+description: Second job of AutoHeal AI. Checks the heal job's patch in a fresh checkout and opens the fix PR, app-bug issues and comment. Never runs your project's code.
+author: xsignon-secure
+branding:
+  icon: git-pull-request
+  color: green
+
+inputs:
+  result-dir:
+    description: Folder where the heal job's result artifact was downloaded.
+    default: autoheal-result
+  mode:
+    description: "comment (explain only), draft-pr (default) or pr. Nothing is ever pushed to your base branch."
+    default: draft-pr
+  base-branch:
+    description: Branch the fix PR targets (the branch whose run failed).
+    required: true
+  run-id:
+    description: ID of the failed run.
+    required: true
+  commit:
+    description: Commit of the failed run (comment mode comments on it when there is no PR).
+    default: ''
+  pr-number:
+    description: Pull request of the failed run, for comment mode.
+    default: ''
+  blocked:
+    description: The heal job's blocked count; the job fails when it is above 0.
+    default: '0'
+  open-issues:
+    description: Open issues for confident app bugs. Set false to skip them.
+    default: 'true'
+  github-token:
+    description: Token for pushing the fix branch and opening PRs and issues. A PAT or GitHub App token also lets your CI run on the fix PR.
+    default: ${{ github.token }}
+  dashboard-url:
+    description: Your self-hosted AutoHeal dashboard (optional).
+    default: ''
+  dashboard-secret:
+    description: Signing secret shared with the dashboard (optional).
+    default: ''
+
+outputs:
+  pr-url:
+    description: The fix pull request, when one was opened or updated
+    value: ${{ steps.publish.outputs.pr-url }}
+
+runs:
+  using: composite
+  steps:
+    - name: Publish
+      id: publish
+      shell: bash
+      env:
+        RESULT_DIR: ${{ inputs.result-dir }}
+        MODE: ${{ inputs.mode }}
+        BASE_BRANCH: ${{ inputs.base-branch }}
+        RUN_ID: ${{ inputs.run-id }}
+        COMMIT: ${{ inputs.commit }}
+        PR_NUMBER: ${{ inputs.pr-number }}
+        BLOCKED: ${{ inputs.blocked }}
+        OPEN_ISSUES: ${{ inputs.open-issues }}
+        GH_TOKEN: ${{ inputs.github-token }}
+        DASHBOARD_URL: ${{ inputs.dashboard-url }}
+        DASHBOARD_SECRET: ${{ inputs.dashboard-secret }}
+      run: node "$GITHUB_ACTION_PATH/../scripts/publish.mjs"

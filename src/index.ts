@@ -1,5 +1,6 @@
 export { heal, outcomeOf, isPytestProject, type HealOptions } from './heal.js';
 export { triage, type Triage, type TriageInput, type Category, type RootCause } from './triage.js';
+export { checkAllowlist, tokenizeJs, tokenizePy } from './allowlist.js';
 export { scanChange, stripComments, type CheatReport, type CheatFinding, type Verdict } from './cheat.js';
 export { aiFix, aiTriage, safePath, relativeImports, SYSTEM_PROMPT } from './agent.js';
 export { Budget, PRICES, priceFor, type BudgetLimits, type BudgetSnapshot } from './budget.js';

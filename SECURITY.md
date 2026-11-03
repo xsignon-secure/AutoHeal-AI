@@ -2,9 +2,10 @@
 
 ## How AutoHeal protects your repository
 
-AutoHeal runs an AI model against your code inside CI with write access, so it is designed on the assumption that the model can be wrong or manipulated. Text in a page, a trace or a test file could try to instruct it.
+AutoHeal runs an AI model against your code inside CI, so it is designed on the assumption that the model can be wrong or manipulated. Text in a page, a trace, a test file or the repo memory could try to instruct it; the prompt marks all of these as data.
 
-- **No forks.** The workflow template skips runs from forks, so untrusted code never runs with your tokens or your AI key.
+- **Two jobs.** The heal job, where your tests and every proposed fix run, has a read-only token. It uploads a patch. The publish job never runs project code: in a fresh checkout it accepts only plain edits to existing source files plus AutoHeal's memory and quarantine files (no `.github/`, `.git/`, config files, new code files, symlinks, renames, deletes, mode changes or binary data), applies the patch with git hooks and fsmonitor off, and only then uses the write token.
+- **No forks.** The workflow template skips runs from forks, and manual runs look the run up and refuse forks too, so untrusted code never runs with your AI key.
 - **No loops.** Runs on `autoheal/*` branches are skipped, and a fix PR is never opened against one.
 - **Limited writes.** The model can only replace the failing test file or files it imports through relative paths. It cannot touch `.git`, `node_modules`, `.env*` or AutoHeal's own memory. It cannot create files.
 - **Two anti-cheat scans** on every change, and a final one over all changes. Blocked:
@@ -14,7 +15,7 @@ AutoHeal runs an AI model against your code inside CI with write access, so it i
 
   The scans are pattern based, so a determined obfuscation could still slip through. That is why every fix also runs without any token, must pass the stability rerun, and arrives as a draft PR for a person to review.
 - **Short-lived push token.** Use a GitHub App token, installed on the one repository and expiring after an hour, rather than a PAT. See the README.
-- **Secrets stay out of test runs.** Your tests, and every proposed fix, run in a child process without the AI key, the dashboard secret, `GITHUB_TOKEN`/`GH_TOKEN` or the Actions runtime tokens. The workflow checks out with `persist-credentials: false`, so no token sits in `.git/config` while tests run. The fix branch is pushed afterwards with the action's token.
+- **Secrets stay out of test runs.** Your tests, and every proposed fix, run in a child process without the AI key, the dashboard secret, `GITHUB_TOKEN`/`GH_TOKEN`, the Actions runtime tokens or `GITHUB_ENV`/`GITHUB_PATH`/`GITHUB_OUTPUT` (so they cannot change later steps). A run given as a URL is downloaded by a separate engine process that runs no tests. The workflow checks out with `persist-credentials: false`.
 - **Live page checks stay on your app.** With `app-url` set, the model can only open pages on that origin.
 - **The model cannot quarantine.** Only real reruns that pass and fail on the same code can mark a test flaky.
 - **Nothing is merged.** Fixes arrive as a (draft) PR for a human to review.
@@ -26,7 +27,7 @@ AutoHeal runs an AI model against your code inside CI with write access, so it i
   - The page sends a strict Content-Security-Policy and runs no scripts.
   - Run it behind HTTPS.
 - **Secrets are scrubbed** from everything that leaves the runner: the AI prompt, PRs, issues, comments, the job summary and `summary.json`. The scrubber knows common credential shapes and the values of every secret-looking environment variable. It is pattern based, so keep secrets out of test output in the first place.
-- **Known limits.** Reruns assume tests are isolated; shared state can make a good fix fail its proof, but it cannot make a bad fix pass. The mock check compares shapes only, so it is a triage hint, not proof. The cost limit is an estimate from public prices.
+- **Known limits.** The AI key is in the heal job's main process. Code running in that job as the same user (a test, or a proposed fix during its rerun) could read it from `/proc`, so use a key with a spend limit. The write token is never in that job. Reruns assume tests are isolated; shared state can make a good fix fail its proof, but it cannot make a bad fix pass. The mock check compares shapes only, so it is a triage hint, not proof. The cost limit is an estimate from public prices, and the job refuses to start with a model that has no price unless you set one. Third-party actions in the template are pinned to major versions; pin them to commit SHAs if your policy requires it.
 
 ## Reporting a vulnerability
 

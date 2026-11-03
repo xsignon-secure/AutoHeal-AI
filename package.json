@@ -1,6 +1,6 @@
 {
-  "name": "autoheal-ai",
-  "version": "0.1.2",
+  "name": "xsignon-autoheal",
+  "version": "0.2.0",
   "description": "Free, self-hosted AI agent that fixes failing Playwright tests inside your own GitHub Actions, with your own AI key. Triage first, anti-cheat guard, stability proof, evidence-first PRs.",
   "author": "xsignon-secure (https://github.com/xsignon-secure)",
   "license": "MIT",
@@ -13,12 +13,13 @@
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",
   "exports": { ".": { "types": "./dist/index.d.ts", "import": "./dist/index.js" } },
-  "files": ["dist", "templates", "scripts", "action.yml", "README.md", "LICENSE", "SECURITY.md"],
+  "files": ["dist", "templates", "scripts", "publish", "action.yml", "README.md", "LICENSE", "SECURITY.md", "CHANGELOG.md"],
   "engines": { "node": ">=22.13" },
   "scripts": {
     "clean": "node -e \"require('fs').rmSync('dist',{recursive:true,force:true})\"",
     "build": "npm run clean && tsc -p tsconfig.json",
     "typecheck": "tsc -p tsconfig.json --noEmit",
+    "check-dist": "npm run build && git diff --exit-code --stat -- dist",
     "test": "npm run build && node --test --test-reporter=spec test/*.test.mjs",
     "simulate": "npm run build && node simulation/run.mjs",
     "prepublishOnly": "npm test"
@@ -26,7 +27,7 @@
   "dependencies": {
     "@anthropic-ai/sdk": "^1.4.0",
     "@modelcontextprotocol/client": "^2.4.0",
-    "playwright-e2e-mcp": "^0.15.0"
+    "playwright-e2e-mcp": "0.15.0"
   },
   "devDependencies": {
     "@types/node": "^22.10.0",

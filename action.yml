@@ -10,7 +10,7 @@ inputs:
     description: Folder with the failed run's downloaded artifacts (Playwright JSON or blob report and test-results), a report file, or a run URL.
     default: autoheal-artifacts
   mode:
-    description: "comment (explain only), draft-pr (default) or pr. Nothing is ever pushed to your base branch."
+    description: "comment (explain only), draft-pr (default) or pr. Pass the same mode to the publish action."
     default: draft-pr
   working-directory:
     description: Folder of the Playwright (or pytest-playwright) project.
@@ -43,7 +43,7 @@ inputs:
     description: How long a flaky test stays quarantined.
     default: '14'
   allow-warn:
-    description: Accept anti-cheat WARN findings (raised timeouts, fixed waits, force). Default false blocks them.
+    description: Accept anti-cheat WARN findings (raised timeouts). Default false blocks them. Fixed waits and force are always blocked.
     default: 'false'
   app-url:
     description: URL of a running copy of the app, for live locator checks (optional).
@@ -51,18 +51,33 @@ inputs:
   mocks-base-url:
     description: Live API base URL to compare mocks with (optional).
     default: ''
-  base-branch:
-    description: Branch the fix PR targets. Default is the branch whose run failed.
+  open-issues:
+    description: Open issues for app bugs (only when AutoHeal is at least issue-min-confidence sure). Set false to list them in the job summary only.
+    default: 'true'
+  issue-min-confidence:
+    description: How sure AutoHeal must be (0 to 1) before it opens an app-bug issue.
+    default: '0.6'
+  price-in:
+    description: US dollars per million input tokens, for models AutoHeal has no price for (use 0 for a local model).
     default: ''
+  price-out:
+    description: US dollars per million output tokens, for models AutoHeal has no price for (use 0 for a local model).
+    default: ''
+  run-id:
+    description: ID of the failed run (the template resolves it for manual runs).
+    default: ''
+  commit:
+    description: Commit of the failed run.
+    default: ''
+  branch:
+    description: Branch of the failed run.
+    default: ''
+  result-name:
+    description: Name of the artifact the publish job downloads.
+    default: autoheal-result
   github-token:
-    description: Token for pushing the fix branch and opening PRs and issues. A PAT or GitHub App token also lets your CI run on the fix PR.
+    description: Only used to download a run given as a URL. The heal job needs no write access.
     default: ${{ github.token }}
-  dashboard-url:
-    description: Your self-hosted AutoHeal dashboard (optional).
-    default: ''
-  dashboard-secret:
-    description: Signing secret shared with the dashboard (optional).
-    default: ''
 
 outputs:
   outcome:
@@ -74,9 +89,9 @@ outputs:
   blocked:
     description: Number of fixes blocked by the anti-cheat guard
     value: ${{ steps.heal.outputs.blocked }}
-  pr-url:
-    description: The fix pull request, when one was opened or updated
-    value: ${{ steps.pr.outputs.pr-url }}
+  has-result:
+    description: true when a result was uploaded for the publish job
+    value: ${{ steps.package.outputs.result-dir != '' }}
 
 runs:
   using: composite
@@ -85,8 +100,9 @@ runs:
       shell: bash
       run: |
         cd "$GITHUB_ACTION_PATH"
-        npm ci --no-audit --no-fund --loglevel=error
-        npm run build --silent
+        node -e 'const [a,b]=process.versions.node.split(".").map(Number); if (a<22||(a===22&&b<13)) { console.error("::error::AutoHeal AI needs Node 22.13 or newer. Add actions/setup-node with node-version: 22 before this step."); process.exit(1) }'
+        # dist/ is prebuilt and committed, so only runtime packages are installed, with no install scripts.
+        npm ci --omit=dev --ignore-scripts --no-audit --no-fund --loglevel=error
 
     - name: Heal
       id: heal
@@ -107,10 +123,14 @@ runs:
         AUTOHEAL_ALLOW_WARN: ${{ inputs.allow-warn == 'true' && '1' || '' }}
         AUTOHEAL_APP_URL: ${{ inputs.app-url }}
         AUTOHEAL_MOCKS_BASE_URL: ${{ inputs.mocks-base-url }}
-        AUTOHEAL_RUN_ID: ${{ github.event.workflow_run.id || github.event.inputs.run_id || github.run_id }}
+        AUTOHEAL_OPEN_ISSUES: ${{ inputs.open-issues }}
+        AUTOHEAL_ISSUE_MIN_CONFIDENCE: ${{ inputs.issue-min-confidence }}
+        AUTOHEAL_PRICE_IN: ${{ inputs.price-in }}
+        AUTOHEAL_PRICE_OUT: ${{ inputs.price-out }}
+        AUTOHEAL_RUN_ID: ${{ inputs.run-id || github.event.workflow_run.id || github.event.inputs.run_id || github.run_id }}
         AUTOHEAL_RUN_URL: ${{ github.event.workflow_run.html_url }}
-        AUTOHEAL_COMMIT: ${{ github.event.workflow_run.head_sha || github.sha }}
-        AUTOHEAL_BRANCH: ${{ github.event.workflow_run.head_branch || github.ref_name }}
+        AUTOHEAL_COMMIT: ${{ inputs.commit || github.event.workflow_run.head_sha || github.sha }}
+        AUTOHEAL_BRANCH: ${{ inputs.branch || github.event.workflow_run.head_branch || github.ref_name }}
         AUTOHEAL_OWNER: '@${{ github.event.workflow_run.actor.login || github.actor }}'
         GITHUB_TOKEN: ${{ inputs.github-token }}
       run: |
@@ -118,106 +138,30 @@ runs:
         node "$GITHUB_ACTION_PATH/dist/cli.js" heal --report "$INPUT_REPORT" --out "$RUNNER_TEMP/autoheal-out"
         code=$?
         echo "exit-code=$code" >> "$GITHUB_OUTPUT"
-        # 3 = a fix was blocked: keep going so the good fixes still get a PR, fail at the end.
+        # 3 = a fix was blocked: the good fixes still get a PR; the publish job fails at the end.
         if [ "$code" != 0 ] && [ "$code" != 3 ]; then exit "$code"; fi
         exit 0
 
-    - name: Open or update the fix pull request
-      id: pr
-      if: steps.heal.outputs.changes == 'true' && inputs.mode != 'comment'
+    - name: Package the result
+      id: package
+      if: always() && steps.heal.outputs.exit-code != ''
       shell: bash
       working-directory: ${{ inputs.working-directory }}
       env:
-        GH_TOKEN: ${{ inputs.github-token }}
-        MODE: ${{ inputs.mode }}
-        BASE_INPUT: ${{ inputs.base-branch }}
-        FAILED_BRANCH: ${{ github.event.workflow_run.head_branch || github.ref_name }}
-        RUN_ID: ${{ github.event.workflow_run.id || github.event.inputs.run_id || github.run_id }}
-        CHANGED: ${{ steps.heal.outputs.changed-files }}
-        BODY: ${{ steps.heal.outputs.pr-body-file }}
-        FIXED: ${{ steps.heal.outputs.fixed }}
+        OUT: ${{ runner.temp }}/autoheal-out
+        RESULT: ${{ runner.temp }}/autoheal-result
       run: |
-        set -euo pipefail
-        branch="autoheal/${RUN_ID}"
-        base="${BASE_INPUT:-$FAILED_BRANCH}"
-        if [[ "$base" == autoheal/* ]]; then echo "Refusing to open a PR against another AutoHeal branch."; exit 0; fi
-        git config user.name "autoheal-ai[bot]"
-        git config user.email "autoheal-ai@users.noreply.github.com"
-        git checkout -B "$branch"
-        while IFS= read -r file; do
-          if [ -n "$file" ]; then git add -- "$file"; fi
-        done <<< "$CHANGED"
-        if git diff --cached --quiet; then echo "Nothing to commit."; exit 0; fi
-        git commit -q -m "test: AutoHeal fixes for failed run ${RUN_ID}" -m "Verified by the AutoHeal anti-cheat guard and a stability rerun."
-        # Push with the action's token (a PAT or App token lets CI run on the PR).
-        # The workflow checks out with persist-credentials: false, so no token
-        # sits in .git/config while tests and proposed fixes run.
-        auth=()
-        if [ -n "${GH_TOKEN:-}" ]; then
-          server="${GITHUB_SERVER_URL:-https://github.com}"
-          basic="$(printf 'x-access-token:%s' "$GH_TOKEN" | base64 | tr -d '\n')"
-          echo "::add-mask::${basic}"
-          auth=(-c "http.${server}/.extraheader=" -c "http.${server}/.extraheader=AUTHORIZATION: basic ${basic}")
-        fi
-        git "${auth[@]}" push --force origin "HEAD:refs/heads/${branch}"
-        title="AutoHeal: ${FIXED} test fix(es) for run ${RUN_ID}"
-        existing="$(gh pr list --head "$branch" --state open --json url --jq '.[0].url' || true)"
-        if [ -n "$existing" ]; then
-          gh pr edit "$existing" --body-file "$BODY" >/dev/null
-          url="$existing"
-        else
-          draft=""
-          if [ "$MODE" = "draft-pr" ]; then draft="--draft"; fi
-          url="$(gh pr create --base "$base" --head "$branch" --title "$title" --body-file "$BODY" $draft)"
-        fi
-        echo "pr-url=$url" >> "$GITHUB_OUTPUT"
-        echo "Fix PR: $url" >> "$GITHUB_STEP_SUMMARY"
+        node "$GITHUB_ACTION_PATH/scripts/package.mjs" "$OUT" "$RESULT"
+        echo "result-dir=$RESULT" >> "$GITHUB_OUTPUT"
 
-    - name: Open issues for app bugs
-      id: issues
-      if: steps.heal.outputs.issues-file != '' && inputs.mode != 'comment'
-      shell: bash
-      env:
-        GH_TOKEN: ${{ inputs.github-token }}
-        ISSUES: ${{ steps.heal.outputs.issues-file }}
-        OUT: ${{ steps.heal.outputs.out-dir }}
-      run: node "$GITHUB_ACTION_PATH/scripts/publish-issues.mjs" "$ISSUES" "$OUT"
-
-    - name: Post the report (comment mode)
-      if: inputs.mode == 'comment' && steps.heal.outputs.comment-file != ''
-      shell: bash
-      env:
-        GH_TOKEN: ${{ inputs.github-token }}
-        COMMENT: ${{ steps.heal.outputs.comment-file }}
-        PR_NUMBER: ${{ github.event.workflow_run.pull_requests[0].number }}
-        COMMIT: ${{ github.event.workflow_run.head_sha || github.sha }}
-      run: |
-        set -euo pipefail
-        if [ -n "$PR_NUMBER" ]; then
-          gh pr comment "$PR_NUMBER" --body-file "$COMMENT"
-        else
-          gh api "repos/${GITHUB_REPOSITORY}/commits/${COMMIT}/comments" -F "body=@${COMMENT}" >/dev/null
-        fi
-
-    - name: Send results to your dashboard
-      if: inputs.dashboard-url != '' && steps.heal.outputs.summary-file != ''
-      shell: bash
-      continue-on-error: true
-      env:
-        AUTOHEAL_DASHBOARD_URL: ${{ inputs.dashboard-url }}
-        AUTOHEAL_DASHBOARD_SECRET: ${{ inputs.dashboard-secret }}
-        SUMMARY: ${{ steps.heal.outputs.summary-file }}
-        ISSUES: ${{ steps.heal.outputs.issues-file }}
-        PR_URL: ${{ steps.pr.outputs.pr-url }}
-      run: |
-        args=(--summary "$SUMMARY")
-        if [ -n "$PR_URL" ]; then args+=(--pr-url "$PR_URL"); fi
-        if [ -n "$ISSUES" ]; then args+=(--issues "$ISSUES"); fi
-        node "$GITHUB_ACTION_PATH/dist/cli.js" upload "${args[@]}"
-
-    - name: Fail when a fix was blocked
-      if: steps.heal.outputs.exit-code == '3'
-      shell: bash
-      run: |
-        echo "::error title=AutoHeal blocked a fix::A proposed fix tried to weaken a test (BLOCKED_CHEATING). See the job summary."
-        exit 1
+    # The heal job only uploads a patch. The publish job (publish/action.yml)
+    # checks it in a fresh checkout and opens the PR, so the token that can
+    # push never shares a job with your tests or the AI's proposed fixes.
+    - name: Upload the result for the publish job
+      if: always() && steps.package.outputs.result-dir != ''
+      uses: actions/upload-artifact@v4
+      with:
+        name: ${{ inputs.result-name }}
+        path: ${{ steps.package.outputs.result-dir }}
+        retention-days: 3
+        if-no-files-found: ignore

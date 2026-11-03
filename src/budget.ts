@@ -33,7 +33,7 @@ export interface BudgetSnapshot {
 export function priceFor(model: string, env: NodeJS.ProcessEnv = process.env): [number, number] | null {
   const inEnv = Number(env.AUTOHEAL_PRICE_IN);
   const outEnv = Number(env.AUTOHEAL_PRICE_OUT);
-  if (env.AUTOHEAL_PRICE_IN && env.AUTOHEAL_PRICE_OUT && Number.isFinite(inEnv) && Number.isFinite(outEnv)) return [inEnv, outEnv];
+  if (env.AUTOHEAL_PRICE_IN && env.AUTOHEAL_PRICE_OUT && Number.isFinite(inEnv) && Number.isFinite(outEnv) && inEnv >= 0 && outEnv >= 0) return [inEnv, outEnv];
   return PRICES[model] ?? null;
 }
 
@@ -41,6 +41,9 @@ export class Budget {
   private steps = 0;
   private inputTokens = 0;
   private outputTokens = 0;
+  /** The current failure's share of what is left (see share()). */
+  private shareUsd = Infinity;
+  private shareTokens = Infinity;
 
   constructor(
     readonly limits: BudgetLimits,
@@ -59,6 +62,17 @@ export class Budget {
   }
 
   /**
+   * Gives the next failure an equal share of what is left, so the first hard
+   * failure cannot spend the whole job budget. Unspent money rolls over.
+   */
+  share(failuresLeft: number): void {
+    const n = Math.max(1, Math.floor(failuresLeft));
+    this.shareUsd = this.usd + Math.max(0, this.limits.maxUsd - this.usd) / n;
+    const used = this.inputTokens + this.outputTokens;
+    this.shareTokens = used + Math.max(0, this.limits.maxTokens - used) / n;
+  }
+
+  /**
    * The limit that the next call could break, judged by its worst case
    * (estimated input plus the full output allowance), so a single call can
    * never push the job past max-usd or max-tokens.
@@ -68,9 +82,11 @@ export class Budget {
     if (now) return now;
     const tokens = this.inputTokens + this.outputTokens + estimatedInputTokens + maxOutputTokens;
     if (tokens > this.limits.maxTokens) return `token limit (${this.limits.maxTokens}; the next call could need ${estimatedInputTokens + maxOutputTokens})`;
+    if (tokens > this.shareTokens) return `token share for this failure (${Math.floor(this.shareTokens)} of ${this.limits.maxTokens})`;
     if (this.price) {
       const next = (estimatedInputTokens * this.price[0] + maxOutputTokens * this.price[1]) / 1_000_000;
       if (this.usd + next > this.limits.maxUsd) return `cost limit ($${this.limits.maxUsd.toFixed(2)}; the next call could cost up to $${next.toFixed(2)})`;
+      if (this.usd + next > this.shareUsd) return `cost share for this failure ($${this.shareUsd.toFixed(2)} of $${this.limits.maxUsd.toFixed(2)})`;
     }
     return null;
   }
