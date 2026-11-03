@@ -156,3 +156,25 @@ test('dashboard: a flood of new clients does not lift an active lockout', async 
     { viewToken: 'view-token-1234567890', trustProxy: true },
   );
 });
+
+test('publish: the dashboard upload sends only known fields, with this repo name', async () => {
+  const { uploadDashboard } = await import('../scripts/publish.mjs');
+  const dir = mkdtempSync(path.join(os.tmpdir(), 'autoheal-up-'));
+  const secret = 'a-very-long-dashboard-secret-0123456789';
+  writeFileSync(path.join(dir, 'events.json'), JSON.stringify([{ id: 'abcdef0123456789', repo: 'evil/other', test_title: 't', file_path: 'a.spec.ts', status: 'FIXED', category: 'TEST_BUG', root_cause: 'LOCATOR_DRIFT', confidence: 0.9, tokens: 1, usd: 0, minutes_saved: 45, created_at: '2026-11-03T10:00:00.000Z', source: 'SECRET CODE' }]));
+  const store = new Store(path.join(dir, 'db.sqlite'));
+  const server = await startDashboard({ store, secret, port: 0, host: '127.0.0.1', viewToken: 'view-token-1234567890' });
+  Object.assign(process.env, { DASHBOARD_URL: `http://127.0.0.1:${server.address().port}`, DASHBOARD_SECRET: secret, GITHUB_REPOSITORY: 'acme/shop' });
+  try {
+    await uploadDashboard(dir, 'https://github.com/acme/shop/pull/1', []);
+    const [e] = store.events({ limit: 10 });
+    assert.equal(e.repo, 'acme/shop');
+    assert.equal(e.pr_url, 'https://github.com/acme/shop/pull/1');
+    assert.ok(!JSON.stringify(e).includes('SECRET'));
+  } finally {
+    delete process.env.DASHBOARD_URL;
+    delete process.env.DASHBOARD_SECRET;
+    await new Promise((r) => server.close(r));
+    store.close();
+  }
+});

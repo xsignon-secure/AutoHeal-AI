@@ -258,11 +258,33 @@ export async function uploadDashboard(dir, prUrl, issues) {
   const events = readJson(dir, 'events.json');
   if (!Array.isArray(events) || !events.length) return;
   const issueUrls = Object.fromEntries(issues.map((i) => [i.test, i.url]));
-  const clean = events.slice(0, 200).map((e) => {
-    const out = { ...e, repo: env.GITHUB_REPOSITORY ?? e.repo };
-    if (prUrl && (e.status === 'FIXED' || e.status === 'QUARANTINED')) out.pr_url = prUrl;
-    if (e.status === 'APP_BUG' && issueUrls[e.test_title]) out.issue_url = issueUrls[e.test_title];
-    return out;
+  // Only the known label fields, with the right types, leave the runner; the
+  // dashboard validates them again.
+  const str = (v, max) => (typeof v === 'string' ? v.slice(0, max) : undefined);
+  const num = (v) => (typeof v === 'number' && Number.isFinite(v) ? v : 0);
+  const clean = events.slice(0, 200).filter((e) => e && typeof e === 'object').map((e) => {
+    const out = {
+      id: str(e.id, 64),
+      repo: env.GITHUB_REPOSITORY ?? '',
+      run_id: str(e.run_id, 40),
+      run_url: str(e.run_url, 500),
+      commit_sha: str(e.commit_sha, 64),
+      branch: str(e.branch, 200),
+      test_title: str(e.test_title, 500),
+      file_path: str(e.file_path, 500),
+      status: str(e.status, 40),
+      category: str(e.category, 40),
+      root_cause: str(e.root_cause, 40),
+      confidence: num(e.confidence),
+      fix_by: str(e.fix_by, 40),
+      tokens: num(e.tokens),
+      usd: num(e.usd),
+      minutes_saved: num(e.minutes_saved),
+      created_at: str(e.created_at, 40),
+    };
+    if (prUrl && (out.status === 'FIXED' || out.status === 'QUARANTINED')) out.pr_url = prUrl;
+    if (out.status === 'APP_BUG' && issueUrls[out.test_title]) out.issue_url = issueUrls[out.test_title];
+    return Object.fromEntries(Object.entries(out).filter(([, v]) => v !== undefined));
   });
   const body = JSON.stringify({ version: 1, events: clean });
   const ts = Math.floor(Date.now() / 1000);

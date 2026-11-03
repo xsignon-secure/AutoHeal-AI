@@ -54,7 +54,8 @@ const SPEC_FILE = /(?:\.(?:spec|test)\.[cm]?[jt]sx?|(?:^|\/)test_[^/]*\.py|_test
 export async function findImporters(root, rel, maxFiles = 3000) {
     const found = [];
     const module = rel.endsWith('.py') ? rel.slice(0, -3).replace(/\//g, '.') : null;
-    const moduleRe = module ? new RegExp(`(?:^|\\n)\\s*(?:from\\s+${module.replace(/\./g, '\\.')}\\s+import|import\\s+${module.replace(/\./g, '\\.')}\\b)`) : null;
+    const escaped = module?.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    const moduleRe = escaped ? new RegExp(`(?:^|\\n)\\s*(?:from\\s+${escaped}\\s+import|import\\s+${escaped}\\b)`) : null;
     let seen = 0;
     async function walk(dir) {
         if (seen > maxFiles)
