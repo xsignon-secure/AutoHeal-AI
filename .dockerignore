@@ -1,0 +1,7 @@
+node_modules
+dist
+simulation
+test
+.git
+*.db
+.autoheal-out

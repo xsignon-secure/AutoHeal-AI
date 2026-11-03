@@ -1,0 +1,103 @@
+# AutoHeal AI: copy this file to .github/workflows/autoheal.yml in your repo.
+#
+# It runs after your Playwright workflow fails, on your own GitHub runner,
+# with your own AI key. No XSignOn server is involved and nothing leaves the
+# runner except calls to the AI provider you choose.
+#
+# Before you start:
+#   1. Set the name under `workflows:` below to the `name:` of your test workflow.
+#   2. In that test workflow, keep the report and traces as artifacts, e.g.
+#        reporter: [['list'], ['json', { outputFile: 'playwright-report/results.json' }]]
+#        use: { trace: 'retain-on-failure' }
+#      and after the tests:
+#        - uses: actions/upload-artifact@v4
+#          if: failure()
+#          with: { name: playwright-results, path: "playwright-report/\ntest-results/" }
+#   3. Add your AI key as a repository secret named ANTHROPIC_API_KEY
+#      (or OPENAI_API_KEY; see the README for local models).
+#
+# Notes:
+#   - workflow_run only fires from the copy of this file on your default branch.
+#   - PRs opened with the default GITHUB_TOKEN do not start other workflows. Pass a
+#     PAT or GitHub App token as `github-token` if your CI should run on the fix PR.
+
+name: AutoHeal AI
+
+on:
+  workflow_run:
+    workflows: ["Playwright Tests"]
+    types: [completed]
+  workflow_dispatch:
+    inputs:
+      run_id:
+        description: ID of the failed workflow run to heal
+        required: true
+      mode:
+        description: comment, draft-pr or pr
+        default: draft-pr
+
+permissions:
+  contents: write
+  pull-requests: write
+  issues: write
+  actions: read
+
+concurrency:
+  # At most one heal attempt per commit; a second trigger waits.
+  group: autoheal-${{ github.event.workflow_run.head_sha || github.event.inputs.run_id }}
+  cancel-in-progress: false
+
+jobs:
+  heal:
+    # Only failed runs, never AutoHeal's own branches (no loops), and never
+    # runs from forks (their code would run with write access and your AI key).
+    if: >-
+      github.event_name == 'workflow_dispatch' ||
+      (github.event.workflow_run.conclusion == 'failure' &&
+       !startsWith(github.event.workflow_run.head_branch, 'autoheal/') &&
+       github.event.workflow_run.head_repository.full_name == github.repository)
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.workflow_run.head_sha || github.sha }}
+          # No token on disk while tests and proposed fixes run; AutoHeal
+          # pushes the fix branch with its own token afterwards.
+          persist-credentials: false
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Install dependencies and browsers
+        run: |
+          npm ci
+          npx playwright install --with-deps chromium
+
+      # pytest-playwright projects: uncomment instead of the Node install above.
+      # - uses: actions/setup-python@v5
+      #   with: { python-version: '3.12' }
+      # - run: |
+      #     pip install -r requirements.txt
+      #     python -m playwright install --with-deps chromium
+
+      - name: Download the failed run's report and traces
+        uses: actions/download-artifact@v4
+        with:
+          run-id: ${{ github.event.workflow_run.id || github.event.inputs.run_id }}
+          github-token: ${{ github.token }}
+          path: autoheal-artifacts
+
+      - name: AutoHeal
+        uses: xsignon-secure/AutoHeal-AI@v0.1.0
+        with:
+          report: autoheal-artifacts
+          mode: ${{ github.event.inputs.mode || 'draft-pr' }}
+          anthropic-api-key: ${{ secrets.ANTHROPIC_API_KEY }}
+          # openai-api-key: ${{ secrets.OPENAI_API_KEY }}
+          # model: <your OpenAI model>
+          max-usd: '1.00'
+          # dashboard-url: https://autoheal.example.com
+          # dashboard-secret: ${{ secrets.AUTOHEAL_DASHBOARD_SECRET }}
