@@ -1,0 +1,10 @@
+{
+  "name": "autoheal-simulation-fixture",
+  "private": true,
+  "version": "0.0.0",
+  "description": "Dummy shop app + Playwright suite used by `npm run simulate`. Each test reproduces one kind of CI failure.",
+  "type": "module",
+  "devDependencies": {
+    "@playwright/test": "1.63.0"
+  }
+}

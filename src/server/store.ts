@@ -1,0 +1,159 @@
+/**
+ * Dashboard storage on Node's built-in SQLite (node:sqlite, Node 22.13+):
+ * one file, no database server, no extra dependency.
+ */
+
+import { DatabaseSync } from 'node:sqlite';
+import type { HealEvent } from '../upload.js';
+
+export const STATUSES = ['FIXED', 'QUARANTINED', 'FLAKY', 'BLOCKED_CHEATING', 'APP_BUG', 'ENV', 'UNFIXED'] as const;
+export const CATEGORIES = ['TEST_BUG', 'APP_BUG', 'FLAKY', 'ENV'] as const;
+export const ROOT_CAUSES = ['LOCATOR_DRIFT', 'HYDRATION_RACE', 'MOCK_DRIFT', 'REGRESSION', 'TIMING', 'INFRA', 'UNKNOWN'] as const;
+
+export const SCHEMA = `
+CREATE TABLE IF NOT EXISTS heal_events (
+  id            TEXT PRIMARY KEY,
+  repo          TEXT NOT NULL,
+  run_id        TEXT,
+  run_url       TEXT,
+  commit_sha    TEXT,
+  branch        TEXT,
+  test_title    TEXT NOT NULL,
+  file_path     TEXT NOT NULL,
+  status        TEXT NOT NULL,
+  category      TEXT NOT NULL,
+  root_cause    TEXT NOT NULL,
+  confidence    REAL NOT NULL,
+  fix_by        TEXT,
+  pr_url        TEXT,
+  issue_url     TEXT,
+  tokens        INTEGER NOT NULL DEFAULT 0,
+  usd           REAL NOT NULL DEFAULT 0,
+  minutes_saved INTEGER NOT NULL DEFAULT 0,
+  created_at    TEXT NOT NULL,
+  received_at   TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS heal_events_repo_created ON heal_events (repo, created_at DESC);
+CREATE INDEX IF NOT EXISTS heal_events_repo_title ON heal_events (repo, test_title);
+CREATE INDEX IF NOT EXISTS heal_events_status ON heal_events (status);
+`;
+
+export interface Stats {
+  repos: number;
+  events: number;
+  fixed: number;
+  fixPrs: number;
+  quarantined: number;
+  blocked: number;
+  appBugs: number;
+  env: number;
+  unfixed: number;
+  tokens: number;
+  usd: number;
+  minutesSaved: number;
+}
+
+export interface EventRow extends HealEvent {
+  received_at: string;
+}
+
+export class Store {
+  private readonly db: DatabaseSync;
+
+  constructor(file: string) {
+    this.db = new DatabaseSync(file);
+    this.db.exec('PRAGMA journal_mode = WAL;');
+    this.db.exec(SCHEMA);
+  }
+
+  upsert(events: HealEvent[]): number {
+    const stmt = this.db.prepare(`
+      INSERT INTO heal_events (id, repo, run_id, run_url, commit_sha, branch, test_title, file_path, status, category, root_cause,
+        confidence, fix_by, pr_url, issue_url, tokens, usd, minutes_saved, created_at, received_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      ON CONFLICT(id) DO UPDATE SET
+        status = excluded.status, category = excluded.category, root_cause = excluded.root_cause,
+        confidence = excluded.confidence, fix_by = excluded.fix_by,
+        pr_url = COALESCE(excluded.pr_url, heal_events.pr_url),
+        issue_url = COALESCE(excluded.issue_url, heal_events.issue_url),
+        tokens = excluded.tokens, usd = excluded.usd, minutes_saved = excluded.minutes_saved,
+        received_at = excluded.received_at`);
+    const now = new Date().toISOString();
+    this.db.exec('BEGIN');
+    try {
+      for (const e of events) {
+        stmt.run(
+          e.id, e.repo, e.run_id ?? null, e.run_url ?? null, e.commit_sha ?? null, e.branch ?? null, e.test_title, e.file_path,
+          e.status, e.category, e.root_cause, e.confidence, e.fix_by ?? null, e.pr_url ?? null, e.issue_url ?? null,
+          e.tokens, e.usd, e.minutes_saved, e.created_at, now,
+        );
+      }
+      this.db.exec('COMMIT');
+    } catch (error) {
+      this.db.exec('ROLLBACK');
+      throw error;
+    }
+    return events.length;
+  }
+
+  stats(repo?: string): Stats {
+    const where = repo ? 'WHERE repo = ?' : '';
+    const args = repo ? [repo] : [];
+    const row = this.db
+      .prepare(
+        `SELECT
+          COUNT(DISTINCT repo) AS repos,
+          COUNT(*) AS events,
+          COALESCE(SUM(status = 'FIXED'), 0) AS fixed,
+          COUNT(DISTINCT CASE WHEN status = 'FIXED' THEN pr_url END) AS fixPrs,
+          COALESCE(SUM(status = 'QUARANTINED'), 0) AS quarantined,
+          COALESCE(SUM(status = 'BLOCKED_CHEATING'), 0) AS blocked,
+          COALESCE(SUM(status = 'APP_BUG'), 0) AS appBugs,
+          COALESCE(SUM(status = 'ENV'), 0) AS env,
+          COALESCE(SUM(status IN ('UNFIXED', 'FLAKY')), 0) AS unfixed,
+          COALESCE(SUM(tokens), 0) AS tokens,
+          COALESCE(SUM(usd), 0) AS usd,
+          COALESCE(SUM(minutes_saved), 0) AS minutesSaved
+        FROM heal_events ${where}`,
+      )
+      .get(...args) as Record<string, number>;
+    return {
+      repos: Number(row.repos ?? 0),
+      events: Number(row.events ?? 0),
+      fixed: Number(row.fixed ?? 0),
+      fixPrs: Number(row.fixPrs ?? 0),
+      quarantined: Number(row.quarantined ?? 0),
+      blocked: Number(row.blocked ?? 0),
+      appBugs: Number(row.appBugs ?? 0),
+      env: Number(row.env ?? 0),
+      unfixed: Number(row.unfixed ?? 0),
+      tokens: Number(row.tokens ?? 0),
+      usd: Math.round(Number(row.usd ?? 0) * 10_000) / 10_000,
+      minutesSaved: Number(row.minutesSaved ?? 0),
+    };
+  }
+
+  events(filter: { repo?: string; status?: string; limit?: number } = {}): EventRow[] {
+    const clauses: string[] = [];
+    const args: string[] = [];
+    if (filter.repo) {
+      clauses.push('repo = ?');
+      args.push(filter.repo);
+    }
+    if (filter.status) {
+      clauses.push('status = ?');
+      args.push(filter.status);
+    }
+    const limit = Math.min(Math.max(1, Math.floor(filter.limit ?? 100)), 500);
+    const sql = `SELECT * FROM heal_events ${clauses.length ? `WHERE ${clauses.join(' AND ')}` : ''} ORDER BY created_at DESC, id LIMIT ${limit}`;
+    return this.db.prepare(sql).all(...args) as unknown as EventRow[];
+  }
+
+  repos(): string[] {
+    return (this.db.prepare('SELECT DISTINCT repo FROM heal_events ORDER BY repo').all() as Array<{ repo: string }>).map((r) => r.repo);
+  }
+
+  close(): void {
+    this.db.close();
+  }
+}

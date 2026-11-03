@@ -1,0 +1,6 @@
+node_modules/
+dist/
+*.log
+.autoheal-out/
+simulation/work/
+coverage/

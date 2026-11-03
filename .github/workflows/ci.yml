@@ -1,0 +1,57 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    strategy:
+      matrix:
+        node: [22, 24]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node }}
+          cache: npm
+      - run: npm ci
+      - run: npm test
+      - run: npm pack --dry-run
+
+  simulate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - name: Install the dummy shop's Playwright
+        working-directory: simulation/fixture
+        run: |
+          npm install --no-audit --no-fund
+          npx playwright install --with-deps chromium
+      - run: python3 -m pip install --user pyyaml
+      - run: git config --global user.email ci@example.com && git config --global user.name ci
+      - run: npm run simulate
+
+  dashboard-image:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - run: docker build -t autoheal-dashboard .
+      - name: Smoke test
+        run: |
+          docker run -d --name dash -p 8080:8080 -e AUTOHEAL_DASHBOARD_SECRET=ci-secret-0123456789-abcdefghijklmnop autoheal-dashboard
+          for i in $(seq 1 30); do curl -fsS http://127.0.0.1:8080/healthz && exit 0; sleep 1; done
+          docker logs dash; exit 1
