@@ -56,7 +56,10 @@ export class OpenAIProvider {
             tools: request.tools.map((t) => ({ type: 'function', function: { name: t.name, description: t.description, parameters: t.inputSchema } })),
             ...(official ? { max_completion_tokens: request.maxTokens } : { max_tokens: request.maxTokens }),
         };
-        const url = `${this.options.baseURL.replace(/\/+$/, '')}/chat/completions`;
+        let base = this.options.baseURL;
+        while (base.endsWith('/'))
+            base = base.slice(0, -1);
+        const url = `${base}/chat/completions`;
         let res;
         try {
             res = await fetch(url, {
