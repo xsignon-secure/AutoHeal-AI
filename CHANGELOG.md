@@ -2,6 +2,19 @@
 
 All notable changes to AutoHeal AI. Versions follow [semantic versioning](https://semver.org/).
 
+## 0.3.2 (2026-11-03)
+
+### Security
+From the re-audit of 0.3.0:
+- **Four cheats are now blocked.** Pointing the test at another page (a changed `goto`, `route` or `waitForURL`, a `data:` URL or any other URL written into the test), deleting a user action, `test['skip']()` and other computed access on `test`, and widening a locator with `.or()` or a whole-page selector.
+- **The publish job re-checks the patch on the trusted checkout.** It runs the anti-cheat scan again, and refuses files outside the new `allowed-paths` input and files that tools load or run (setup and teardown files, `__init__.py`, `sitecustomize.py`, `.pnpmfile.cjs`, gulp and grunt files, configs). The heal job's file list is no longer the limit.
+- **Quarantine and memory files are validated in publish.** A quarantine entry must be for a test the run found flaky and last at most `quarantine-days`, and existing entries cannot be removed. A memory file must have AutoHeal's exact fields and the file name derived from its content.
+- `@mentions` in PR, issue and comment text from the heal job no longer notify anyone.
+- Actions in the template and this repo's workflows are pinned to commit SHAs. CodeQL moves to v4.
+- The heal job in the template no longer uses the npm cache.
+
+Breaking: if a fix needs to change a file outside the default `allowed-paths`, set `allowed-paths` on the publish step.
+
 ## 0.3.1 (2026-11-03)
 
 ### Security

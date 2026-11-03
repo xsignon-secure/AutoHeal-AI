@@ -201,9 +201,9 @@ export function detectLang(file, source) {
 const ALLOWED = new Set([
     // Playwright locators (JS and Python names)
     'page', 'frame', 'locator', 'getByRole', 'getByText', 'getByLabel', 'getByPlaceholder', 'getByAltText', 'getByTitle', 'getByTestId',
-    'frameLocator', 'contentFrame', 'owner', 'first', 'last', 'nth', 'filter', 'and', 'or', 'has', 'hasText', 'hasNot', 'hasNotText', 'visible',
+    'frameLocator', 'contentFrame', 'owner', 'first', 'last', 'nth', 'filter', 'and', 'has', 'hasText', 'hasNot', 'hasNotText', 'visible',
     'get_by_role', 'get_by_text', 'get_by_label', 'get_by_placeholder', 'get_by_alt_text', 'get_by_title', 'get_by_test_id', 'frame_locator',
-    'content_frame', 'has_text', 'has_not', 'has_not_text', 'and_', 'or_',
+    'content_frame', 'has_text', 'has_not', 'has_not_text', 'and_',
     // locator options
     'name', 'exact', 'level', 'checked', 'pressed', 'selected', 'expanded', 'disabled', 'includeHidden', 'include_hidden', 'state',
     // waits and readiness checks
@@ -212,7 +212,7 @@ const ALLOWED = new Set([
     'to_be_hidden', 'to_be_attached', 'to_be_enabled', 'to_be_editable', 'to_be_in_viewport', 'timeout',
     // actions (a fix may retarget or change the action, never add logic)
     'click', 'dblclick', 'fill', 'press', 'pressSequentially', 'press_sequentially', 'check', 'uncheck', 'setChecked', 'set_checked', 'hover',
-    'focus', 'blur', 'clear', 'selectOption', 'select_option', 'tap', 'scrollIntoViewIfNeeded', 'scroll_into_view_if_needed', 'goto',
+    'focus', 'blur', 'clear', 'selectOption', 'select_option', 'tap', 'scrollIntoViewIfNeeded', 'scroll_into_view_if_needed',
     // plain values and receivers
     'true', 'false', 'True', 'False', 'None', 'null', 'undefined', 'this', 'self',
 ]);
@@ -228,7 +228,7 @@ const DENY = new Set([
     'setInputFiles', 'set_input_files', 'download', 'saveAs', 'save_as', 'env', 'environ', 'getenv', 'String', 'fromCharCode', 'chr', 'ord',
     'skip', 'only', 'fixme', 'fail', 'slow', 'setTimeout', 'waitForTimeout', 'wait_for_timeout', 'sleep', 'force', 'retries', 'not', 'not_to_be_visible',
     'catch', 'try', 'except', 'finally', 'pass', 'if', 'else', 'elif', 'while', 'for', 'const', 'let', 'var', 'new', 'lambda', 'class', 'with', 'yield',
-    'delete', 'void', 'typeof', 'instanceof', 'debugger',
+    'delete', 'void', 'typeof', 'instanceof', 'debugger', 'or', 'or_', 'goto', 'newPage', 'new_page', 'waitForNavigation', 'expect_navigation',
 ]);
 /** Removing these means removing a check or a test. */
 const PROTECTED = new Set([

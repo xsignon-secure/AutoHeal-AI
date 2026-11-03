@@ -5,6 +5,13 @@
 AutoHeal runs an AI model against your code inside CI, so it is designed on the assumption that the model can be wrong or manipulated. Text in a page, a trace, a test file or the repo memory could try to instruct it; the prompt marks all of these as data.
 
 - **Two jobs.** The heal job, where your tests and every proposed fix run, has a read-only token. It uploads a patch. The publish job never runs project code: in a fresh checkout it accepts only plain edits to existing source files plus AutoHeal's memory and quarantine files (no `.github/`, `.git/`, config files, new code files, symlinks, renames, deletes, mode changes or binary data), applies the patch with git hooks and fsmonitor off, and only then uses the write token.
+- **Publish re-checks everything.** Nothing the heal job sends is trusted. On its own fresh checkout, the publish job:
+  - runs the anti-cheat scan again on every changed file;
+  - refuses files outside `allowed-paths` and files that tools load or run;
+  - accepts a quarantine entry only for a test the run found flaky, for at most `quarantine-days`, and never removes one;
+  - accepts a memory file only with AutoHeal's exact fields and the file name AutoHeal derives from its content.
+
+  `@mentions` in PR, issue and comment text from the heal job are neutralized so they notify no one.
 - **No forks.** The workflow template skips runs from forks, and manual runs look the run up and refuse forks too, so untrusted code never runs with your AI key.
 - **No loops.** Runs on `autoheal/*` branches are skipped, and a fix PR is never opened against one.
 - **Limited writes.** The model can only replace the failing test file or files it imports through relative paths. It cannot touch `.git`, `node_modules`, `.env*` or AutoHeal's own memory. It cannot create files.
@@ -28,7 +35,7 @@ AutoHeal runs an AI model against your code inside CI, so it is designed on the 
   - The page sends a strict Content-Security-Policy and runs no scripts.
   - Run it behind HTTPS.
 - **Secrets are scrubbed** from everything that leaves the runner: the AI prompt, PRs, issues, comments, the job summary and `summary.json`. The scrubber knows common credential shapes and the values of every secret-looking environment variable. It is pattern based, so keep secrets out of test output in the first place.
-- **Known limits.** The AI key is in the heal job's main process. Code running in that job as the same user (a test, or a proposed fix during its rerun) could read it from `/proc`, so use a key with a spend limit. The write token is never in that job. Reruns assume tests are isolated; shared state can make a good fix fail its proof, but it cannot make a bad fix pass. The mock check compares shapes only, so it is a triage hint, not proof. The cost limit is an estimate from public prices, and the job refuses to start with a model that has no price unless you set one. Third-party actions in the template are pinned to major versions (they run on Node 24, so self-hosted runners need version 2.327.1 or newer); pin them to commit SHAs if your policy requires it.
+- **Known limits.** The AI key is in the heal job's main process. Code running in that job as the same user (a test, or a proposed fix during its rerun) could read it from `/proc`, so use a key with a spend limit. The write token is never in that job. Reruns assume tests are isolated; shared state can make a good fix fail its proof, but it cannot make a bad fix pass. The mock check compares shapes only, so it is a triage hint, not proof. The cost limit is an estimate from public prices, and the job refuses to start with a model that has no price unless you set one. Third-party actions in the template and in this repo's workflows are pinned to commit SHAs (Dependabot keeps them current). They run on Node 24, so self-hosted runners need version 2.327.1 or newer. The template refers to AutoHeal itself by tag; pin that to a commit SHA too if your policy requires it. The heal job uses no dependency cache, so nothing it saves can reach your other workflows.
 
 ## Reporting a vulnerability
 

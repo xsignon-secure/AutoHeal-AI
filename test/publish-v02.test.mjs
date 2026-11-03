@@ -49,8 +49,8 @@ test('publish: files are checked against the checkout', () => {
 
   assert.doesNotThrow(() => checkFiles(root, [{ path: 'tests/a.spec.ts', isNew: false }, { path: '.autoheal/memory/0123456789abcdef.json', isNew: true }], null));
   const bad = [
-    [{ path: 'playwright.config.ts', isNew: false }, /config file/],
-    [{ path: 'README.md', isNew: false }, /only source files/],
+    [{ path: 'playwright.config.ts', isNew: false }, /tools load or run/],
+    [{ path: 'README.md', isNew: false }, /outside allowed-paths/],
     [{ path: 'tests/new.spec.ts', isNew: true }, /new file not allowed/],
     [{ path: 'tests/missing.spec.ts', isNew: false }, /does not exist/],
     [{ path: 'linked/b.spec.ts', isNew: false }, /symlink/],

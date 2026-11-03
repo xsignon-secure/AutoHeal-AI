@@ -7,13 +7,22 @@
  * issues for confident app bugs, posts the comment (comment mode) and sends
  * the results to your dashboard. No dependencies; needs git and the gh CLI.
  *
+ * Nothing from the heal job is trusted. Here, on the trusted checkout, the
+ * job checks four things:
+ *   - each file is inside ALLOWED_PATHS;
+ *   - the anti-cheat scan passes again on every changed source file;
+ *   - quarantine entries are new or extended only within QUARANTINE_DAYS, and
+ *     only for tests the result reports as flaky;
+ *   - memory files have exactly AutoHeal's shape and name.
+ *
  * Settings come from the environment (publish/action.yml sets them):
  *   RESULT_DIR, MODE, BASE_BRANCH, RUN_ID, COMMIT, PR_NUMBER, BLOCKED,
- *   OPEN_ISSUES, GH_TOKEN, DASHBOARD_URL, DASHBOARD_SECRET
+ *   OPEN_ISSUES, GH_TOKEN, DASHBOARD_URL, DASHBOARD_SECRET, ALLOWED_PATHS,
+ *   ALLOW_WARN, QUARANTINE_DAYS
  */
 
 import { execFileSync } from 'node:child_process';
-import { createHmac } from 'node:crypto';
+import { createHash, createHmac } from 'node:crypto';
 import { appendFileSync, closeSync, constants, fstatSync, lstatSync, mkdtempSync, openSync, readFileSync, realpathSync, writeFileSync } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -26,7 +35,51 @@ const MAX_FILES = 60;
 const MAX_BODY = 60_000;
 const SOURCE = /\.(?:ts|tsx|mts|cts|js|jsx|mjs|cjs|py)$/;
 const NEW_OK = /(?:^|\/)(?:\.autoheal\/memory\/[0-9a-f]{16}\.json|playwright-quarantine\.json)$/;
-const CONFIG = /(?:^|\/)(?:[\w.-]+\.config\.[cm]?[jt]s|conftest\.py|setup\.py|noxfile\.py|package\.json)$/;
+/** Files that tools run or load on their own: never patched, even inside the allowed paths. */
+const CONFIG = /(?:^|\/)(?:[\w.-]+\.(?:config|setup|conf)\.[cm]?[jt]sx?|(?:global|jest|vitest|test)[-.]?(?:setup|teardown)[\w.-]*\.[cm]?[jt]sx?|conftest\.py|setup\.py|noxfile\.py|__init__\.py|__main__\.py|sitecustomize\.py|usercustomize\.py|package\.json|\.pnpmfile\.cjs|[gG]ulpfile\.[\w.]+|[gG]runtfile\.[\w.]+|Jakefile[\w.]*|\.eslintrc[\w.]*|\.babelrc[\w.]*|babel\.config[\w.]*)$/;
+/** Where fixes may land unless the workflow says otherwise. */
+export const DEFAULT_ALLOWED_PATHS = ['**/tests/**', '**/test/**', '**/e2e/**', '**/playwright/**', '**/*.spec.*', '**/*.test.*', '**/test_*.py', '**/*_test.py'];
+const QUARANTINE_FILE = /(?:^|\/)playwright-quarantine\.json$/;
+const MEMORY_FILE = /(?:^|\/)\.autoheal\/memory\/([0-9a-f]{16})\.json$/;
+
+const { scanChange } = await import(new URL('../dist/cheat.js', import.meta.url).href);
+
+/** Turns a path glob (`**`, `*`, `?`) into a matcher, without building a regex from the text. */
+export function globMatcher(glob) {
+  const g = glob.trim().replace(/^\.\//, '');
+  const match = (pi, si, s) => {
+    for (;;) {
+      if (pi === g.length) return si === s.length;
+      if (g.startsWith('**/', pi)) {
+        for (let k = si; k <= s.length; k++) if ((k === si || s[k - 1] === '/') && match(pi + 3, k, s)) return true;
+        return false;
+      }
+      if (g.startsWith('**', pi)) return true;
+      const c = g[pi];
+      if (c === '*') {
+        for (let k = si; k <= s.length; k++) {
+          if (match(pi + 1, k, s)) return true;
+          if (s[k] === '/') return false;
+        }
+        return false;
+      }
+      if (si >= s.length || (c === '?' ? s[si] === '/' : s[si] !== c)) return false;
+      pi++;
+      si++;
+    }
+  };
+  return (file) => g.length > 0 && g.length <= 200 && file.length <= 400 && match(0, 0, file);
+}
+
+export function allowedPaths(text) {
+  const list = (text ?? '').split(/[\n,]/).map((x) => x.trim()).filter(Boolean);
+  return (list.length ? list : DEFAULT_ALLOWED_PATHS).slice(0, 50).map(globMatcher);
+}
+
+/** Stops @mentions in text from the heal job from notifying people. */
+export function neutralize(text) {
+  return text.replace(/(^|[^\w`/.@-])@(?=[A-Za-z0-9])/g, '$1@\u200b');
+}
 
 export class Refused extends Error {}
 
@@ -117,13 +170,15 @@ export function parsePatch(patch) {
   return files;
 }
 
-/** Checks each patched file against the checkout. */
-export function checkFiles(root, files, changedList) {
+/** Checks each patched file against the checkout and the allowed paths. */
+export function checkFiles(root, files, changedList, allowed = allowedPaths(env.ALLOWED_PATHS)) {
   if (files.length > MAX_FILES) throw new Refused(`too many files (${files.length})`);
   const realRoot = realpathSync(root);
   for (const f of files) {
     if (changedList && !changedList.includes(f.path)) throw new Refused(`${f.path} is not in the list of healed files`);
-    if (CONFIG.test(f.path)) throw new Refused(`${f.path} is a config file; fixes may only change tests, page objects and AutoHeal's own files`);
+    const own = QUARANTINE_FILE.test(f.path) || MEMORY_FILE.test(f.path);
+    if (!own && CONFIG.test(f.path)) throw new Refused(`${f.path} is a file that tools load or run; fixes may only change tests and page objects`);
+    if (!own && !allowed.some((m) => m(f.path))) throw new Refused(`${f.path} is outside allowed-paths; fixes may only change tests and page objects there`);
     if (f.isNew) {
       if (!NEW_OK.test(f.path)) throw new Refused(`new file not allowed: ${f.path}`);
     } else if (!SOURCE.test(f.path) && !NEW_OK.test(f.path)) {
@@ -142,6 +197,94 @@ export function checkFiles(root, files, changedList) {
       throw new Refused(`${f.path} does not exist in the checkout`);
     }
   }
+}
+
+/** Re-runs the anti-cheat scan on each changed source file: the trusted copy before, the patched copy after. */
+export function rescan(root, files, befores, allowWarn = env.ALLOW_WARN === 'true') {
+  for (const f of files) {
+    if (!SOURCE.test(f.path)) continue;
+    const before = befores.get(f.path) ?? '';
+    const after = readRegular(path.join(root, f.path), 4 * 1024 * 1024) ?? '';
+    const report = scanChange(before, after, f.path);
+    const bad = report.findings.filter((x) => x.severity === 'BLOCK' || !allowWarn);
+    if (bad.length) throw new Refused(`${f.path} fails the anti-cheat scan here: ${bad.slice(0, 3).map((x) => `${x.rule} (${x.message})`).join('; ')}`);
+  }
+}
+
+const isoDay = (d) => d.toISOString().slice(0, 10);
+const str = (v, max) => typeof v === 'string' && v.length > 0 && v.length <= max && !/[\0-\x1f]/.test(v);
+
+/**
+ * Quarantine entries may only be added or extended, only for tests the result
+ * reports as QUARANTINED, and for at most QUARANTINE_DAYS from today.
+ */
+export function checkQuarantine(root, rel, beforeText, results, days = Number(env.QUARANTINE_DAYS) || 14, now = new Date()) {
+  const limit = Math.min(Math.max(Math.floor(days), 1), 90);
+  const parse = (text, what) => {
+    if (text === null || text === '') return { version: 1, entries: [] };
+    let q;
+    try {
+      q = JSON.parse(text);
+    } catch {
+      throw new Refused(`${rel}: ${what} is not valid JSON`);
+    }
+    if (!q || q.version !== 1 || !Array.isArray(q.entries)) throw new Refused(`${rel}: ${what} is not a quarantine file`);
+    return q;
+  };
+  const before = parse(beforeText, 'the checkout copy');
+  const after = parse(readRegular(path.join(root, rel), 1024 * 1024), 'the patched copy');
+  const key = (e) => `${e?.file}\n${e?.title}`;
+  const keep = new Map(before.entries.map((e) => [key(e), JSON.stringify(e)]));
+  for (const e of before.entries) {
+    if (!after.entries.some((x) => key(x) === key(e))) throw new Refused(`${rel}: the patch removes the quarantine entry for ${e.file} › ${e.title}`);
+  }
+  const flaky = new Set(
+    (Array.isArray(results) ? results : [])
+      .filter((r) => r?.status === 'QUARANTINED' && typeof r.failure?.file === 'string' && typeof r.failure?.title === 'string')
+      .map((r) => `${r.failure.file}\n${r.failure.title}`),
+  );
+  const latest = isoDay(new Date(now.getTime() + (limit + 1) * 86_400_000));
+  const dir = path.dirname(path.join(root, rel));
+  let changed = 0;
+  for (const e of after.entries) {
+    if (keep.get(key(e)) === JSON.stringify(e)) continue;
+    changed++;
+    if (!e || typeof e !== 'object' || Object.keys(e).some((k) => !['file', 'title', 'owner', 'reason', 'until', 'added', 'project'].includes(k))) throw new Refused(`${rel}: unexpected fields in a quarantine entry`);
+    if (!str(e.file, 400) || !str(e.title, 500) || !str(e.owner, 200) || !str(e.reason, 500)) throw new Refused(`${rel}: a quarantine entry is missing file, title, owner or reason`);
+    if (!safePath(e.file)) throw new Refused(`${rel}: bad test path ${JSON.stringify(e.file).slice(0, 80)}`);
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(String(e.until)) || e.until > latest) throw new Refused(`${rel}: ${e.file} › ${e.title} is quarantined until ${e.until}, more than ${limit} days (quarantine-days)`);
+    // Result titles are the full path ("file.spec.ts › describe › test"); the entry keeps the test's own title.
+    const sameTest = (k) => {
+      const [file, title] = k.split('\n');
+      return (file === e.file || file.endsWith(`/${e.file}`)) && (title === e.title || title.endsWith(` › ${e.title}`));
+    };
+    if (![...flaky].some(sameTest)) {
+      throw new Refused(`${rel}: ${e.file} › ${e.title} is not a test this run found flaky`);
+    }
+    const spec = readRegular(path.join(dir, e.file), 4 * 1024 * 1024);
+    if (spec === null || !spec.includes(e.title)) throw new Refused(`${rel}: ${e.file} › ${e.title} is not a test in this checkout`);
+  }
+  if (changed > Math.max(flaky.size, 0) || changed > 10) throw new Refused(`${rel}: ${changed} quarantine entries changed, but the run found ${flaky.size} flaky test(s)`);
+}
+
+/** A memory file must have AutoHeal's exact shape, and its name must be the hash AutoHeal gives it. */
+export function checkMemory(root, rel) {
+  const id = MEMORY_FILE.exec(rel)?.[1];
+  const text = readRegular(path.join(root, rel), 16 * 1024);
+  let e;
+  try {
+    e = JSON.parse(text ?? '');
+  } catch {
+    throw new Refused(`${rel}: not valid JSON`);
+  }
+  const keys = ['at', 'file', 'test', 'rootCause', 'before', 'after', 'note'];
+  if (!e || typeof e !== 'object' || Array.isArray(e) || Object.keys(e).some((k) => !keys.includes(k))) throw new Refused(`${rel}: unexpected fields`);
+  if (!str(e.at, 40) || Number.isNaN(Date.parse(e.at)) || !str(e.file, 400) || !str(e.test, 500) || !/^[\w-]{1,40}$/.test(String(e.rootCause))) {
+    throw new Refused(`${rel}: not an AutoHeal memory entry`);
+  }
+  for (const k of ['before', 'after', 'note']) if (e[k] !== undefined && (typeof e[k] !== 'string' || e[k].length > 301)) throw new Refused(`${rel}: ${k} is too long`);
+  const expect = createHash('sha256').update(`${e.file}\n${e.test}\n${e.after ?? ''}`).digest('hex').slice(0, 16);
+  if (id !== expect) throw new Refused(`${rel}: the file name does not match its content`);
 }
 
 function lstatOrNull(p) {
@@ -176,6 +319,10 @@ export function publishPatch({ root, dir, mode, base, runId, fixed }) {
   const changedList = changedText === null ? null : changedText.split('\n').filter(Boolean);
   const files = parsePatch(patch);
   checkFiles(root, files, changedList);
+  const befores = new Map(files.filter((f) => !f.isNew).map((f) => [f.path, readRegular(path.join(root, f.path), 4 * 1024 * 1024)]));
+  const memories = files.filter((f) => MEMORY_FILE.test(f.path));
+  const fixedCount = Math.max(Number(fixed) || 0, 0);
+  if (memories.length > Math.min(fixedCount * 3, 30)) throw new Refused(`${memories.length} memory files for ${fixedCount} fix(es)`);
 
   const branch = `autoheal/${runId}`;
   git(['checkout', '-q', '-B', branch], { cwd: root });
@@ -184,6 +331,13 @@ export function publishPatch({ root, dir, mode, base, runId, fixed }) {
   writeFileSync(checked, patch, { mode: 0o600 });
   git(['apply', '--check', '--whitespace=nowarn', checked], { cwd: root });
   git(['apply', '--whitespace=nowarn', checked], { cwd: root });
+  // The heal job's own checks are not trusted: run them again here.
+  rescan(root, files, befores);
+  const results = readJson(dir, 'summary.json')?.results;
+  for (const f of files) {
+    if (QUARANTINE_FILE.test(f.path)) checkQuarantine(root, f.path, befores.get(f.path) ?? null, results);
+    if (MEMORY_FILE.test(f.path)) checkMemory(root, f.path);
+  }
   git(['add', '--', ...files.map((f) => f.path)], { cwd: root });
   const staged = git(['diff', '--cached', '--name-only'], { cwd: root }).split('\n').filter(Boolean).sort();
   const expected = files.map((f) => f.path).sort();
@@ -192,7 +346,7 @@ export function publishPatch({ root, dir, mode, base, runId, fixed }) {
   git([...pushAuth(), 'push', '--force', 'origin', `HEAD:refs/heads/${branch}`], { cwd: root, stdio: ['ignore', 'pipe', 'inherit'] });
 
   const bodyFile = path.join(dir, 'pr-body.md');
-  const body = readText(dir, 'pr-body.md') ?? `AutoHeal fixes for failed run ${runId}.`;
+  const body = neutralize(readText(dir, 'pr-body.md') ?? `AutoHeal fixes for failed run ${runId}.`);
   writeFileSync(bodyFile, body);
   const existing = (() => {
     try {
@@ -225,8 +379,9 @@ export function publishIssues(dir) {
   for (const issue of list.slice(0, 10)) {
     if (typeof issue?.title !== 'string' || !issue.title.startsWith('AutoHeal') || issue.title.length > 200) continue;
     if (typeof issue.file !== 'string' || !/^issue-\d{1,2}\.md$/.test(issue.file)) continue;
-    const text = readText(dir, issue.file);
-    if (text === null) continue;
+    const raw = readText(dir, issue.file);
+    if (raw === null) continue;
+    const text = neutralize(raw);
     const bodyFile = path.join(dir, issue.file);
     writeFileSync(bodyFile, text);
     const existing = open.find((o) => o.title === issue.title);
@@ -244,7 +399,8 @@ export function publishIssues(dir) {
 }
 
 export function publishComment(dir) {
-  const text = readText(dir, 'comment.md');
+  const raw = readText(dir, 'comment.md');
+  const text = raw && neutralize(raw);
   if (!text) return;
   const file = path.join(dir, 'comment.md');
   writeFileSync(file, text);
@@ -290,7 +446,9 @@ export async function uploadDashboard(dir, prUrl, issues) {
   const ts = Math.floor(Date.now() / 1000);
   const signature = `sha256=${createHmac('sha256', env.DASHBOARD_SECRET).update(`${ts}.${body}`).digest('hex')}`;
   try {
-    const res = await fetch(`${env.DASHBOARD_URL.replace(/\/+$/, '')}/api/heal`, {
+    let base = env.DASHBOARD_URL;
+    while (base.endsWith('/')) base = base.slice(0, -1);
+    const res = await fetch(`${base}/api/heal`, {
       method: 'POST',
       headers: { 'content-type': 'application/json', 'x-autoheal-signature': signature, 'x-autoheal-timestamp': String(ts) },
       body,

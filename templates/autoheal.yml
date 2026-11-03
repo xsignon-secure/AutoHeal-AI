@@ -16,7 +16,7 @@
 #        reporter: [['list'], ['json', { outputFile: 'playwright-report/results.json' }]]
 #        use: { trace: 'retain-on-failure', screenshot: 'only-on-failure' }
 #      and after the tests:
-#        - uses: actions/upload-artifact@v7
+#        - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
 #          if: failure()
 #          with: { name: playwright-results, path: "playwright-report/\ntest-results/" }
 #   3. Add your AI key as a repository secret named ANTHROPIC_API_KEY
@@ -105,16 +105,18 @@ jobs:
             echo "pr=$(jq -r '.pull_requests[0].number // ""' <<< "$info")"
           } >> "$GITHUB_OUTPUT"
 
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ steps.run.outputs.sha }}
           # No token on disk while tests and proposed fixes run.
           persist-credentials: false
 
-      - uses: actions/setup-node@v7
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: 22
-          cache: npm
+          # No dependency cache here: this job runs proposed fixes, and a cache it
+          # saved would be restored by your other workflows.
+          cache: ''
 
       - name: Install dependencies and browsers
         run: |
@@ -129,7 +131,7 @@ jobs:
       #     python -m playwright install --with-deps chromium
 
       - name: Download the failed run's report and traces
-        uses: actions/download-artifact@v8
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           run-id: ${{ steps.run.outputs.id }}
           github-token: ${{ github.token }}
@@ -137,7 +139,8 @@ jobs:
 
       - name: AutoHeal
         id: autoheal
-        uses: xsignon-secure/AutoHeal-AI@v0.3.1
+        # Pin this (and publish below) to a commit SHA if your policy requires it.
+        uses: xsignon-secure/AutoHeal-AI@v0.3.2
         with:
           report: autoheal-artifacts
           mode: ${{ github.event.inputs.mode || 'draft-pr' }}
@@ -162,20 +165,22 @@ jobs:
       issues: write
       actions: read
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ needs.heal.outputs.sha }}
           persist-credentials: false
 
       - name: Download the heal result
-        uses: actions/download-artifact@v8
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           name: autoheal-result
           path: autoheal-result
 
       - name: Publish
-        uses: xsignon-secure/AutoHeal-AI/publish@v0.3.1
+        uses: xsignon-secure/AutoHeal-AI/publish@v0.3.2
         with:
+          # Folders a fix may change. Add yours if page objects live outside tests/ or e2e/.
+          # allowed-paths: 'tests/**, e2e/**, pages/**'
           result-dir: autoheal-result
           mode: ${{ github.event.inputs.mode || 'draft-pr' }}
           base-branch: ${{ needs.heal.outputs.branch }}
