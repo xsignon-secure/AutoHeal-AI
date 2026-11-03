@@ -18,6 +18,7 @@ function lookup(ctx, ref) {
   const m = /^(\w+)\.([\w-]+)(?:\.outputs\.([\w-]+))?(.*)$/.exec(ref);
   if (!m) return undefined;
   if (m[1] === 'inputs') return ctx.inputs[m[2]];
+  if (m[1] === 'runner') return ctx.runner?.[m[2]];
   if (m[1] === 'steps') return ctx.steps[m[2]]?.[m[3]];
   if (m[1] === 'github') {
     let value = ctx.github;
@@ -46,6 +47,7 @@ export function interpolate(ctx, text) {
 export function condition(ctx, expr) {
   const parts = expr.split('&&').map((p) => p.trim());
   return parts.every((p) => {
+    if (p === 'always()') return true;
     const eq = /^(.+?)\s*(==|!=)\s*'([^']*)'$/.exec(p);
     if (!eq) return Boolean(evaluate(ctx, p));
     const value = String(lookup(ctx, eq[1].trim()) ?? '');
@@ -72,19 +74,24 @@ else if (has('issue', 'create')) process.stdout.write('https://github.com/acme/s
 }
 
 /**
- * Runs every step of the action in order. `skip` names steps to skip (the
+ * Runs every `run:` step of the action in order (`uses:` steps are skipped). `skip` names steps to skip (the
  * install step, which the simulation replaces with the local build).
  */
 export function runAction({ actionDir, projectDir, inputs, github, env, skip = [], seed = {} }) {
   const action = loadAction(path.join(actionDir, 'action.yml'));
   const defaults = Object.fromEntries(Object.entries(action.inputs).map(([k, v]) => [k, v.default ?? '']));
-  const ctx = { inputs: { ...defaults, ...inputs }, steps: { ...seed }, github };
-  ctx.inputs['github-token'] = inputs['github-token'] ?? 'fake-token';
   const temp = path.join(projectDir, '.runner-temp');
   mkdirSync(temp, { recursive: true });
+  const ctx = { inputs: { ...defaults, ...inputs }, steps: { ...seed }, github, runner: { temp } };
+  ctx.inputs['github-token'] = inputs['github-token'] ?? 'fake-token';
   const log = [];
   for (const step of action.runs.steps) {
     if (skip.includes(step.name)) continue;
+    // `uses:` steps (upload-artifact) are GitHub's own; the scenario copies the files itself.
+    if (step.uses) {
+      log.push({ step: step.name, uses: step.uses, skipped: true });
+      continue;
+    }
     if (step.if && !condition(ctx, step.if)) {
       log.push({ step: step.name, skipped: true });
       continue;

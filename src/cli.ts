@@ -11,7 +11,9 @@ import { pathToFileURL } from 'node:url';
 import { parseArgs } from 'node:util';
 import { commentBody, issueBody, issueTitle, jobSummary, prBody } from './evidence.js';
 import { heal } from './heal.js';
+import { priceFor } from './budget.js';
 import { ConfigError, providerFromEnv } from './providers/index.js';
+import { redactDeep } from './redact.js';
 import { findReport } from './report-files.js';
 import type { HealSummary, Mode } from './types.js';
 import { eventsFrom, uploadEvents } from './upload.js';
@@ -41,6 +43,9 @@ heal options (each also reads the AUTOHEAL_* variable in brackets):
   --mocks-base-url <u>   live API to compare mocks with [AUTOHEAL_MOCKS_BASE_URL]
   --no-flaky-check       skip the flaky rerun
   --allow-warn           accept anti-cheat WARN findings (default: block them)
+
+Also read: AUTOHEAL_PRICE_IN, AUTOHEAL_PRICE_OUT (USD per million tokens; required
+for models with no built-in price), AUTOHEAL_OPEN_ISSUES, AUTOHEAL_ISSUE_MIN_CONFIDENCE.
 
 AI provider (bring your own key; none = deterministic fixes only):
   ANTHROPIC_API_KEY (default model claude-opus-5-5), or OPENAI_API_KEY + AUTOHEAL_MODEL,
@@ -139,12 +144,18 @@ async function cmdHeal(argv: string[]): Promise<number> {
   }
 
   const provider = providerFromEnv(env);
+  // Fail closed: without a price the dollar limit cannot work.
+  if (provider && provider.name !== 'scripted' && !priceFor(provider.model, env)) {
+    throw new ConfigError(
+      `AutoHeal has no price for model "${provider.model}", so the cost limit cannot work. Set AUTOHEAL_PRICE_IN and AUTOHEAL_PRICE_OUT (US dollars per million input and output tokens; 0 and 0 for a local model).`,
+    );
+  }
   const outDir = path.resolve(values.out ?? env.AUTOHEAL_OUT ?? '.autoheal-out');
   const log = (line: string) => process.stderr.write(`[autoheal] ${line}\n`);
   log(`AutoHeal ${VERSION} · mode ${mode} · provider ${provider ? `${provider.name} (${provider.model})` : 'none (deterministic fixes only)'}`);
   const appUrl = values['app-url'] ?? env.AUTOHEAL_APP_URL;
   const mocksBaseUrl = values['mocks-base-url'] ?? env.AUTOHEAL_MOCKS_BASE_URL;
-  const summary = await heal({
+  const rawSummary = await heal({
     projectRoot,
     report,
     ...(traceDirs ? { traceDirs } : {}),
@@ -167,6 +178,8 @@ async function cmdHeal(argv: string[]): Promise<number> {
     run: runInfo(),
     log,
   });
+  // Belt and braces: scrub every string before anything is written or posted.
+  const summary = redactDeep(rawSummary);
 
   await mkdir(outDir, { recursive: true });
   await writeFile(path.join(outDir, 'summary.json'), `${JSON.stringify(summary, null, 2)}\n`);
@@ -184,12 +197,16 @@ async function cmdHeal(argv: string[]): Promise<number> {
     await writeFile(path.join(outDir, 'pr-body.md'), prBody(summary));
     outputs['pr-body-file'] = path.join(outDir, 'pr-body.md');
   }
-  const appBugs = summary.results.filter((r) => r.status === 'APP_BUG');
+  // Issues only for confident app bugs; the rest are listed in the job summary.
+  const minConfidence = numOption(undefined, env.AUTOHEAL_ISSUE_MIN_CONFIDENCE, 0.6, 'AUTOHEAL_ISSUE_MIN_CONFIDENCE');
+  const appBugs = env.AUTOHEAL_OPEN_ISSUES === 'false' ? [] : summary.results.filter((r) => r.status === 'APP_BUG' && r.confidence >= minConfidence).slice(0, 10);
   const issues = appBugs.map((r, i) => ({ title: issueTitle(r), test: r.failure.title, file: `issue-${i + 1}.md` }));
   for (const [i, r] of appBugs.entries()) await writeFile(path.join(outDir, `issue-${i + 1}.md`), issueBody(summary, r));
   await writeFile(path.join(outDir, 'issues.json'), `${JSON.stringify(issues, null, 2)}\n`);
   outputs['issues-file'] = path.join(outDir, 'issues.json');
   await writeFile(path.join(outDir, 'comment.md'), commentBody(summary));
+  // Dashboard events (labels only), so the publish job can upload them without installing anything.
+  await writeFile(path.join(outDir, 'events.json'), `${JSON.stringify(eventsFrom(summary), null, 2)}\n`);
   outputs['comment-file'] = path.join(outDir, 'comment.md');
   await writeGithubOutputs(outputs);
   if (env.GITHUB_STEP_SUMMARY) await appendFile(env.GITHUB_STEP_SUMMARY, jobSummary(summary));
@@ -244,7 +261,10 @@ async function cmdDashboard(argv: string[]): Promise<number> {
   if (viewToken && viewToken.length < 16) throw new ConfigError('AUTOHEAL_DASHBOARD_VIEW_TOKEN must be at least 16 characters.');
   const { MIN_SECRET_LENGTH } = await import('./signing.js');
   if (secret.length < MIN_SECRET_LENGTH) throw new ConfigError(`AUTOHEAL_DASHBOARD_SECRET must be at least ${MIN_SECRET_LENGTH} characters.`);
-  const store = new Store(values.db ?? process.env.AUTOHEAL_DB ?? 'autoheal.db');
+  const store = new Store(
+    values.db ?? process.env.AUTOHEAL_DB ?? 'autoheal.db',
+    intOption(undefined, process.env.AUTOHEAL_DASHBOARD_MAX_EVENTS, 100_000, 'AUTOHEAL_DASHBOARD_MAX_EVENTS', 100, 10_000_000),
+  );
   const server = await startDashboard({
     store,
     secret,

@@ -17,6 +17,8 @@
  * AUTOHEAL_ALLOW_WARN=1.
  */
 
+import { checkAllowlist } from './allowlist.js';
+
 export type Verdict = 'PASS' | 'WARN' | 'BLOCK';
 
 export interface CheatFinding {
@@ -32,10 +34,23 @@ export interface CheatReport {
 
 /** Strip comments so commented-out code neither counts nor hides. */
 export function stripComments(source: string): string {
-  return source
-    .replace(/\/\*[\s\S]*?\*\//g, '')
+  return stripBlockComments(source)
     .replace(/(^|[^:"'`\\/])\/\/[^\n]*/g, '$1')
     .replace(/^\s*#[^\n]*$/gm, '');
+}
+
+/** Removes block comments in one linear pass (a lazy regex is quadratic on an unclosed "/*"). */
+function stripBlockComments(source: string): string {
+  let out = '';
+  let i = 0;
+  for (;;) {
+    const start = source.indexOf('/*', i);
+    if (start === -1) return out + source.slice(i);
+    const end = source.indexOf('*/', start + 2);
+    if (end === -1) return out + source.slice(i); // unclosed: left as is, like the old regex
+    out += source.slice(i, start);
+    i = end + 2;
+  }
 }
 
 function count(source: string, pattern: RegExp): number {
@@ -98,6 +113,14 @@ const TRIVIAL = /\bexpect(?:\.soft)?\s*\(\s*(?:true|false|null|undefined|-?\d+(?
  */
 const EXPECTATION = /\.(?:not\.)?(?:toHaveText|toContainText|toHaveValue|toHaveValues|toHaveURL|toHaveTitle|toHaveCount|toHaveAttribute|toHaveClass|toHaveCSS|toHaveId|toHaveJSProperty|toHaveAccessibleName|toHaveAccessibleDescription|toHaveRole|toEqual|toStrictEqual|toBe|toMatch|toContain|toHaveLength|toHaveProperty|toBeGreaterThan|toBeGreaterThanOrEqual|toBeLessThan|toBeLessThanOrEqual|toBeCloseTo|to_have_text|to_contain_text|to_have_value|to_have_values|to_have_url|to_have_title|to_have_count|to_have_attribute|to_have_class|to_have_css|to_have_id|to_have_js_property|to_have_accessible_name|to_have_role)\s*\(([^()]*(?:\([^()]*\)[^()]*)*)\)|^\s*assert\s+(.+)$/gm;
 
+function declaration(source: string, name: string): string | undefined {
+  const n = name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  const js = new RegExp(`\\b(?:const|let|var)\\s+${n}\\s*(?::[^=\\n]+)?=\\s*([^;\\n]+)`).exec(source);
+  if (js?.[1] !== undefined) return js[1].trim();
+  const py = new RegExp(`^\\s*${n}\\s*(?::[^=\\n]+)?=\\s*(?!=)(.+)$`, 'm').exec(source);
+  return py?.[1]?.trim();
+}
+
 export function expectations(source: string): string[] {
   const out: string[] = [];
   for (const m of source.matchAll(EXPECTATION)) {
@@ -107,7 +130,15 @@ export function expectations(source: string): string[] {
       const parts = value.split(/\s(?:==|!=|>=|<=|>|<|not in|in|is not|is)\s/);
       value = parts.length > 1 ? (parts[parts.length - 1] ?? value) : value;
     }
-    out.push(value.replace(/\s+/g, ' ').trim());
+    value = value.replace(/\s+/g, ' ').trim();
+    out.push(value);
+    // Follow a variable to where it is set in this file, so moving the
+    // expected value into `const price = '$12'` changes the expectation too.
+    for (const name of value.match(/\b[A-Za-z_$][\w$]*\b/g) ?? []) {
+      if (/^(?:true|false|null|undefined|new|RegExp|String|Number|await|this|None|True|False)$/.test(name)) continue;
+      const init = declaration(source, name);
+      if (init !== undefined) out.push(`${name} = ${init}`);
+    }
   }
   return out;
 }
@@ -127,7 +158,7 @@ function missing(before: string[], after: string[]): string[] {
 const STRONG = /\.(?:toHaveText|toHaveValue|toHaveURL|toHaveTitle|toHaveCount|toHaveAttribute|toContainText|toEqual|toStrictEqual|toBe|toMatchAriaSnapshot|toHaveScreenshot)\s*\(/;
 const WEAK = /\.(?:toBeTruthy|toBeDefined|toBeFalsy|not\.toBeNull|toBeAttached)\s*\(/;
 
-export function scanChange(before: string, after: string): CheatReport {
+export function scanChange(before: string, after: string, file?: string): CheatReport {
   const a = stripComments(before);
   const b = stripComments(after);
   const findings: CheatFinding[] = [];
@@ -156,15 +187,19 @@ export function scanChange(before: string, after: string): CheatReport {
     block('swallowed-error', 'a promise error is now swallowed with .catch(() => {})');
   }
 
+  // The structural allowlist: locators, waits and literals only.
+  const allow = checkAllowlist(before, after, file);
+  for (const problem of allow.problems) block('outside-allowlist', `a fix may only change locators and waits; this change ${problem}`);
+
   const changed = missing(expectations(a), expectations(b));
   if (changed.length) {
     block('expectation-changed', `what the test expects changed (${changed.slice(0, 3).map((x) => JSON.stringify(x.slice(0, 60))).join(', ')}); if the app now shows something else, that is for a person to decide`);
   }
   if (count(b, TRIVIAL) > count(a, TRIVIAL)) block('trivial-assertion', 'an assertion that cannot fail was added');
-  if (count(b, TAMPER) > count(a, TAMPER)) block('app-tampered', 'the change fakes network answers, injects scripts or edits the page instead of testing it');
+  if (count(b, TAMPER) > count(a, TAMPER) || count(after, TAMPER) > count(before, TAMPER)) block('app-tampered', 'the change fakes network answers, injects scripts or edits the page instead of testing it');
 
   for (const [pattern, what] of ESCAPE) {
-    if (count(b, pattern) > count(a, pattern)) block('unsafe-code', `the change ${what}, which a test fix never needs`);
+    if (count(b, pattern) > count(a, pattern) || count(after, pattern) > count(before, pattern)) block('unsafe-code', `the change ${what}, which a test fix never needs`);
   }
 
   const timeoutPattern = /timeout\s*[:=]\s*(\d[\d_]*)/i;

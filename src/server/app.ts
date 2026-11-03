@@ -9,11 +9,11 @@
  *
  * AUTOHEAL_DASHBOARD_SECRET (32+ chars) signs uploads. When
  * AUTOHEAL_DASHBOARD_VIEW_TOKEN is set, reading needs it once as ?token=
- * (kept in an HttpOnly cookie) or as a Bearer token. AUTOHEAL_DASHBOARD_REPOS
+ * (an HttpOnly cookie then holds an HMAC of it, not the token) or as a Bearer token. AUTOHEAL_DASHBOARD_REPOS
  * (comma separated owner/name) limits which repos may upload.
  */
 
-import { timingSafeEqual } from 'node:crypto';
+import { createHmac, timingSafeEqual } from 'node:crypto';
 import http from 'node:http';
 import { MIN_SECRET_LENGTH, SIGNATURE_HEADER, TIMESTAMP_HEADER, verifySignature } from '../signing.js';
 import { renderPage } from './page.js';
@@ -23,6 +23,7 @@ import { validateBatch } from './validate.js';
 export const MAX_BODY_BYTES = 256 * 1024;
 /** Failed sign-ins or bad signatures allowed per client address per window. */
 export const MAX_FAILURES = 20;
+const MAX_TRACKED = 10_000;
 const FAILURE_WINDOW_MS = 10 * 60_000;
 
 export interface DashboardOptions {
@@ -56,6 +57,11 @@ function sameSecret(a: string, b: string): boolean {
   return x.length === y.length && timingSafeEqual(x, y);
 }
 
+/** The cookie holds a value derived from the view token, never the token itself. */
+export function viewCookieValue(viewToken: string): string {
+  return createHmac('sha256', viewToken).update('autoheal-view-cookie-v1').digest('base64url');
+}
+
 function cookie(req: http.IncomingMessage, name: string): string | undefined {
   for (const part of (req.headers.cookie ?? '').split(';')) {
     const [k, ...v] = part.trim().split('=');
@@ -83,7 +89,9 @@ export function createDashboard(options: DashboardOptions): http.RequestListener
 
   function clientOf(req: http.IncomingMessage): string {
     if (options.trustProxy) {
-      const forwarded = String(req.headers['x-forwarded-for'] ?? '').split(',')[0]?.trim();
+      // The LAST entry is the one your proxy added; earlier ones are whatever
+      // the client sent, so they cannot be used to dodge the lockout.
+      const forwarded = String(req.headers['x-forwarded-for'] ?? '').split(',').map((s) => s.trim()).filter(Boolean).pop();
       if (forwarded) return forwarded;
     }
     return req.socket.remoteAddress ?? 'unknown';
@@ -101,7 +109,17 @@ export function createDashboard(options: DashboardOptions): http.RequestListener
     const f = failures.get(client);
     if (!f || Date.now() - f.since > FAILURE_WINDOW_MS) failures.set(client, { count: 1, since: Date.now() });
     else f.count++;
-    if (failures.size > 10_000) failures.clear(); // bound memory under a flood
+    if (failures.size > MAX_TRACKED) evictFailures();
+  }
+  /** Bounds memory under a flood without lifting any active lockout. */
+  function evictFailures(): void {
+    const now = Date.now();
+    for (const [k, v] of failures) if (now - v.since > FAILURE_WINDOW_MS) failures.delete(k);
+    // Then the oldest clients that are not locked out (Map keeps insertion order).
+    for (const [k, v] of failures) {
+      if (failures.size <= MAX_TRACKED * 0.9) break;
+      if (v.count < MAX_FAILURES) failures.delete(k);
+    }
   }
 
   function canView(req: http.IncomingMessage, url: URL): 'yes' | 'no' | 'set-cookie' {
@@ -109,7 +127,7 @@ export function createDashboard(options: DashboardOptions): http.RequestListener
     const bearer = /^Bearer\s+(.+)$/i.exec(req.headers.authorization ?? '')?.[1];
     if (bearer && sameSecret(bearer, options.viewToken)) return 'yes';
     const fromCookie = cookie(req, 'autoheal_view');
-    if (fromCookie && sameSecret(fromCookie, options.viewToken)) return 'yes';
+    if (fromCookie && sameSecret(fromCookie, viewCookieValue(options.viewToken))) return 'yes';
     const fromQuery = url.searchParams.get('token');
     if (fromQuery && sameSecret(fromQuery, options.viewToken)) return 'set-cookie';
     return 'no';
@@ -164,7 +182,7 @@ export function createDashboard(options: DashboardOptions): http.RequestListener
           const secure = forwardedProto === 'https' ? '; Secure' : '';
           res.writeHead(303, {
             location: `${url.pathname}${url.search}`,
-            'set-cookie': `autoheal_view=${encodeURIComponent(options.viewToken ?? '')}; HttpOnly; SameSite=Strict; Path=/; Max-Age=2592000${secure}`,
+            'set-cookie': `autoheal_view=${viewCookieValue(options.viewToken ?? '')}; HttpOnly; SameSite=Strict; Path=/; Max-Age=2592000${secure}`,
             ...SECURITY_HEADERS,
           });
           return res.end();

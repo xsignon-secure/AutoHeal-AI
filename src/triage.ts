@@ -46,11 +46,13 @@ export function triage(input: TriageInput): Triage {
   if (input.flakyVerdict === 'FLAKY') {
     return { category: 'FLAKY', rootCause: 'TIMING', confidence: 0.9, reasons: ['passes and fails on the same code (diagnose-flaky: FLAKY)'] };
   }
+  // Passing every rerun here is not proof of flakiness: the heal job may
+  // simply differ from CI (data, secrets, services). Report, never quarantine.
   if (input.flakyVerdict === 'NOT REPRODUCING') {
     return {
-      category: 'FLAKY',
-      rootCause: 'TIMING',
-      confidence: 0.7,
+      category: 'ENV',
+      rootCause: 'UNKNOWN',
+      confidence: 0.5,
       reasons: ['failed in CI but passed every rerun here (diagnose-flaky: NOT REPRODUCING)'],
     };
   }

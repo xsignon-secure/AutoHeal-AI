@@ -13,14 +13,16 @@
  */
 
 import { execFile } from 'node:child_process';
-import { access, readFile, rm, writeFile } from 'node:fs/promises';
+import { access, readdir, readFile, rm, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { promisify } from 'node:util';
-import { aiFix, aiTriage, safePath, type VerifyOutcome } from './agent.js';
+import { aiFix, aiTriage, relativeImports, safePath, type VerifyOutcome } from './agent.js';
 import { Budget, EMPTY_SNAPSHOT, priceFor, type BudgetLimits, type BudgetSnapshot } from './budget.js';
 import { scanChange, type Verdict } from './cheat.js';
+import { redact } from './redact.js';
 import { shortDiff } from './evidence.js';
 import { McpTools, type ToolCaller } from './mcp.js';
+import { findReport } from './report-files.js';
 import { loadMemory, memoryEntryPath, memoryText, relevantMemory, remember } from './memory.js';
 import type { Provider } from './providers/types.js';
 import { triage as triageFailure, type Triage } from './triage.js';
@@ -87,6 +89,64 @@ async function exists(file: string): Promise<boolean> {
   }
 }
 
+const SPEC_FILE = /(?:\.(?:spec|test)\.[cm]?[jt]sx?|(?:^|\/)test_[^/]*\.py|_test\.py)$/;
+
+/** Spec files that import `rel` (relative imports, or Python module imports). */
+export async function findImporters(root: string, rel: string, maxFiles = 3000): Promise<string[]> {
+  const found: string[] = [];
+  const module = rel.endsWith('.py') ? rel.slice(0, -3).replace(/\//g, '.') : null;
+  const escaped = module?.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  const moduleRe = escaped ? new RegExp(`(?:^|\\n)\\s*(?:from\\s+${escaped}\\s+import|import\\s+${escaped}\\b)`) : null;
+  let seen = 0;
+  async function walk(dir: string): Promise<void> {
+    if (seen > maxFiles) return;
+    let entries;
+    try {
+      entries = await readdir(path.join(root, dir), { withFileTypes: true });
+    } catch {
+      return;
+    }
+    for (const e of entries) {
+      if (e.name.startsWith('.') || e.name === 'node_modules' || e.name === '__pycache__' || e.name === 'dist') continue;
+      const child = dir ? `${dir}/${e.name}` : e.name;
+      if (e.isDirectory()) await walk(child);
+      else if (e.isFile() && SPEC_FILE.test(child) && ++seen <= maxFiles) {
+        const source = await readFile(path.join(root, child), 'utf8').catch(() => '');
+        if (relativeImports(child, source).includes(rel) || moduleRe?.test(source)) found.push(child);
+      }
+    }
+  }
+  await walk('');
+  return found.sort();
+}
+
+/** Where the engine stores a downloaded CI run (playwright-e2e-mcp 0.15). */
+export function ciDownloadDir(root: string, url: string): string | null {
+  const gh = /\/actions\/runs\/(\d+)/.exec(url);
+  if (gh) return path.join(root, '.playwright-e2e-mcp', 'ci', `github-${gh[1]}`);
+  const gl = /\/-\/jobs\/(\d+)/.exec(url);
+  if (gl) return path.join(root, '.playwright-e2e-mcp', 'ci', `gitlab-${gl[1]}`);
+  return null;
+}
+
+async function downloadRun(root: string, url: string, log: (line: string) => void): Promise<{ report: string; traceDirs: string[] } | { error: string }> {
+  log(`Downloading ${url} (in a separate engine that runs no tests)`);
+  const downloader = await McpTools.start(root, { keepGithubToken: true });
+  try {
+    const res = await downloader.call('load-report', { report: url, record: false }, 600_000);
+    if (!res.ok) return { error: `Could not load the report: ${res.text.split('\n').slice(0, 3).join(' ')}` };
+  } finally {
+    await downloader.close();
+  }
+  const dir = ciDownloadDir(root, url);
+  const found = dir ? await findReport(dir) : null;
+  if (!dir || !found) return { error: `Downloaded ${url}, but found no Playwright report in it.` };
+  return {
+    report: path.relative(root, found.report),
+    traceDirs: [path.relative(root, dir), ...found.traceDirs.map((d) => path.relative(root, d))],
+  };
+}
+
 export async function isPytestProject(root: string): Promise<boolean> {
   for (const name of ['playwright.config.ts', 'playwright.config.js', 'playwright.config.mjs', 'playwright.config.cjs', 'playwright.config.mts']) {
     if (await exists(path.join(root, name))) return false;
@@ -114,8 +174,9 @@ function failureFrom(index: number, data: Record<string, unknown>, text: string)
     file: f.file.replace(/\\/g, '/'),
     title: f.title,
     kind: typeof f.kind === 'string' ? f.kind : 'unknown',
-    message: typeof f.message === 'string' ? f.message : '',
-    detail: text,
+    // Redacted on the way in, so no secret printed by a test reaches the AI or a PR.
+    message: typeof f.message === 'string' ? redact(f.message) : '',
+    detail: redact(text),
   };
   if (typeof f.line === 'number') info.line = f.line;
   if (typeof f.expected === 'string') info.expected = f.expected;
@@ -178,7 +239,23 @@ export async function heal(options: HealOptions): Promise<HealSummary> {
     ...(options.run ? { run: options.run } : {}),
   };
 
-  const mcp = options.mcp ?? (await McpTools.start(root, { keepGithubToken: /^https?:\/\//.test(options.report) }));
+  // A CI run URL is downloaded by a short-lived engine that holds the token
+  // and runs nothing else. The engine that runs tests and proposed fixes
+  // never sees a GitHub token.
+  let reportRef = options.report;
+  let traceDirs = options.traceDirs;
+  if (!options.mcp && /^https?:\/\//.test(options.report)) {
+    const local = await downloadRun(root, options.report, log);
+    if ('error' in local) {
+      summary.outcome = 'error';
+      summary.error = local.error;
+      summary.finishedAt = new Date().toISOString();
+      return summary;
+    }
+    reportRef = local.report;
+    traceDirs = local.traceDirs;
+  }
+  const mcp = options.mcp ?? (await McpTools.start(root));
   /** Original content of every file this job wrote, to revert on demand. */
   const originals = new Map<string, string>();
   const pytest = await isPytestProject(root);
@@ -206,10 +283,10 @@ export async function heal(options: HealOptions): Promise<HealSummary> {
 
   try {
     // 1. Load the failed run.
-    log(`Loading report ${options.report}`);
+    log(`Loading report ${reportRef}`);
     const loaded = await mcp.call(
       'load-report',
-      { report: options.report, ...(options.traceDirs?.length ? { traceDirs: options.traceDirs } : {}), record: false },
+      { report: reportRef, ...(traceDirs?.length ? { traceDirs } : {}), record: false },
       300_000,
     );
     if (!loaded.ok) {
@@ -274,7 +351,7 @@ export async function heal(options: HealOptions): Promise<HealSummary> {
       if (!abs) return { kept: false, blocked: false, message: 'Path not allowed.' };
       const before = await readFile(abs, 'utf8');
       if (before === content) return { kept: false, blocked: false, message: 'The proposed content is identical to the current file.' };
-      const local = scanChange(before, content);
+      const local = scanChange(before, content, rel);
       const engine = await mcp.call('check-test-change', { file: rel, after: content }, 180_000);
       const engineStatus = engineVerdict(engine.data, engine.ok);
       const engineFindings = Array.isArray(engine.data.findings)
@@ -326,11 +403,20 @@ export async function heal(options: HealOptions): Promise<HealSummary> {
         return { kept: false, blocked: false, guard, stability: { runs, passed: false, detail }, message: `The test still fails with this change:\n${detail}` };
       }
 
-      // The rest of the file must not get worse: only tests that were already failing may fail.
-      const whole = await mcp.call('run-test', { testFiles: [failure.file], retries: 0, retryOnFailure: false, timeoutMs: 600_000 }, 660_000);
-      const wholeFailures = ((whole.data.run as { failures?: Array<{ title?: string }> } | undefined)?.failures ?? []).map((f) => String(f.title ?? ''));
-      const allowedFailing = failingTitlesByFile.get(failure.file) ?? new Set<string>();
-      const broken = wholeFailures.filter((t) => t === failure.title || !allowedFailing.has(t) || fixedTitles.has(t));
+      // The rest of the file must not get worse: only tests that were already
+      // failing may fail. A change to a shared file (a page object or helper)
+      // also reruns every spec that imports it.
+      const importers = rel === failure.file ? [] : (await findImporters(root, rel)).filter((f) => f !== failure.file).slice(0, 50);
+      const files = [failure.file, ...importers];
+      const wholeMs = importers.length ? 1_200_000 : 600_000;
+      const whole = await mcp.call('run-test', { testFiles: files, retries: 0, retryOnFailure: false, timeoutMs: wholeMs }, wholeMs + 60_000);
+      const wholeRun = whole.data.run as { passed?: number; failures?: Array<{ title?: string }> } | undefined;
+      const wholeFailures = (wholeRun?.failures ?? []).map((f) => String(f.title ?? ''));
+      const allowedFailing = new Set(files.flatMap((f) => [...(failingTitlesByFile.get(f) ?? [])]));
+      let broken = wholeFailures.filter((t) => t === failure.title || !allowedFailing.has(t) || fixedTitles.has(t));
+      // A crash, or a run that lists no results, proves nothing: reject.
+      if (!whole.ok && !wholeFailures.length) broken = [`the rerun failed without a test result (${whole.text.split('\n')[0]?.slice(0, 200) ?? 'no output'})`];
+      else if (whole.ok && wholeRun && (wholeRun.passed ?? 0) === 0) broken = ['the rerun ran no tests'];
       if (broken.length) {
         await writeFile(abs, before);
         if (originals.get(rel) === before) originals.delete(rel);
@@ -342,11 +428,13 @@ export async function heal(options: HealOptions): Promise<HealSummary> {
           message: `The change makes other tests in the file fail: ${broken.join(', ')}`,
         };
       }
-      return { kept: true, blocked: false, guard, stability: { runs, passed: true, detail: `passed ${runs}× and the rest of the file did not get worse` }, message: 'kept' };
+      const scope = importers.length ? `the rest of the file and ${importers.length} other spec(s) using ${rel}` : 'the rest of the file';
+      return { kept: true, blocked: false, guard, stability: { runs, passed: true, detail: `passed ${runs}× and ${scope} did not get worse` }, message: 'kept' };
     }
 
     // 3–5. One failure at a time.
-    for (const failure of work) {
+    for (const [position, failure] of work.entries()) {
+      budget.share(work.length - position);
       const spentBefore = budget.snapshot();
       log(`Failure ${failure.index}: ${failure.file} › ${failure.title}`);
 
@@ -482,6 +570,10 @@ export async function heal(options: HealOptions): Promise<HealSummary> {
       } else if (t.category === 'APP_BUG') {
         result.status = 'APP_BUG';
         result.summary = 'The test looks right and the app looks wrong, so the test was not changed. An issue with the evidence is opened instead.';
+      } else if (flakyVerdict === 'NOT REPRODUCING') {
+        result.status = 'ENV';
+        result.summary =
+          "AutoHeal couldn't reproduce this failure: it passed every rerun here. Make the heal job match your test job (Node or Python version, browsers, environment variables, secrets, services and test data). Nothing was changed and nothing was quarantined.";
       } else {
         result.status = 'ENV';
         result.summary = 'The failure comes from the environment (browser, server, network or config), not the test. Nothing was changed.';
