@@ -7,7 +7,8 @@
  * The image only ever goes to the AI provider you configured. It is never
  * written into a PR, issue, comment or the dashboard.
  */
-import { lstat, readdir, readFile, realpath } from 'node:fs/promises';
+import { constants } from 'node:fs';
+import { open, readdir, realpath } from 'node:fs/promises';
 import path from 'node:path';
 import { inflateRawSync } from 'node:zlib';
 /** Images larger than this are skipped (providers cap images at about 5 MB of base64). */
@@ -149,6 +150,23 @@ export function frameFromTrace(entries) {
     }
     return null;
 }
+/** Reads a regular file through one handle (no symlinks, size checked on the open file), or null. */
+async function readSmallFile(file, maxBytes) {
+    let fh;
+    try {
+        fh = await open(file, constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0));
+        const st = await fh.stat();
+        if (!st.isFile() || st.size > maxBytes)
+            return null;
+        return await fh.readFile();
+    }
+    catch {
+        return null;
+    }
+    finally {
+        await fh?.close();
+    }
+}
 async function insideRoot(root, file) {
     try {
         const realRoot = await realpath(root);
@@ -174,11 +192,8 @@ export async function failureScreenshot(root, tracePath) {
         const dir = path.dirname(trace);
         const names = (await readdir(dir)).filter((n) => /^test-failed-\d+\.png$/.test(n)).sort();
         for (const name of names.reverse()) {
-            const file = path.join(dir, name);
-            const st = await lstat(file);
-            if (!st.isFile() || st.size > MAX_IMAGE_BYTES)
-                continue;
-            const shot = toScreenshot(await readFile(file), 'attachment');
+            const buf = await readSmallFile(path.join(dir, name), MAX_IMAGE_BYTES);
+            const shot = buf && toScreenshot(buf, 'attachment');
             if (shot)
                 return shot;
         }
@@ -188,10 +203,10 @@ export async function failureScreenshot(root, tracePath) {
     }
     // 2. The last screencast frame in the trace.
     try {
-        const st = await lstat(trace);
-        if (!st.isFile() || st.size > MAX_ZIP_BYTES)
+        const buf = await readSmallFile(trace, MAX_ZIP_BYTES);
+        if (!buf)
             return null;
-        const entries = readZip(await readFile(trace), (name) => name.endsWith('.trace') || name.startsWith('resources/') || name.startsWith('screencast/'));
+        const entries = readZip(buf, (name) => name.endsWith('.trace') || name.startsWith('resources/') || name.startsWith('screencast/'));
         return frameFromTrace(entries);
     }
     catch {
