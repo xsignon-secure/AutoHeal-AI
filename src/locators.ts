@@ -33,13 +33,15 @@ function unquote(raw: string): { value: string; exact: boolean } | null {
 
 /** The last part of a Playwright selector (after the final >>), parsed. Null for chains it cannot express. */
 export function parseSelector(selector: string): ParsedLocator | null {
+  if (selector.length > 2000) return null;
   const parts = selector.split(/\s>>\s/);
   const last = (parts[parts.length - 1] ?? '').trim();
   if (!last || /^(?:nth|visible|internal:has|internal:and|internal:or|internal:chain)/.test(last)) return null;
-  let m = /^internal:role=([a-z]+)(.*)$/.exec(last);
+  // Prefix match plus slice: no regex that backtracks over the rest of the selector.
+  let m = /^internal:role=([a-z]+)/.exec(last);
   if (m) {
     const out: ParsedLocator = { kind: 'role', value: m[1] as string };
-    const name = /\[name=("(?:[^"\\]|\\.)*"[is]?)\]/.exec(m[2] ?? '');
+    const name = /\[name=("(?:[^"\\]|\\.)*"[is]?)\]/.exec(last.slice(m[0].length));
     if (name) {
       const q = unquote(name[1] as string);
       if (!q) return null;
