@@ -1,0 +1,71 @@
+/**
+ * The test sandbox: your tests, and every fix the AI proposes, run as a
+ * separate Linux user. AutoHeal's own process (which holds the AI key) runs as
+ * the runner user. Linux does not let one user read another user's process
+ * memory or environment (/proc/<pid>/environ, /proc/<pid>/mem), so code in a
+ * test cannot read the key, the runner's tokens or its files.
+ *
+ * The action's "Prepare the sandbox" step (scripts/sandbox-setup.sh) creates
+ * the user and grants it the project folder; this module only decides whether
+ * to use it and wraps the engine's command line.
+ */
+import { execFileSync } from 'node:child_process';
+const USER_NAME = /^[a-z_][a-z0-9_-]{0,31}$/;
+export function sandboxMode(value) {
+    const v = (value ?? 'auto').trim().toLowerCase();
+    if (v === '' || v === 'auto')
+        return 'auto';
+    if (v === 'user' || v === 'true' || v === 'on')
+        return 'user';
+    if (v === 'off' || v === 'false')
+        return 'off';
+    throw new Error(`sandbox must be auto, user or off (got "${value}")`);
+}
+/** Whether `sudo -n -u <user> true` works, i.e. we can start processes as the sandbox user. */
+function canSwitch(user, run) {
+    try {
+        run('sudo', ['-n', '-u', user, '--', 'true'], { stdio: 'ignore', timeout: 15_000 });
+        return true;
+    }
+    catch {
+        return false;
+    }
+}
+/**
+ * Picks the sandbox. `user` fails closed when it cannot be used; `auto` uses it
+ * when the setup step prepared it (Linux runners) and says so when it could not.
+ */
+export function chooseSandbox(mode, env = process.env, run = execFileSync) {
+    if (mode === 'off')
+        return { sandbox: null, note: 'off (sandbox: off): tests ran as the runner user, which can read the AI key' };
+    const user = env.AUTOHEAL_SANDBOX_USER ?? '';
+    const home = env.AUTOHEAL_SANDBOX_HOME ?? '';
+    const why = process.platform !== 'linux'
+        ? `not available on ${process.platform}`
+        : !user
+            ? 'the sandbox user was not prepared (needs passwordless sudo on a Linux runner)'
+            : !USER_NAME.test(user) || !home.startsWith('/')
+                ? 'the sandbox settings are invalid'
+                : !canSwitch(user, run)
+                    ? `cannot start processes as ${user}`
+                    : '';
+    if (why) {
+        if (mode === 'user')
+            throw new Error(`sandbox: user was requested but ${why}`);
+        return { sandbox: null, note: `off (${why}): tests ran as the runner user, which can read the AI key` };
+    }
+    return { sandbox: { user, home }, note: `tests and fixes ran as the separate user \`${user}\`, which cannot read the AI key or the runner's tokens` };
+}
+/**
+ * The command that starts `command args` as the sandbox user with exactly
+ * `env` (nothing inherited). The values end up on the command line, so `env`
+ * must hold no secrets; engineEnv() already removed them.
+ */
+export function wrapCommand(sandbox, command, args, env) {
+    const vars = { ...env, HOME: sandbox.home, USER: sandbox.user, LOGNAME: sandbox.user };
+    const assignments = Object.entries(vars)
+        .filter(([k]) => /^[A-Za-z_][A-Za-z0-9_]*$/.test(k))
+        .map(([k, v]) => `${k}=${v}`);
+    return { command: 'sudo', args: ['-n', '-u', sandbox.user, '--', '/usr/bin/env', '-i', ...assignments, command, ...args] };
+}
+//# sourceMappingURL=sandbox.js.map

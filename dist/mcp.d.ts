@@ -3,6 +3,7 @@
  * its tools. AutoHeal never re-implements what the engine already does
  * (report loading, failure reading, heal guard, flaky verdicts, quarantine).
  */
+import { type Sandbox } from './sandbox.js';
 export interface ToolResult {
     ok: boolean;
     isError: boolean;
@@ -28,6 +29,7 @@ export declare class McpTools implements ToolCaller {
     static start(projectRoot: string, options?: {
         env?: NodeJS.ProcessEnv;
         keepGithubToken?: boolean;
+        sandbox?: Sandbox | null;
     }): Promise<McpTools>;
     call(name: string, args: Record<string, unknown>, timeoutMs?: number): Promise<ToolResult>;
     close(): Promise<void>;

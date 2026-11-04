@@ -2,6 +2,15 @@
 
 All notable changes to AutoHeal AI. Versions follow [semantic versioning](https://semver.org/).
 
+## 0.5.0 (2026-11-04)
+
+### Security
+- **Tests run in a sandbox.** On Linux runners with passwordless sudo (GitHub-hosted Ubuntu), a new "Prepare the sandbox" step creates the user `autoheal-sb`. The engine, which runs your tests and every proposed fix, starts as that user with only the filtered environment. AutoHeal's own process keeps the AI key and runs as the runner user, so a test or a fix can no longer read the key from `/proc`. The sandbox can read and write the project but not `.git`. New input `sandbox`: `auto` (default; runs without the sandbox where it cannot be set up, and the PR says so), `user` (required), `off`.
+- **npm provenance.** Releases are published by `.github/workflows/release.yml` on a version tag. It uses npm trusted publishing (no token), adds provenance, checks that the tag matches `package.json` and is on `main`, and creates the GitHub release. The job that publishes installs nothing and runs no project code.
+
+### Changed
+- The "AI key proxy" from the roadmap is not needed. With the sandbox, the key never reaches a process that runs test code.
+
 ## 0.4.0 (2026-11-04)
 
 ### Added

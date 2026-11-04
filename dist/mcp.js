@@ -6,6 +6,7 @@
 import { Client } from '@modelcontextprotocol/client';
 import { StdioClientTransport } from '@modelcontextprotocol/client/stdio';
 import { fileURLToPath } from 'node:url';
+import { wrapCommand } from './sandbox.js';
 import { VERSION } from './version.js';
 /** Path of the engine's CLI entry (overridable for development). */
 export function engineEntry(env = process.env) {
@@ -42,9 +43,17 @@ export class McpTools {
         const childEnv = engineEnv(env, options.keepGithubToken === true);
         childEnv.PW_MCP_PROJECT_ROOT = projectRoot;
         childEnv.LOG_LEVEL = env.AUTOHEAL_DEBUG ? 'debug' : 'error';
+        let command = process.execPath;
+        let args = [engineEntry(env)];
+        if (options.sandbox) {
+            // The runner's browsers live in its home folder; the sandbox user has its own.
+            if (!childEnv.PLAYWRIGHT_BROWSERS_PATH && env.AUTOHEAL_SANDBOX_BROWSERS)
+                childEnv.PLAYWRIGHT_BROWSERS_PATH = env.AUTOHEAL_SANDBOX_BROWSERS;
+            ({ command, args } = wrapCommand(options.sandbox, command, args, childEnv));
+        }
         const transport = new StdioClientTransport({
-            command: process.execPath,
-            args: [engineEntry(env)],
+            command,
+            args,
             cwd: projectRoot,
             env: childEnv,
             stderr: env.AUTOHEAL_DEBUG ? 'inherit' : 'ignore',

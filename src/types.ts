@@ -96,4 +96,6 @@ export interface HealSummary {
   minutesSaved: number;
   error?: string;
   run?: { url?: string; id?: string; commit?: string; branch?: string; repo?: string };
+  /** How the tests were isolated from the AI key. */
+  sandbox?: string;
 }

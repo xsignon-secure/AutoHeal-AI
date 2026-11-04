@@ -22,7 +22,7 @@
  * Usage: npm run simulate [-- <scenario> ...]
  */
 
-import { execFileSync, spawnSync } from 'node:child_process';
+import { execFileSync, spawn, spawnSync } from 'node:child_process';
 import { cpSync, existsSync, mkdirSync, readdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -264,6 +264,19 @@ const scenarios = {
     const steps = Object.fromEntries(run.log.map((s) => [s.step, s]));
     if (!run.ok || process.env.SIM_VERBOSE) for (const s of run.log) console.log(`    [${s.step}] ${s.skipped ? 'skipped' : `exit ${s.code}`}\n${s.stderr ?? ''}${s.stdout ?? ''}`);
     check(run.ok, 'heal job: every step succeeded');
+    // 0.5.0 sandbox: tests and fixes ran as a separate user that cannot read the heal process's environment.
+    const sb = run.ctx.steps.sandbox ?? {};
+    check(sb.user === 'autoheal-sb', `sandbox user prepared (${JSON.stringify(sb)})`);
+    const healSummary = JSON.parse(readFileSync(path.join(dir, '.runner-temp', 'autoheal-out', 'summary.json'), 'utf8'));
+    check(/ran as the separate user `autoheal-sb`/.test(healSummary.sandbox ?? ''), `summary says the tests ran in the sandbox (${healSummary.sandbox})`);
+    const owner = execFileSync('stat', ['-c', '%U', path.join(dir, 'test-results', '.last-run.json')], { encoding: 'utf8' }).trim();
+    check(owner === 'autoheal-sb', `the reruns ran as the sandbox user (test-results written by ${owner})`);
+    const gitWrite = spawnSync('sudo', ['-n', '-u', 'autoheal-sb', '--', 'sh', '-c', `echo x >> "$1"`, 'sh', path.join(dir, '.git', 'config')], { encoding: 'utf8' });
+    check(gitWrite.status !== 0, 'the sandbox user cannot change .git/config');
+    const holder = spawn(process.execPath, ['-e', 'setTimeout(() => {}, 20000)'], { env: { ...process.env, ANTHROPIC_API_KEY: 'sk-ant-sim-not-a-real-key' }, stdio: 'ignore' });
+    const peek = spawnSync('sudo', ['-n', '-u', 'autoheal-sb', '--', 'cat', `/proc/${holder.pid}/environ`], { encoding: 'utf8' });
+    holder.kill();
+    check(peek.status !== 0 && !peek.stdout.includes('sk-ant-sim'), `the sandbox user cannot read the key from the heal process (${peek.stderr.trim()})`);
     check(run.ctx.steps.heal?.outcome === 'fixed' && run.ctx.steps.heal?.fixed === '2', `heal outputs: outcome=${run.ctx.steps.heal?.outcome} fixed=${run.ctx.steps.heal?.fixed}`);
     check(readFileSync(ghLog, 'utf8') === '', 'heal job made no GitHub calls (read-only)');
     const result = run.ctx.steps.package?.['result-dir'];

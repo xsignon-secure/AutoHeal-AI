@@ -73,7 +73,8 @@ function resultBlock(r: FailureResult): string {
 }
 
 function totals(summary: HealSummary): string {
-  return `Spend: ${summary.spend.inputTokens + summary.spend.outputTokens} tokens · ${money(summary.spend.usd, summary.spend.priced)} · model \`${summary.model}\``;
+  const spend = `Spend: ${summary.spend.inputTokens + summary.spend.outputTokens} tokens · ${money(summary.spend.usd, summary.spend.priced)} · model \`${summary.model}\``;
+  return summary.sandbox ? `${spend}\n\nSandbox: ${summary.sandbox.replace(/[\r\n]+/g, ' ')}` : spend;
 }
 
 const FOOTER =
