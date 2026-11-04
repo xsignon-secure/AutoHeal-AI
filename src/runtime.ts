@@ -69,7 +69,7 @@ interface TraceLine {
   error?: unknown;
   box?: Box;
   endTime?: number;
-  snapshot?: { callId?: string; frameUrl?: string; snapshotName?: string };
+  snapshot?: { callId?: string; frameUrl?: string; snapshotName?: string; phase?: string };
 }
 
 function lines(buf: Buffer): TraceLine[] {
@@ -114,7 +114,8 @@ export function recordFromTrace(entries: Map<string, Buffer>): RunRecord {
       if (l.type === 'before' && l.callId && l.stepId) callOfStep.set(l.stepId, l.callId);
       else if (l.type === 'after' && l.callId && typeof l.endTime === 'number') endOfCall.set(l.callId, l.endTime);
       else if (l.type === 'input' && l.callId && l.box) boxOfCall.set(l.callId, l.box);
-      else if (l.type === 'frame-snapshot' && l.snapshot?.callId && l.snapshot.snapshotName?.startsWith('before@')) {
+      else if (l.type === 'frame-snapshot' && l.snapshot?.callId && (l.snapshot.phase === 'before' || l.snapshot.snapshotName?.startsWith('before@'))) {
+        // Newer Playwright marks the phase in `phase`; older versions in the snapshot name.
         const page = pageOf(l.snapshot.frameUrl);
         if (page) pageOfCall.set(l.snapshot.callId, page);
       }
@@ -155,7 +156,7 @@ export function recordFromTrace(entries: Map<string, Buffer>): RunRecord {
 }
 
 /** Reads a regular file through one handle (no symlinks, size checked on the open file), or null. */
-async function readTrace(file: string): Promise<Buffer | null> {
+export async function readTrace(file: string): Promise<Buffer | null> {
   let fh;
   try {
     fh = await open(file, constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0));

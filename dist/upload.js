@@ -33,8 +33,9 @@ export function eventsFrom(summary, links = {}) {
             event.commit_sha = summary.run.commit;
         if (summary.run?.branch)
             event.branch = summary.run.branch;
+        // Older dashboards know rules and ai; every non-AI fix counts as rules.
         if (r.fix)
-            event.fix_by = r.fix.by;
+            event.fix_by = r.fix.by === 'ai' ? 'ai' : 'rules';
         if (links.prUrl && (r.status === 'FIXED' || r.status === 'QUARANTINED'))
             event.pr_url = links.prUrl;
         const issue = links.issueUrls?.[r.failure.title];

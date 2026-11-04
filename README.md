@@ -41,6 +41,10 @@ It is MIT licensed and runs entirely on your GitHub runner. No AutoHeal server, 
 - **Secrets are scrubbed.** Before anything goes to the AI or into a PR, issue, comment or job summary, AutoHeal redacts known credential shapes: API keys, GitHub, AWS, Slack and Stripe tokens, JWTs, private keys, `Bearer` headers, `password=` values and passwords in URLs. It also redacts the value of every secret-looking environment variable on the runner.
 - **It sees the page.** When a test fails, the AI is shown the page at that moment: Playwright's own failure screenshot, or the last frame from the trace before the failing step. So it can tell that a button moved, was renamed or is hidden behind a dialog, instead of guessing from the error text. The image comes from your run's own files (no extra browser run) and goes only to your AI provider. It never goes into a PR text, issue, comment or the dashboard. (The before/after screenshots of the runtime guard are a separate, optional run artifact; see `screenshots`.) It is on for Anthropic and OpenAI; turn it off with `vision: false`. Keep `screenshot: 'only-on-failure'` or a trace with screenshots in your config so there is something to see.
 - **Triage first, AI second.** Most failures are classified with no AI at all. Locator fixes that the engine can verify against the trace are applied by rules, using no tokens. The model is only asked when it is actually needed.
+- **Element fingerprints.** Every trace AutoHeal reads teaches it what each locator pointed at: the element's role, accessible name, test id, id, label and nearby heading. These are saved in your repo, one small file per locator under `.autoheal/fingerprints/`. When a locator breaks, AutoHeal looks for the element with the same fingerprint on the failed page and writes the strongest locator for it, with no AI tokens. For an assertion, the value being checked never counts toward a match, so a fingerprint can't move a check onto another element that just happens to show the expected text. To start with fingerprints on day one, run your suite once with `trace: 'on'` and then `npx xsignon-autoheal fingerprint --traces test-results`, and commit the result.
+- **Strong locators.** Fixes follow Playwright's own order: `getByRole` with a name, then label, placeholder, text, alt or title, then test id, and CSS last. The PR shows each changed locator and whether it got stronger or weaker.
+- **One UI change, one fix.** When one UI change breaks many tests, AutoHeal fixes the first and reuses that fix for every other test with the same broken locator, even past `max-failures`. If the fix was in a shared page object, the other tests are just rerun to prove they pass. Each reuse is still proven by its own stability rerun and runtime check. The PR groups those tests under one change.
+- **Looks at the live app.** Give `start-command` (for example `npm run start`) and `start-url`, and the heal job starts your app so the AI can open pages and check locators against the real thing. The app runs like your tests: in the sandbox, without the AI key or tokens, and it is stopped at the end. If it doesn't come up, AutoHeal heals from the traces and says so in the PR.
 - **Repo memory.** Fixes that worked are saved in your repo, one small file per fix under `.autoheal/memory/`, so two open fix PRs never conflict. The agent reads them next time, so it learns your app's naming habits.
 - **Hard budgets.** The cost limit per job (`max-usd`, default $1), the number of AI calls and the number of tokens are all capped. Each failure gets an equal share of what is left, so one hard failure cannot use up the whole job. Before every AI call, AutoHeal checks that call's worst case (its estimated input plus the full output allowance), so no single call can cross the limit. The cost is an estimate from public prices; set `price-in` and `price-out` if yours differ (required for models it has no price for). When a limit stops the job, the report says so and nothing half-done is kept.
 - **Bring your own model.** Claude by default (`claude-opus-5-5`). OpenAI, or any OpenAI-compatible server (Ollama, vLLM, LM Studio), also works. With no key at all, it still triages, quarantines and applies rule-based fixes.
@@ -99,7 +103,7 @@ PRs opened with the default `GITHUB_TOKEN` do not start other workflows; GitHub 
   with:
     app-id: ${{ vars.AUTOHEAL_APP_ID }}
     private-key: ${{ secrets.AUTOHEAL_APP_KEY }}
-- uses: xsignon-secure/AutoHeal-AI/publish@v0.5.0
+- uses: xsignon-secure/AutoHeal-AI/publish@v0.6.0
   with:
     github-token: ${{ steps.app-token.outputs.token }}
     # ...the other inputs from the template
@@ -119,7 +123,7 @@ AutoHeal never pushes to your base branch, never auto-merges, and never runs on 
 
 ## Inputs
 
-**Heal action** (`xsignon-secure/AutoHeal-AI@v0.5.0`):
+**Heal action** (`xsignon-secure/AutoHeal-AI@v0.6.0`):
 
 | Input | Default | |
 |---|---|---|
@@ -144,13 +148,16 @@ AutoHeal never pushes to your base branch, never auto-merges, and never runs on 
 | `open-issues` | `true` | Open issues for app bugs |
 | `issue-min-confidence` | `0.6` | How sure AutoHeal must be before it opens an app-bug issue; less certain ones are listed in the job summary |
 | `app-url` | | A running copy of the app, so the agent can check locators live |
+| `start-command` | | Starts your app in the heal job (for example `npm run start`). Runs in the sandbox without secrets, and is stopped at the end |
+| `start-url` | `app-url` | Address to wait for after `start-command` (localhost only) |
+| `start-timeout` | `120` | Seconds to wait for `start-url` to answer |
 | `mocks-base-url` | | Live API to compare your mocks with (a shallow shape check, used as a triage hint only) |
 | `result-name` | `autoheal-result` | Name of the artifact handed to the publish job |
 | `github-token` | `github.token` | Only used to download a run given as a URL |
 
 Outputs: `outcome` (`fixed`, `blocked`, `app-bug`, `quarantined`, `unfixed`, `nothing-to-do` or `error`), `fixed`, `blocked`, `has-result`.
 
-**Publish action** (`xsignon-secure/AutoHeal-AI/publish@v0.5.0`): `result-dir`, `mode`, `base-branch`, `run-id`, `commit`, `pr-number`, `blocked`, `open-issues`, `allowed-paths`, `allow-warn`, `quarantine-days`, `github-token`, `dashboard-url`, `dashboard-secret`. Output: `pr-url`.
+**Publish action** (`xsignon-secure/AutoHeal-AI/publish@v0.6.0`): `result-dir`, `mode`, `base-branch`, `run-id`, `commit`, `pr-number`, `blocked`, `open-issues`, `allowed-paths`, `allow-warn`, `quarantine-days`, `github-token`, `dashboard-url`, `dashboard-secret`. Output: `pr-url`.
 
 `allowed-paths` limits which files a fix may change. The default is `**/tests/**, **/test/**, **/e2e/**, **/playwright/**, **/*.spec.*, **/*.test.*, **/test_*.py, **/*_test.py`. If your page objects live somewhere else (for example `src/pages/**`), add that folder. Files that tools load or run on their own (configs, `conftest.py`, `__init__.py`, setup and teardown files, `.pnpmfile.cjs`, gulp and grunt files) are never patched. Keep `allow-warn` and `quarantine-days` the same as in the heal job.
 
@@ -167,7 +174,7 @@ If a fix is blocked by the anti-cheat guard, the publish job fails, so that some
 
 For a model AutoHeal has no price for, the job stops with a clear error until you set `price-in` and `price-out`, because otherwise the cost limit could not work.
 
-Your key goes only to that provider. AutoHeal does not pass it to your tests, the engine or the dashboard. It is still in the heal job, though, and code running there as the same user (your tests, or a proposed fix during its rerun) could in principle read it from the parent process. So use a key with a spend limit, and rotate it if a fix PR ever looks hostile.
+Your key goes only to that provider. AutoHeal does not pass it to your tests, your app, the engine or the dashboard. With the sandbox on (the default on GitHub-hosted Linux runners), code in your tests or a proposed fix cannot read it from the parent process either. Where the sandbox is off, it could, so use a key with a spend limit, and rotate it if a fix PR ever looks hostile.
 
 ## pytest-playwright
 
@@ -177,6 +184,13 @@ The same pipeline works for Python projects (`pytest.ini`, `pyproject.toml` or `
 
 ```bash
 npx xsignon-autoheal heal --report playwright-report/results.json --mode comment
+```
+
+Save element fingerprints from a green run (traces recorded with `trace: 'on'`), then commit `.autoheal/fingerprints/`:
+
+```bash
+npx playwright test --trace on
+npx xsignon-autoheal fingerprint --traces test-results
 ```
 
 Run `npx xsignon-autoheal --help` for every option. Exit codes: `0` done, `1` error, `2` bad usage, `3` a fix was blocked.

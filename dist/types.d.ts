@@ -24,13 +24,33 @@ export interface FailureInfo {
     detail: string;
 }
 export interface FixInfo {
-    by: 'rules' | 'ai';
+    /**
+     * rules: the engine's verified locator. fingerprint: the element found again
+     * from its saved fingerprint. same-change: the fix kept for another test with
+     * the same broken locator. ai: the AI agent. Only ai spends tokens.
+     */
+    by: 'rules' | 'ai' | 'fingerprint' | 'same-change';
     file: string;
     explanation: string;
     /** Unified-style excerpt of what changed (short). */
     diff: string;
     before?: string;
     after?: string;
+    /** Locators the fix replaced, with Playwright's strength ranking. */
+    locators?: Array<{
+        before: string;
+        after: string;
+        from: string;
+        to: string;
+        direction: -1 | 0 | 1;
+    }>;
+    /** For fingerprint fixes: how well the element still matched. */
+    match?: {
+        score: number;
+        signals: string[];
+    };
+    /** For same-change fixes: the test whose fix this reuses. */
+    sameAs?: string;
 }
 export interface GuardInfo {
     engine: string;
@@ -114,4 +134,8 @@ export interface HealSummary {
     };
     /** How the tests were isolated from the AI key. */
     sandbox?: string;
+    /** The app the heal job started (start-command), when it started one. */
+    app?: string;
+    /** Element fingerprints saved with this change. */
+    fingerprints?: number;
 }

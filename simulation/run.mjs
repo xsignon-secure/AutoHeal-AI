@@ -18,6 +18,10 @@
  *   action  runs the heal action, then the publish action in a fresh clone (fix PR,
  *           issues), checks re-runs, comment mode and refuses tampered patches
  *   dashboard  uploads the "ai" results to a local dashboard and reads them back
+ *   fingerprint  fingerprints saved from a green run of the old app; no AI key:
+ *           the renamed button is found again (fixed without tokens), a
+ *           second test with the same broken locator gets the same fix, and
+ *           the profile assertion is not steered by the text it checks
  *
  * Usage: npm run simulate [-- <scenario> ...]
  */
@@ -45,12 +49,13 @@ const check = (cond, label) => {
   if (!cond) failures++;
 };
 
-function prepare(name) {
+function prepare(name, setup) {
   const dir = path.join(workRoot, name);
   rmSync(dir, { recursive: true, force: true });
   mkdirSync(dir, { recursive: true });
   cpSync(fixture, dir, { recursive: true, filter: (src) => !src.includes(`${path.sep}node_modules`) });
   symlinkSync(path.join(fixture, 'node_modules'), path.join(dir, 'node_modules'), 'dir');
+  setup?.(dir);
   const git = (...args) => execFileSync('git', args, { cwd: dir, stdio: 'pipe' });
   git('init', '-q');
   git('add', '-A');
@@ -240,6 +245,43 @@ const scenarios = {
     check(existsSync(path.join(dir, '.autoheal-out', 'comment.md')) && file(dir, '.autoheal-out/comment.md').includes('Sign in'), 'comment has the proposed diff');
   },
 
+  fingerprint() {
+    const dir = prepare('fingerprint', (d) => {
+      // A second test that clicks the same button: one UI change, two broken tests.
+      writeFileSync(path.join(d, 'tests', 'checkout-login.spec.ts'), file(d, 'tests/login.spec.ts').replace("'user can log in'", "'checkout asks to log in'"));
+      // A green run of the app as it was ("Log in"), traced, then `autoheal fingerprint`.
+      const server = file(d, 'app/server.mjs');
+      writeFileSync(path.join(d, 'app/server.mjs'), server.replace('>Sign in</button>', '>Log in</button>').replace("'#welcome-message'", "'#greeting'").replace('id="welcome-message"', 'id="greeting"'));
+      const green = spawnSync('npx', ['playwright', 'test', 'tests/login.spec.ts', 'tests/profile.spec.ts', '--trace', 'on'], { cwd: d, encoding: 'utf8', env: { ...process.env, CI: '1' } });
+      check(green.status === 0, `green run of the old app passed (${green.status})`);
+      const fp = spawnSync(process.execPath, [cli, 'fingerprint', '--traces', 'test-results'], { cwd: d, encoding: 'utf8' });
+      check(fp.status === 0 && /saved [1-9]\d* element fingerprint/.test(fp.stderr), `fingerprints saved from the green run (${fp.stderr.trim()})`);
+      writeFileSync(path.join(d, 'app/server.mjs'), server);
+      for (const x of ['test-results', 'playwright-report']) rmSync(path.join(d, x), { recursive: true, force: true });
+    });
+    const saved = readdirSync(path.join(dir, '.autoheal', 'fingerprints'));
+    check(saved.length >= 3, `fingerprints committed with the repo (${saved.length})`);
+    const { code, summary } = heal(dir, ['--mode', 'draft-pr', '--max-failures', '2']);
+    check(code === 0, `exit code 0 (got ${code})`);
+    check(summary?.totalFailures === 5, `5 failures read (got ${summary?.totalFailures})`);
+    const first = byTest(summary, 'checkout asks to log in');
+    const second = byTest(summary, 'user can log in');
+    check(first?.status === 'FIXED' && first.fix?.by === 'fingerprint', `renamed button fixed from its fingerprint (${first?.status} by ${first?.fix?.by}: ${first?.summary})`);
+    check(first?.fix?.locators?.[0]?.to === 'strong' && first?.fix?.match?.score > 0, `strong locator, with the match score (${JSON.stringify(first?.fix?.locators)} ${JSON.stringify(first?.fix?.match)})`);
+    check(first?.stability?.passed === true && first?.runtime?.checked === true, 'fingerprint fix passed the stability rerun and the runtime guard');
+    check(second?.status === 'FIXED' && second.fix?.by === 'same-change' && second.fix.sameAs?.endsWith('checkout asks to log in'), `past max-failures, the same UI change got the same fix (${second?.status} by ${second?.fix?.by})`);
+    check(file(dir, 'tests/login.spec.ts').includes("name: 'Sign in'") && file(dir, 'tests/checkout-login.spec.ts').includes("name: 'Sign in'"), 'both specs now find the button by its new name');
+    const profile = byTest(summary, 'profile greets');
+    check(!profile || profile.fix?.by !== 'fingerprint', 'the profile assertion was not fixed from the text it checks');
+    check(file(dir, 'pages/profile.ts').includes("'#greeting'"), 'page object unchanged without AI');
+    check(summary?.spend.inputTokens === 0, 'no AI tokens used');
+    const body = file(dir, '.autoheal-out/pr-body.md');
+    check(/One UI change, one fix/.test(body) && /fixed 2 tests/.test(body), 'PR body groups the two tests under one UI change');
+    check(/element fingerprint, no AI tokens/.test(body) && /Locator: .*strong/.test(body), 'PR body names the fingerprint fix and the locator strength');
+    const rerun = spawnSync('npx', ['playwright', 'test', 'tests/login.spec.ts', 'tests/checkout-login.spec.ts'], { cwd: dir, encoding: 'utf8' });
+    check(rerun.status === 0, 'both fixed tests pass in a fresh Playwright run');
+  },
+
   action() {
     const dir = prepare('action');
     execFileSync('git', ['branch', '-M', 'main'], { cwd: dir });
@@ -308,10 +350,11 @@ const scenarios = {
     const pushed = execFileSync('git', ['--git-dir', remote, 'show', '--name-only', '--format=%s', 'autoheal/4242'], { encoding: 'utf8' });
     check(/AutoHeal fixes for failed run 4242/.test(pushed), 'fix commit pushed to the bot branch');
     const pushedFiles = pushed.trim().split('\n').slice(1).filter(Boolean).sort();
-    const pushedCode = pushedFiles.filter((f) => !f.startsWith('.autoheal/memory/'));
+    const pushedCode = pushedFiles.filter((f) => !f.startsWith('.autoheal/memory/') && !f.startsWith('.autoheal/fingerprints/'));
+    const pushedPrints = pushedFiles.filter((f) => f.startsWith('.autoheal/fingerprints/'));
     check(
-      JSON.stringify(pushedCode) === JSON.stringify(['pages/profile.ts', 'playwright-quarantine.json', 'tests/login.spec.ts']) && pushedFiles.length === 5,
-      `only healed files and their 2 memory entries committed (${pushedFiles.join(', ')})`,
+      JSON.stringify(pushedCode) === JSON.stringify(['pages/profile.ts', 'playwright-quarantine.json', 'tests/login.spec.ts']) && pushedFiles.length === 5 + pushedPrints.length && pushedPrints.length > 0,
+      `only healed files, their 2 memory entries and ${pushedPrints.length} element fingerprints committed (${pushedFiles.join(', ')})`,
     );
     const healedSpec = execFileSync('git', ['--git-dir', remote, 'show', 'autoheal/4242:tests/login.spec.ts'], { encoding: 'utf8' });
     check(healedSpec === file(dir, 'tests/login.spec.ts'), 'pushed spec matches what the heal job verified');
@@ -402,7 +445,7 @@ const scenarios = {
 };
 
 const wanted = process.argv.slice(2);
-const order = wanted.length ? wanted : ['rules', 'ai', 'cheat', 'comment', 'action', 'dashboard'];
+const order = wanted.length ? wanted : ['rules', 'ai', 'cheat', 'comment', 'fingerprint', 'action', 'dashboard'];
 let aiResult;
 for (const name of order) {
   if (!scenarios[name]) {

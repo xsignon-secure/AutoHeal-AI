@@ -27,9 +27,31 @@ import { triage as triageFailure } from './triage.js';
 import { MINUTES_SAVED } from './types.js';
 import { VERSION } from './version.js';
 import { failureScreenshot, frameFromFile, visionEnabled } from './vision.js';
-import { compareRuns, findTrace, recordFromFile } from './runtime.js';
+import { compareRuns, findTrace, readTrace, recordFromFile } from './runtime.js';
+import { domFromZip, fingerprintPath, learn, loadFingerprints, lookup, saveFingerprints } from './fingerprints.js';
+import { bestMatch, elements } from './snapshot.js';
+import { locatorChanges, locatorFor, parseSelector, rankOf, renderLocator, sourcePattern } from './locators.js';
 const run = promisify(execFile);
 const NEW_FILE = '\u0000AUTOHEAL_NEW_FILE';
+/** The publish job accepts up to 60 fingerprint files per PR. */
+const MAX_FINGERPRINTS_PER_RUN = 50;
+async function traceDom(root, tracePath) {
+    if (!tracePath)
+        return null;
+    const abs = path.resolve(root, tracePath);
+    const rel = path.relative(root, abs);
+    if (rel.startsWith('..') || path.isAbsolute(rel))
+        return null;
+    const buf = await readTrace(abs);
+    if (!buf)
+        return null;
+    try {
+        return domFromZip(buf);
+    }
+    catch {
+        return null;
+    }
+}
 export function escapeRegex(text) {
     return text.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 }
@@ -289,6 +311,23 @@ export async function heal(options) {
             set.add(f.title);
             failingTitlesByFile.set(f.file, set);
         }
+        // Element fingerprints: what each locator pointed at, from the repo and from this run's traces.
+        const savedFingerprints = await loadFingerprints(root);
+        const learned = new Map();
+        const addLearned = (entries) => {
+            for (const e of entries)
+                if (learned.size < MAX_FINGERPRINTS_PER_RUN || learned.has(fingerprintPath(e.selector, e.page)))
+                    learned.set(fingerprintPath(e.selector, e.page), e);
+        };
+        const doms = new Map();
+        for (const f of failures) {
+            const dom = await traceDom(root, f.tracePath);
+            if (!dom)
+                continue;
+            doms.set(f.index, dom);
+            addLearned(learn(dom, f.file));
+        }
+        const moves = new Map();
         // 2. Deterministic fixes, read before any rerun changes the engine's "last run".
         const dryFixes = new Map();
         for (const f of work) {
@@ -333,6 +372,18 @@ export async function heal(options) {
             const same = failedStep ? now.steps.filter((x) => x.title === failedStep.title && x.expected === failedStep.expected) : [];
             const match = same.find((x) => x.box);
             const info = { checked: true, checks, repeated, ...(match?.box ? { box: match.box } : {}) };
+            if (!findings.length) {
+                // The fixed run found every element: remember them.
+                const buf = await readTrace(file);
+                if (buf) {
+                    try {
+                        addLearned(learn(domFromZip(buf), failure.file));
+                    }
+                    catch {
+                        // An unreadable snapshot only means nothing is learned.
+                    }
+                }
+            }
             if (!findings.length && options.evidenceDir) {
                 const shots = await saveEvidence(oldTrace, file, same[0]?.end ?? now.steps.at(-1)?.end).catch(() => null);
                 if (shots)
@@ -404,6 +455,17 @@ export async function heal(options) {
             }
             await writeTracked(rel, content);
             const grep = escapeRegex(lastTitle(failure.title));
+            const { runs, passed, detail } = await stableRuns(failure, grep);
+            if (!passed) {
+                await writeFile(abs, before);
+                if (originals.get(rel) === before)
+                    originals.delete(rel);
+                return { kept: false, blocked: false, guard, stability: { runs, passed: false, detail }, message: `The test still fails with this change:\n${detail}` };
+            }
+            return await afterStable(failure, rel, abs, before, guard, runs, grep);
+        }
+        /** The test passes `repeatEach` times in a row (pytest: up to 3 separate runs). */
+        async function stableRuns(failure, grep) {
             let passed = false;
             let detail = '';
             const runs = pytest ? Math.min(3, options.repeatEach) : options.repeatEach;
@@ -424,12 +486,10 @@ export async function heal(options) {
                 if (!passed)
                     detail = r.text.split('\n').slice(0, 25).join('\n');
             }
-            if (!passed) {
-                await writeFile(abs, before);
-                if (originals.get(rel) === before)
-                    originals.delete(rel);
-                return { kept: false, blocked: false, guard, stability: { runs, passed: false, detail }, message: `The test still fails with this change:\n${detail}` };
-            }
+            return { runs, passed, detail };
+        }
+        /** After the stability rerun: the runtime guard, then the rest of the file and its importers. */
+        async function afterStable(failure, rel, abs, before, guard, runs, grep) {
             // Guard v2: one traced run of the fixed test, compared with the failed run's trace.
             const runtime = pytest
                 ? { info: { checked: false, note: 'the runtime check reads Playwright Test traces; pytest fixes are checked by code and reruns' } }
@@ -475,6 +535,199 @@ export async function heal(options) {
             const scope = importers.length ? `the rest of the file and ${importers.length} other spec(s) using ${rel}` : 'the rest of the file';
             return { kept: true, blocked: false, guard, stability: { runs, passed: true, detail: `passed ${runs}× and ${scope} did not get worse` }, runtime: runtimeInfo, message: 'kept' };
         }
+        /** Where a locator is written: the failing spec, or one file it imports. Null when not exactly one file. */
+        async function findLocator(failure, loc) {
+            const spec = safePath(root, failure.file);
+            if (!spec)
+                return null;
+            const specSource = await readFile(spec, 'utf8').catch(() => null);
+            if (specSource === null)
+                return null;
+            const files = [failure.file, ...relativeImports(failure.file, specSource)];
+            const found = [];
+            for (const file of [...new Set(files)]) {
+                const abs = safePath(root, file);
+                if (!abs)
+                    continue;
+                const source = file === failure.file ? specSource : await readFile(abs, 'utf8').catch(() => null);
+                if (source === null)
+                    continue;
+                const pattern = sourcePattern(loc, file.endsWith('.py'));
+                const matches = [...source.matchAll(pattern)];
+                if (matches.length)
+                    found.push({ file, source, matches, pattern });
+            }
+            return found.length === 1 ? found[0] : null;
+        }
+        /** Replaces every copy of the old locator in that one file with the new one. */
+        function replaceLocator(at, loc) {
+            const first = at.matches[0];
+            const quote = first[1] ?? "'";
+            const after = renderLocator(loc, at.file.endsWith('.py'), quote);
+            if (after === first[0])
+                return null;
+            const next = at.source.replace(at.pattern, after);
+            return next === at.source ? null : { next, before: first[0], after };
+        }
+        function savedFor(dom) {
+            const call = dom?.failedCall;
+            if (!call?.selector)
+                return undefined;
+            return lookup([...savedFingerprints, ...learned.values()], call.selector, call.page);
+        }
+        function matchFor(failure, dom) {
+            const saved = savedFor(dom);
+            if (!saved || !dom?.failedPage || !dom.failedCall)
+                return null;
+            const match = bestMatch(saved.fingerprint, elements(dom.failedPage.root), {
+                action: dom.failedCall.method !== 'expect',
+                ...(dom.failedCall.method === 'expect' && failure.expected !== undefined ? { expected: failure.expected.replace(/^"|"$/g, '') } : {}),
+            });
+            return match ? { saved, match } : null;
+        }
+        /** A fix from the element's saved fingerprint, found again on the failed page. */
+        async function fingerprintProposal(failure, dom) {
+            const found = matchFor(failure, dom);
+            if (!found || !dom?.failedPage || !dom.failedCall?.selector)
+                return null;
+            const old = parseSelector(dom.failedCall.selector);
+            const loc = locatorFor(found.match.element, dom.failedPage.root);
+            if (!old || !loc)
+                return null;
+            const at = await findLocator(failure, old);
+            const change = at ? replaceLocator(at, loc) : null;
+            if (!at || !change)
+                return null;
+            const signals = found.match.signals.join(', ') || 'role and position';
+            log(`  fingerprint: ${change.before} → ${change.after} (match ${Math.round(found.match.score * 100)}%: ${signals})`);
+            const p = {
+                by: 'fingerprint',
+                file: at.file,
+                current: at.source,
+                next: change.next,
+                before: change.before,
+                after: change.after,
+                why: `The element this locator found before (saved ${found.saved.at.slice(0, 10)}) is still on the page with the same ${signals}; the new locator finds it again.`,
+                match: { score: found.match.score, signals: found.match.signals },
+                locator: loc,
+            };
+            proposals.set(failure.index, p);
+            return p;
+        }
+        /** What the fingerprint says, for the AI when no deterministic fix was kept. */
+        function fingerprintHint(failure, dom) {
+            const saved = savedFor(dom);
+            if (!saved)
+                return '';
+            const found = matchFor(failure, dom);
+            const loc = found && dom?.failedPage ? locatorFor(found.match.element, dom.failedPage.root) : null;
+            const what = JSON.stringify(saved.fingerprint);
+            return loc
+                ? `- Element fingerprint for the broken locator (saved ${saved.at.slice(0, 10)}): ${what}. Best match on the failed page: ${renderLocator(loc, failure.file.endsWith('.py'))}.`
+                : `- Element fingerprint for the broken locator (saved ${saved.at.slice(0, 10)}): ${what}. No element on the failed page matched it clearly.`;
+        }
+        /** The engine's one-line locator fix, as a proposal. */
+        async function engineProposal(fix) {
+            const abs = safePath(root, fix.file);
+            if (!abs)
+                return null;
+            const current = await readFile(abs, 'utf8').catch(() => null);
+            if (current === null)
+                return null;
+            const lines = current.split('\n');
+            const idx = fix.line - 1;
+            const line = lines[idx];
+            const cr = line?.endsWith('\r') ? '\r' : '';
+            if (line === undefined || line.slice(0, line.length - cr.length) !== fix.before.replace(/\r$/, ''))
+                return null;
+            lines[idx] = `${fix.after.replace(/\r$/, '')}${cr}`;
+            const after = locatorChanges(fix.before, fix.after)[0]?.after ?? fix.after.trim();
+            return { by: 'rules', file: fix.file, current, next: lines.join('\n'), before: fix.before.trim(), after, why: fix.why || 'Replaced the locator with one verified against the page in the trace.' };
+        }
+        const SUMMARY = {
+            rules: "Fixed with the engine's verified locator; no AI tokens used.",
+            fingerprint: "Fixed by finding the element again from its saved fingerprint; no AI tokens used.",
+            'same-change': 'Fixed by the same change as another test that this UI change broke; no AI tokens used.',
+            ai: 'Fixed by the AI agent and proven by the stability rerun.',
+        };
+        /** Verifies one proposal and fills in the result. True when it was kept. */
+        async function attempt(failure, result, p) {
+            const outcome = await verify(failure, p.file, p.next);
+            if (outcome.guard)
+                result.guard = outcome.guard;
+            if (outcome.stability)
+                result.stability = outcome.stability;
+            if (outcome.runtime)
+                result.runtime = outcome.runtime;
+            if (outcome.kept) {
+                result.status = 'FIXED';
+                const fix = { by: p.by, file: p.file, explanation: p.why, diff: shortDiff(p.file, p.current, p.next) };
+                if (p.before !== undefined)
+                    fix.before = p.before;
+                if (p.after !== undefined)
+                    fix.after = p.after;
+                const locs = locatorChanges(p.current, p.next);
+                if (locs.length)
+                    fix.locators = locs;
+                if (p.match)
+                    fix.match = p.match;
+                if (p.sameAs)
+                    fix.sameAs = p.sameAs;
+                result.fix = fix;
+                result.summary = SUMMARY[p.by];
+                proposals.set(failure.index, p);
+                return true;
+            }
+            if (outcome.blocked) {
+                result.status = 'BLOCKED_CHEATING';
+                result.summary = outcome.message;
+            }
+            return false;
+        }
+        /**
+         * Another test with the same broken locator was already fixed. If that fix
+         * was in a shared file, this test may pass already: prove it. Otherwise
+         * make the same locator change in this test's file.
+         */
+        async function sameChange(failure, result, move) {
+            const old = parseSelector(move.selector);
+            const at = old ? await findLocator(failure, old) : null;
+            if (at && move.locator) {
+                const change = replaceLocator(at, move.locator);
+                if (!change)
+                    return false;
+                log(`  same UI change as "${move.title}": ${change.before} → ${change.after}`);
+                return attempt(failure, result, {
+                    by: 'same-change',
+                    file: at.file,
+                    current: at.source,
+                    next: change.next,
+                    before: change.before,
+                    after: change.after,
+                    why: `The same UI change broke "${move.title}"; this makes the same locator change.`,
+                    sameAs: move.title,
+                    locator: move.locator,
+                });
+            }
+            if (at)
+                return false; // the old locator is still here and the kept fix cannot be replayed: let the other fixes try
+            const grep = escapeRegex(lastTitle(failure.title));
+            const st = await stableRuns(failure, grep);
+            result.stability = st;
+            if (!st.passed)
+                return false;
+            const runtime = pytest ? null : await runtimeCheck(failure, grep);
+            if (runtime?.info)
+                result.runtime = runtime.info;
+            if (runtime?.findings?.length)
+                return false;
+            log(`  fixed by the change for "${move.title}" (${move.file})`);
+            result.status = 'FIXED';
+            result.fix = { by: 'same-change', file: move.file, explanation: `The fix for "${move.title}" in \`${move.file}\` fixes this test too; this test's own files did not change.`, diff: move.diff, sameAs: move.title };
+            result.summary = SUMMARY['same-change'];
+            return true;
+        }
+        const proposals = new Map();
         // 3–5. One failure at a time.
         for (const [position, failure] of work.entries()) {
             budget.share(work.length - position);
@@ -529,47 +782,45 @@ export async function heal(options) {
             };
             if (t.category === 'TEST_BUG') {
                 let fixed = false;
-                // 4a. Deterministic fix from the engine: no AI tokens.
-                if (dry && dry.kind === 'locator') {
-                    const abs = safePath(root, dry.file);
-                    if (abs) {
-                        const current = await readFile(abs, 'utf8');
-                        const lines = current.split('\n');
-                        const idx = dry.line - 1;
-                        const line = lines[idx];
-                        const cr = line?.endsWith('\r') ? '\r' : '';
-                        if (line !== undefined && line.slice(0, line.length - cr.length) === dry.before.replace(/\r$/, '')) {
-                            lines[idx] = `${dry.after.replace(/\r$/, '')}${cr}`;
-                            const next = lines.join('\n');
-                            const outcome = await verify(failure, dry.file, next);
-                            if (outcome.guard)
-                                result.guard = outcome.guard;
-                            if (outcome.stability)
-                                result.stability = outcome.stability;
-                            if (outcome.runtime)
-                                result.runtime = outcome.runtime;
-                            if (outcome.kept) {
-                                fixed = true;
-                                result.status = 'FIXED';
-                                result.fix = { by: 'rules', file: dry.file, explanation: dry.why || 'Replaced the locator with one verified against the page in the trace.', diff: shortDiff(dry.file, current, next), before: dry.before.trim(), after: dry.after.trim() };
-                                result.summary = 'Fixed with the engine\'s verified locator; no AI tokens used.';
-                            }
-                            else if (outcome.blocked) {
-                                result.status = 'BLOCKED_CHEATING';
-                                result.summary = outcome.message;
-                            }
+                const dom = doms.get(failure.index);
+                const broken = dom?.failedCall?.selector;
+                // 4a. The same UI change already fixed another test: reuse that fix (no AI tokens).
+                const move = broken ? moves.get(broken) : undefined;
+                if (move)
+                    fixed = await sameChange(failure, result, move);
+                // 4b. Deterministic fixes: the element's saved fingerprint, and the engine's
+                // verified locator. The stronger locator (Playwright's ranking) goes first.
+                if (!fixed && t.rootCause === 'LOCATOR_DRIFT') {
+                    const candidates = [];
+                    const fp = await fingerprintProposal(failure, dom);
+                    if (fp)
+                        candidates.push(fp);
+                    const ruled = dry && dry.kind === 'locator' ? await engineProposal(dry) : null;
+                    if (ruled)
+                        candidates.push(ruled);
+                    candidates.sort((a, b) => rankOf(a.after ?? '') - rankOf(b.after ?? ''));
+                    for (const p of candidates) {
+                        if (await attempt(failure, result, p)) {
+                            fixed = true;
+                            break;
                         }
                     }
                 }
-                // 4b. The AI agent.
+                else if (!fixed && dry && dry.kind === 'locator') {
+                    const ruled = await engineProposal(dry);
+                    if (ruled)
+                        fixed = await attempt(failure, result, ruled);
+                }
+                // 4c. The AI agent.
                 if (!fixed && provider) {
+                    const hint = fingerprintHint(failure, dom);
                     const agent = await aiFix({
                         mcp,
                         provider,
                         projectRoot: root,
                         failure,
                         triage: t,
-                        memory: memoryText(relevantMemory(memory, failure.file)),
+                        memory: memoryText(relevantMemory(memory, failure.file)) + (hint ? `\n${hint}` : ''),
                         budget,
                         ...(options.appUrl ? { appUrl: options.appUrl } : {}),
                         screenshot,
@@ -585,6 +836,9 @@ export async function heal(options) {
                         fixed = true;
                         result.status = 'FIXED';
                         const fix = { by: 'ai', file: agent.file, explanation: agent.explanation, diff: shortDiff(agent.file, agent.before, agent.after) };
+                        const locs = locatorChanges(agent.before, agent.after);
+                        if (locs.length)
+                            fix.locators = locs;
                         result.fix = fix;
                         result.summary = 'Fixed by the AI agent and proven by the stability rerun.';
                     }
@@ -607,8 +861,19 @@ export async function heal(options) {
                 else if (!fixed && result.status !== 'BLOCKED_CHEATING') {
                     result.summary = 'This looks like a test problem, but no deterministic fix applied and no AI key is set (ANTHROPIC_API_KEY, OPENAI_API_KEY or AUTOHEAL_BASE_URL).';
                 }
-                if (fixed)
+                if (fixed) {
                     fixedTitles.add(failure.title);
+                    if (broken && result.fix && !moves.has(broken)) {
+                        const lastProposal = proposals.get(failure.index);
+                        moves.set(broken, {
+                            selector: broken,
+                            title: failure.title,
+                            file: result.fix.file,
+                            diff: result.fix.diff,
+                            ...(result.fix.by === 'fingerprint' && lastProposal?.locator ? { locator: lastProposal.locator } : {}),
+                        });
+                    }
+                }
             }
             else if (t.category === 'FLAKY') {
                 if (options.mode === 'comment') {
@@ -654,6 +919,33 @@ export async function heal(options) {
             result.spend = deltaSnapshot(budget.snapshot(), spentBefore);
             summary.results.push(result);
         }
+        // One UI change, one fix: failures past max-failures that the same broken
+        // locator caused get the kept fix too (no AI tokens, still proven by reruns).
+        for (const failure of failures.slice(work.length)) {
+            const broken = doms.get(failure.index)?.failedCall?.selector;
+            const move = broken ? moves.get(broken) : undefined;
+            if (!move)
+                continue;
+            log(`Failure ${failure.index}: ${failure.file} › ${failure.title} (same broken locator as "${move.title}")`);
+            const spentBefore = budget.snapshot();
+            const { detail: _d, ...failureLite } = failure;
+            const result = {
+                failure: failureLite,
+                category: 'TEST_BUG',
+                rootCause: 'LOCATOR_DRIFT',
+                confidence: 0.9,
+                reasons: [`the same locator broke as in "${move.title}", which was fixed`],
+                status: 'UNFIXED',
+                summary: '',
+                spend: EMPTY_SNAPSHOT,
+            };
+            if (await sameChange(failure, result, move)) {
+                fixedTitles.add(failure.title);
+                result.spend = deltaSnapshot(budget.snapshot(), spentBefore);
+                summary.results.push(result);
+                summary.skippedFailures--;
+            }
+        }
         // 6. Whole-tree heal guard over everything this job changed.
         const specFiles = [...originals.keys()].filter((f) => f !== 'playwright-quarantine.json');
         if (specFiles.length && (await isGitRepo(root))) {
@@ -692,6 +984,22 @@ export async function heal(options) {
                 if (written !== rel)
                     throw new Error(`memory path mismatch: ${written} vs ${rel}`);
             }
+        }
+        // Element fingerprints learned from this run's traces, saved with the fixes.
+        if (options.mode !== 'comment' && summary.results.some((r) => r.status === 'FIXED')) {
+            const same = (a, b) => !!b && JSON.stringify(a.fingerprint) === JSON.stringify(b.fingerprint);
+            const byPath = new Map(savedFingerprints.map((e) => [fingerprintPath(e.selector, e.page), e]));
+            const fresh = [...learned.entries()].filter(([rel, e]) => !same(e, byPath.get(rel))).map(([, e]) => e);
+            for (const e of fresh) {
+                const rel = fingerprintPath(e.selector, e.page);
+                if (!originals.has(rel)) {
+                    const abs = path.join(root, rel);
+                    originals.set(rel, (await exists(abs)) ? await readFile(abs, 'utf8') : NEW_FILE);
+                }
+            }
+            const written = await saveFingerprints(root, fresh);
+            if (written.length)
+                summary.fingerprints = written.length;
         }
         // Comment mode never leaves changes behind; the diffs are in the comment.
         if (options.mode === 'comment')

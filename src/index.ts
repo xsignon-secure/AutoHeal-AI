@@ -17,3 +17,8 @@ export { eventsFrom, uploadEvents, type HealEvent } from './upload.js';
 export * from './providers/index.js';
 export type * from './types.js';
 export { VERSION } from './version.js';
+export { readSnapshots, elements, textOf, targetOf, roleOf, nameOf, labelOf, fingerprintOf, bestMatch, similarity, type El, type DomSnapshot, type Fingerprint, type Match, type MatchOptions } from './snapshot.js';
+export { loadFingerprints, saveFingerprints, lookup, learn, domFromTrace, domFromZip, fingerprintPath, FINGERPRINT_DIR, type FingerprintEntry, type TraceDom, type TraceCall } from './fingerprints.js';
+export { parseSelector, sourcePattern, renderLocator, locatorFor, rankOf, strengthOf, locatorCalls, locatorChanges, type ParsedLocator, type LocatorChange, type Strength } from './locators.js';
+export { startApp, checkAppUrl, type StartedApp, type StartOptions } from './app.js';
+export { uiChanges } from './evidence.js';
