@@ -61,7 +61,9 @@ export function readMarker(body) {
 export async function reviewHistory(options) {
     if (!/^[\w-][\w.-]*\/[\w-][\w.-]*$/.test(options.repo) || options.repo.includes('..'))
         throw new Error(`bad repository name ${options.repo}`);
-    const api = (options.apiUrl ?? 'https://api.github.com').replace(/\/+$/, '');
+    let api = (options.apiUrl ?? 'https://api.github.com').slice(0, 500);
+    while (api.endsWith('/'))
+        api = api.slice(0, -1);
     if (!/^https?:\/\//.test(api))
         throw new Error('bad API URL');
     const fetchFn = options.fetchFn ?? fetch;

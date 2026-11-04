@@ -316,8 +316,9 @@ const scenarios = {
     const portFile = path.join(dir, '.git', 'stub-port');
     const stub = spawn(
       process.execPath,
-      ['-e', `const s = require('http').createServer((q, r) => { r.setHeader('content-type', 'application/json'); r.end(q.url.startsWith('/repos/acme/shop/pulls?') ? ${JSON.stringify(JSON.stringify(pulls))} : '[]'); }).listen(0, '127.0.0.1', () => require('fs').writeFileSync(${JSON.stringify(portFile)}, String(s.address().port)))`],
-      { stdio: 'ignore' },
+      // Fixed code; the data and the port file come in through the environment.
+      ['-e', "const s = require('http').createServer((q, r) => { r.setHeader('content-type', 'application/json'); r.end(q.url.startsWith('/repos/acme/shop/pulls?') ? process.env.STUB_PULLS : '[]'); }).listen(0, '127.0.0.1', () => require('fs').writeFileSync(process.env.STUB_PORT_FILE, String(s.address().port)))"],
+      { stdio: 'ignore', env: { ...process.env, STUB_PULLS: JSON.stringify(pulls), STUB_PORT_FILE: portFile } },
     );
     for (let i = 0; i < 50 && !existsSync(portFile); i++) Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 100);
     const port = readFileSync(portFile, 'utf8').trim();
