@@ -15,7 +15,7 @@
  * inline lists, quoted strings, numbers, booleans and comments. No anchors,
  * tags, multi-line strings or documents.
  */
-import { existsSync, lstatSync, readFileSync } from 'node:fs';
+import { closeSync, constants, fstatSync, openSync, readSync } from 'node:fs';
 import path from 'node:path';
 export const POLICY_FILE = '.autoheal.yml';
 const MAX_BYTES = 20_000;
@@ -271,20 +271,41 @@ export function readPolicy(raw) {
  */
 export function loadPolicy(repoRoot) {
     const file = path.join(repoRoot, POLICY_FILE);
-    if (!existsSync(file))
-        return null;
-    const st = lstatSync(file);
-    if (!st.isFile())
-        throw new PolicyError(`${POLICY_FILE} must be a regular file (not a symlink or folder)`);
-    if (st.size > MAX_BYTES)
-        throw new PolicyError(`${POLICY_FILE} is larger than ${MAX_BYTES} bytes`);
+    // One open with O_NOFOLLOW, then checks on that same descriptor: no gap
+    // between checking the file and reading it, and never through a symlink.
+    let fd;
     try {
-        return readPolicy(parsePolicyYaml(readFileSync(file, 'utf8')));
+        fd = openSync(file, constants.O_RDONLY | constants.O_NOFOLLOW | (constants.O_NONBLOCK ?? 0));
+    }
+    catch (err) {
+        const code = err.code;
+        if (code === 'ENOENT')
+            return null;
+        if (code === 'ELOOP' || code === 'EMLINK')
+            throw new PolicyError(`${POLICY_FILE} must be a regular file (not a symlink or folder)`);
+        throw err;
+    }
+    try {
+        const st = fstatSync(fd);
+        if (!st.isFile())
+            throw new PolicyError(`${POLICY_FILE} must be a regular file (not a symlink or folder)`);
+        if (st.size > MAX_BYTES)
+            throw new PolicyError(`${POLICY_FILE} is larger than ${MAX_BYTES} bytes`);
+        const buf = Buffer.alloc(MAX_BYTES + 1);
+        let n = 0;
+        for (let r; n < buf.length && (r = readSync(fd, buf, n, buf.length - n, null)) > 0;)
+            n += r;
+        if (n > MAX_BYTES)
+            throw new PolicyError(`${POLICY_FILE} is larger than ${MAX_BYTES} bytes`);
+        return readPolicy(parsePolicyYaml(buf.subarray(0, n).toString('utf8')));
     }
     catch (err) {
         if (err instanceof PolicyError)
-            throw new PolicyError(`${POLICY_FILE}: ${err.message}`);
+            throw new PolicyError(err.message.startsWith(POLICY_FILE) ? err.message : `${POLICY_FILE}: ${err.message}`);
         throw err;
+    }
+    finally {
+        closeSync(fd);
     }
 }
 // ---------------------------------------------------------------- matching
