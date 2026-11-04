@@ -16,7 +16,7 @@ import type { Part, Provider, ToolSpec, Turn } from './providers/types.js';
 import { imageTokens, type Screenshot } from './vision.js';
 import { ProviderError } from './providers/types.js';
 import type { Category, RootCause, Triage } from './triage.js';
-import type { FailureInfo, GuardInfo } from './types.js';
+import type { FailureInfo, GuardInfo, RuntimeInfo } from './types.js';
 
 export interface VerifyOutcome {
   kept: boolean;
@@ -24,6 +24,7 @@ export interface VerifyOutcome {
   message: string;
   guard?: GuardInfo;
   stability?: { runs: number; passed: boolean; detail: string };
+  runtime?: RuntimeInfo;
 }
 
 export interface AgentContext {
@@ -49,6 +50,7 @@ export interface AgentResult {
   after?: string;
   guard?: GuardInfo;
   stability?: { runs: number; passed: boolean; detail: string };
+  runtime?: RuntimeInfo;
   blockedAttempts: number;
   log: string[];
 }
@@ -332,6 +334,7 @@ export async function aiFix(ctx: AgentContext): Promise<AgentResult> {
                 log,
                 ...(outcome.guard ? { guard: outcome.guard } : {}),
                 ...(outcome.stability ? { stability: outcome.stability } : {}),
+                ...(outcome.runtime ? { runtime: outcome.runtime } : {}),
               };
               results.push({ type: 'tool_result', id: call.id, content: 'Kept: the fix passed both anti-cheat scans and the stability rerun. You are done.' });
             } else {

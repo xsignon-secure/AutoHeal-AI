@@ -30,9 +30,15 @@ It is MIT licensed and runs entirely on your GitHub runner. No AutoHeal server, 
   - adds code a test fix never needs (environment variables, processes, system modules, raw network calls) or hides such code behind built-up names and globals.
 
   On top of those rules, a fix may only *add* locators, waits, literals and names the file already uses (a token-level allowlist), so a fake comment inside a string or a split-up string cannot hide new code. Fixed waits, `force: true` and retries are blocked; raised timeouts are blocked unless you allow warnings. Every bypass found in our audits is in [`test/bypasses/corpus.mjs`](test/bypasses/corpus.mjs), and CI checks each one is blocked. The scan is a strong filter, not a proof. The stability rerun and your review of the draft PR are the other two layers.
+- **Runtime guard.** The code scan reads text; the runtime guard watches what the test actually does. After a fix passes the scan and the stability rerun, AutoHeal runs the fixed test once more with a trace and compares it with the failed run's trace. It blocks the fix if:
+  - an assertion the failed run made does not run again, or runs against another value (fewer or different checks);
+  - a step both runs share happens on another page;
+  - an action that worked before the failure now lands somewhere else on the page (another element).
+
+  The PR shows what was compared, and links a screenshot of the failed run next to one of the fixed run at the same step. The failed run's trace stops at the failure, so steps after it can only be checked by the code scan. Needs `trace: 'retain-on-failure'` (or `on`) in your Playwright config; without a trace the PR says the runtime check was skipped. pytest fixes are checked by code and reruns only.
 - **Stability proof.** A fix is kept only if the test passes `--repeat-each=5` and the rest of the file does not get worse. A fix to a page object or helper also reruns every spec that imports it. A rerun that crashes or runs no tests counts as a failure. Anything else is reverted before the model even sees the result. The repeats run back to back, so tests must clean up after themselves. If a test shares a database or other state without resetting it, a good fix can fail the proof and be reverted (lower `repeat-each`, or isolate the data). A bad fix is never kept because of this.
 - **Secrets are scrubbed.** Before anything goes to the AI or into a PR, issue, comment or job summary, AutoHeal redacts known credential shapes: API keys, GitHub, AWS, Slack and Stripe tokens, JWTs, private keys, `Bearer` headers, `password=` values and passwords in URLs. It also redacts the value of every secret-looking environment variable on the runner.
-- **It sees the page.** When a test fails, the AI is shown the page at that moment: Playwright's own failure screenshot, or the last frame from the trace before the failing step. So it can tell that a button moved, was renamed or is hidden behind a dialog, instead of guessing from the error text. The image comes from your run's own files (no extra browser run) and goes only to your AI provider. It never goes into a PR, issue, comment or the dashboard. It is on for Anthropic and OpenAI; turn it off with `vision: false`. Keep `screenshot: 'only-on-failure'` or a trace with screenshots in your config so there is something to see.
+- **It sees the page.** When a test fails, the AI is shown the page at that moment: Playwright's own failure screenshot, or the last frame from the trace before the failing step. So it can tell that a button moved, was renamed or is hidden behind a dialog, instead of guessing from the error text. The image comes from your run's own files (no extra browser run) and goes only to your AI provider. It never goes into a PR text, issue, comment or the dashboard. (The before/after screenshots of the runtime guard are a separate, optional run artifact; see `screenshots`.) It is on for Anthropic and OpenAI; turn it off with `vision: false`. Keep `screenshot: 'only-on-failure'` or a trace with screenshots in your config so there is something to see.
 - **Triage first, AI second.** Most failures are classified with no AI at all. Locator fixes that the engine can verify against the trace are applied by rules, using no tokens. The model is only asked when it is actually needed.
 - **Repo memory.** Fixes that worked are saved in your repo, one small file per fix under `.autoheal/memory/`, so two open fix PRs never conflict. The agent reads them next time, so it learns your app's naming habits.
 - **Hard budgets.** The cost limit per job (`max-usd`, default $1), the number of AI calls and the number of tokens are all capped. Each failure gets an equal share of what is left, so one hard failure cannot use up the whole job. Before every AI call, AutoHeal checks that call's worst case (its estimated input plus the full output allowance), so no single call can cross the limit. The cost is an estimate from public prices; set `price-in` and `price-out` if yours differ (required for models it has no price for). When a limit stops the job, the report says so and nothing half-done is kept.
@@ -92,7 +98,7 @@ PRs opened with the default `GITHUB_TOKEN` do not start other workflows; GitHub 
   with:
     app-id: ${{ vars.AUTOHEAL_APP_ID }}
     private-key: ${{ secrets.AUTOHEAL_APP_KEY }}
-- uses: xsignon-secure/AutoHeal-AI/publish@v0.3.3
+- uses: xsignon-secure/AutoHeal-AI/publish@v0.4.0
   with:
     github-token: ${{ steps.app-token.outputs.token }}
     # ...the other inputs from the template
@@ -112,7 +118,7 @@ AutoHeal never pushes to your base branch, never auto-merges, and never runs on 
 
 ## Inputs
 
-**Heal action** (`xsignon-secure/AutoHeal-AI@v0.3.3`):
+**Heal action** (`xsignon-secure/AutoHeal-AI@v0.4.0`):
 
 | Input | Default | |
 |---|---|---|
@@ -127,6 +133,7 @@ AutoHeal never pushes to your base branch, never auto-merges, and never runs on 
 | `price-in`, `price-out` | | USD per million tokens, required for a model AutoHeal has no price for (`0` for a local model) |
 | `effort` | `medium` | Anthropic effort: `low` to `max` |
 | `vision` | `auto` | Show the AI the failure screenshot: `auto` (on for Anthropic and OpenAI, off for other endpoints), `true` or `false` |
+| `screenshots` | `true` | Save a before and after screenshot of each kept fix as the run artifact `<result-name>-evidence` (14 days) and link it from the PR. `false` turns it off |
 | `max-failures` | `3` | Failures to work on per run |
 | `repeat-each` | `5` | Runs in a row a fix must pass |
 | `max-usd` | `1.00` | AI cost limit per job (estimate) |
@@ -141,7 +148,7 @@ AutoHeal never pushes to your base branch, never auto-merges, and never runs on 
 
 Outputs: `outcome` (`fixed`, `blocked`, `app-bug`, `quarantined`, `unfixed`, `nothing-to-do` or `error`), `fixed`, `blocked`, `has-result`.
 
-**Publish action** (`xsignon-secure/AutoHeal-AI/publish@v0.3.3`): `result-dir`, `mode`, `base-branch`, `run-id`, `commit`, `pr-number`, `blocked`, `open-issues`, `allowed-paths`, `allow-warn`, `quarantine-days`, `github-token`, `dashboard-url`, `dashboard-secret`. Output: `pr-url`.
+**Publish action** (`xsignon-secure/AutoHeal-AI/publish@v0.4.0`): `result-dir`, `mode`, `base-branch`, `run-id`, `commit`, `pr-number`, `blocked`, `open-issues`, `allowed-paths`, `allow-warn`, `quarantine-days`, `github-token`, `dashboard-url`, `dashboard-secret`. Output: `pr-url`.
 
 `allowed-paths` limits which files a fix may change. The default is `**/tests/**, **/test/**, **/e2e/**, **/playwright/**, **/*.spec.*, **/*.test.*, **/test_*.py, **/*_test.py`. If your page objects live somewhere else (for example `src/pages/**`), add that folder. Files that tools load or run on their own (configs, `conftest.py`, `__init__.py`, setup and teardown files, `.pnpmfile.cjs`, gulp and grunt files) are never patched. Keep `allow-warn` and `quarantine-days` the same as in the heal job.
 

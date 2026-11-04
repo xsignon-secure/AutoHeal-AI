@@ -37,6 +37,8 @@ export interface HealOptions {
     /** Injected engine (tests); default: start playwright-e2e-mcp. */
     mcp?: ToolCaller;
     log?: (line: string) => void;
+    /** Where to save before/after screenshots of kept fixes (the CLI uses <out>/evidence). */
+    evidenceDir?: string;
 }
 export declare function escapeRegex(text: string): string;
 /** Spec files that import `rel` (relative imports, or Python module imports). */

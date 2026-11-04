@@ -138,8 +138,36 @@ export function frameFromTrace(entries) {
             }
         }
     }
+    return pickFrame(entries, frames, failedAt);
+}
+function screencastFrames(entries) {
+    const frames = [];
+    for (const [name, buf] of entries) {
+        if (!name.endsWith('.trace'))
+            continue;
+        for (const line of buf.toString('utf8').split('\n')) {
+            if (!line.startsWith('{') || !line.includes('screencast-frame'))
+                continue;
+            try {
+                const event = JSON.parse(line);
+                const entry = typeof event.file === 'string' ? event.file : typeof event.sha1 === 'string' ? `resources/${event.sha1}` : undefined;
+                if (event.type === 'screencast-frame' && typeof event.timestamp === 'number' && entry)
+                    frames.push({ entry, timestamp: event.timestamp });
+            }
+            catch {
+                // skip
+            }
+        }
+    }
+    return frames;
+}
+/** The last screencast frame at or before `until` (a trace timestamp), or the last frame. */
+export function frameAt(entries, until) {
+    return pickFrame(entries, screencastFrames(entries), until);
+}
+function pickFrame(entries, frames, until) {
     frames.sort((a, b) => a.timestamp - b.timestamp);
-    const candidates = failedAt === undefined ? frames : frames.filter((f) => f.timestamp <= failedAt + 250);
+    const candidates = until === undefined ? frames : frames.filter((f) => f.timestamp <= until + 250);
     for (const frame of [...(candidates.length ? candidates : frames)].reverse()) {
         const image = entries.get(frame.entry);
         if (image) {
@@ -221,5 +249,17 @@ export function visionEnabled(providerName, env = process.env) {
     if (setting === 'true' || setting === '1' || setting === 'on')
         return true;
     return providerName === 'anthropic' || providerName === 'openai' || providerName === 'scripted';
+}
+/** The screenshot at `until` (trace clock) from a trace.zip on disk, or null. */
+export async function frameFromFile(file, until) {
+    try {
+        const buf = await readSmallFile(file, MAX_ZIP_BYTES);
+        if (!buf)
+            return null;
+        return frameAt(readZip(buf, (name) => name.endsWith('.trace') || name.startsWith('resources/') || name.startsWith('screencast/')), until);
+    }
+    catch {
+        return null;
+    }
 }
 //# sourceMappingURL=vision.js.map

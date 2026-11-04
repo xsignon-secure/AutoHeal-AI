@@ -12,7 +12,7 @@ import type { ToolCaller } from './mcp.js';
 import type { Part, Provider, ToolSpec, Turn } from './providers/types.js';
 import { type Screenshot } from './vision.js';
 import type { Triage } from './triage.js';
-import type { FailureInfo, GuardInfo } from './types.js';
+import type { FailureInfo, GuardInfo, RuntimeInfo } from './types.js';
 export interface VerifyOutcome {
     kept: boolean;
     blocked: boolean;
@@ -23,6 +23,7 @@ export interface VerifyOutcome {
         passed: boolean;
         detail: string;
     };
+    runtime?: RuntimeInfo;
 }
 export interface AgentContext {
     mcp: ToolCaller;
@@ -50,6 +51,7 @@ export interface AgentResult {
         passed: boolean;
         detail: string;
     };
+    runtime?: RuntimeInfo;
     blockedAttempts: number;
     log: string[];
 }

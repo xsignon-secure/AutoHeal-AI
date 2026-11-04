@@ -5,7 +5,7 @@
  */
 
 import { realpathSync } from 'node:fs';
-import { appendFile, mkdir, readFile, stat, writeFile } from 'node:fs/promises';
+import { appendFile, mkdir, readFile, rm, stat, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { parseArgs } from 'node:util';
@@ -156,6 +156,8 @@ async function cmdHeal(argv: string[]): Promise<number> {
   log(`AutoHeal ${VERSION} · mode ${mode} · provider ${provider ? `${provider.name} (${provider.model})` : 'none (deterministic fixes only)'}`);
   const appUrl = values['app-url'] ?? env.AUTOHEAL_APP_URL;
   const mocksBaseUrl = values['mocks-base-url'] ?? env.AUTOHEAL_MOCKS_BASE_URL;
+  // Screenshots from an earlier run in the same folder would be mixed up with this run's.
+  await rm(path.join(outDir, 'evidence'), { recursive: true, force: true });
   const rawSummary = await heal({
     projectRoot,
     report,
@@ -178,6 +180,7 @@ async function cmdHeal(argv: string[]): Promise<number> {
     provider,
     run: runInfo(),
     log,
+    ...(env.AUTOHEAL_SCREENSHOTS === 'false' ? {} : { evidenceDir: path.join(outDir, 'evidence') }),
   });
   // Belt and braces: scrub every string before anything is written or posted.
   const summary = redactDeep(rawSummary);

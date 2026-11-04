@@ -38,6 +38,8 @@ export declare function jpegSize(buf: Buffer): {
 export declare function imageTokens(width?: number, height?: number): number;
 /** The last screencast frame at or before the end of the first failing action. */
 export declare function frameFromTrace(entries: Map<string, Buffer>): Screenshot | null;
+/** The last screencast frame at or before `until` (a trace timestamp), or the last frame. */
+export declare function frameAt(entries: Map<string, Buffer>, until?: number): Screenshot | null;
 /**
  * The screenshot for a failure whose trace is at `tracePath` (relative to the
  * project or absolute inside it). Returns null when there is none.
@@ -45,3 +47,5 @@ export declare function frameFromTrace(entries: Map<string, Buffer>): Screenshot
 export declare function failureScreenshot(root: string, tracePath: string | undefined): Promise<Screenshot | null>;
 /** Whether to send screenshots: AUTOHEAL_VISION=true|false, default on for Anthropic and OpenAI, off for other endpoints. */
 export declare function visionEnabled(providerName: string | undefined, env?: NodeJS.ProcessEnv): boolean;
+/** The screenshot at `until` (trace clock) from a trace.zip on disk, or null. */
+export declare function frameFromFile(file: string, until?: number): Promise<Screenshot | null>;

@@ -36,6 +36,21 @@ function resultBlock(r) {
         out.push(`| Anti-cheat | engine heal guard: **${r.guard.engine}**, local scan: **${r.guard.local}** |`);
     if (r.stability)
         out.push(`| Stability proof | ${r.stability.passed ? 'passed' : 'failed'} ${r.stability.runs}× in a row |`);
+    if (r.runtime?.checked) {
+        const at = r.runtime.box ? `; the fixed step acted at (${Math.round(r.runtime.box.x)}, ${Math.round(r.runtime.box.y)}), ${Math.round(r.runtime.box.width)}×${Math.round(r.runtime.box.height)} px` : '';
+        const n = r.runtime.repeated ?? 0;
+        const repeated = n ? `all ${n} the failed run made repeated with the same values` : 'the failed run stopped before its first assertion';
+        out.push(`| Runtime guard | traced rerun: ${r.runtime.checks ?? 0} assertion(s) ran, ${repeated}; the steps before the failure ran on the same pages and the same elements${at} |`);
+        const ev = r.runtime.evidence;
+        if (ev && (ev.before || ev.after)) {
+            const files = [ev.before && `before \`evidence/${cell(ev.before)}\``, ev.after && `after \`evidence/${cell(ev.after)}\``].filter(Boolean).join(', ');
+            const art = `**${cell(ev.artifact ?? 'evidence')}**`;
+            const where = ev.url && /^https:\/\/[^\s|()]+$/.test(ev.url) ? `the ${art} artifact of [this run](${ev.url})` : `the ${art} artifact of the heal run`;
+            out.push(`| Screenshots | ${files} in ${where} |`);
+        }
+    }
+    else if (r.runtime?.note)
+        out.push(`| Runtime guard | ${cell(r.runtime.note)} |`);
     if (r.quarantine)
         out.push(`| Quarantine | ${r.quarantine.days} days, then it counts again |`);
     if (r.failure.screenshot && r.spend.steps > 0)
