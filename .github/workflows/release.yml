@@ -74,13 +74,15 @@ jobs:
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: 24
-          registry-url: https://registry.npmjs.org
+          # No registry-url: it writes an .npmrc with a placeholder token, and
+          # npm then sends that token instead of using trusted publishing (OIDC).
           cache: ''
       - name: Publish to npm with provenance
         run: |
           # "./" so npm reads a local file, not a GitHub shorthand (pkg/name).
           tgz="./$(ls pkg/*.tgz)"
-          npx -y npm@12.2.1 publish "$tgz" --provenance --access public --ignore-scripts
+          unset NODE_AUTH_TOKEN NPM_CONFIG_USERCONFIG
+          npx -y npm@12.2.1 publish "$tgz" --provenance --access public --ignore-scripts --registry https://registry.npmjs.org/
       - name: GitHub release
         env:
           GH_TOKEN: ${{ github.token }}
