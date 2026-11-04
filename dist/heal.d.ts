@@ -17,6 +17,7 @@ import type { Provider } from './providers/types.js';
 import { type FailureResult, type HealSummary, type Mode, type Outcome } from './types.js';
 import type { Sandbox } from './sandbox.js';
 import { type ReviewHistory } from './reviews.js';
+import { type Policy } from './policy.js';
 export interface HealOptions {
     projectRoot: string;
     /** JSON report, blob-report folder, or a GitHub Actions / GitLab run URL. */
@@ -49,6 +50,12 @@ export interface HealOptions {
     reviews?: ReviewHistory;
     /** Why reviews could not be read, for the PR. */
     reviewNote?: string;
+    /** The repository's .autoheal.yml (see policy.ts); its limits are already applied to the options above. */
+    policy?: Policy | null;
+    /** The project folder inside the repository ('' at the root), for matching policy paths. */
+    repoPrefix?: string;
+    /** What the policy changed, for the PR. */
+    policyNote?: string;
 }
 export declare function escapeRegex(text: string): string;
 /** Spec files that import `rel` (relative imports, or Python module imports). */

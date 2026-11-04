@@ -1,2 +1,2 @@
 /** Kept in step with package.json (a test checks it). */
-export declare const VERSION = "0.7.0";
+export declare const VERSION = "0.8.0";

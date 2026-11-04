@@ -20,6 +20,8 @@ import { checkAppUrl, startApp } from './app.js';
 import { domFromZip, learn, saveFingerprints } from './fingerprints.js';
 import { readTrace } from './runtime.js';
 import { reviewHistory } from './reviews.js';
+import { loadPolicy, policyText, PolicyError, POLICY_FILE, tighten } from './policy.js';
+import { execFileSync } from 'node:child_process';
 import { VERSION } from './version.js';
 export const USAGE = `autoheal ${VERSION}: free, self-hosted AI agent that fixes failing Playwright tests
 
@@ -50,6 +52,9 @@ heal options (each also reads the AUTOHEAL_* variable in brackets):
   --mocks-base-url <u>   live API to compare mocks with [AUTOHEAL_MOCKS_BASE_URL]
   --no-flaky-check       skip the flaky rerun
   --allow-warn           accept anti-cheat WARN findings (default: block them)
+
+Policy: a .autoheal.yml at the repository root can protect paths, skip tests, limit
+fix kinds and tighten limits (never loosen them). See the README.
 
 Also read: AUTOHEAL_PRICE_IN, AUTOHEAL_PRICE_OUT (USD per million tokens; required
 for models with no built-in price), AUTOHEAL_OPEN_ISSUES, AUTOHEAL_ISSUE_MIN_CONFIDENCE,
@@ -108,6 +113,16 @@ function runInfo() {
         info.repo = env.GITHUB_REPOSITORY;
     return info;
 }
+/** The repository root, or null outside a git repository. */
+function gitTop(dir) {
+    try {
+        const out = execFileSync('git', ['-c', 'core.hooksPath=/dev/null', '-c', 'core.fsmonitor=false', 'rev-parse', '--show-toplevel'], { cwd: dir, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'], timeout: 10_000 }).trim();
+        return out ? path.resolve(out) : null;
+    }
+    catch {
+        return null;
+    }
+}
 async function cmdHeal(argv) {
     const { values } = parseArgs({
         args: argv,
@@ -134,6 +149,20 @@ async function cmdHeal(argv) {
     });
     const env = process.env;
     const projectRoot = path.resolve(values.project ?? '.');
+    const log = (line) => process.stderr.write(`[autoheal] ${line}\n`);
+    // The policy file is read first, before any project code (tests, the app) runs.
+    const repoRoot = gitTop(projectRoot) ?? projectRoot;
+    let policy;
+    try {
+        policy = loadPolicy(repoRoot);
+    }
+    catch (error) {
+        if (error instanceof PolicyError)
+            throw new ConfigError(`${error.message}. Fix the file, or remove it to use the workflow settings alone.`);
+        throw error;
+    }
+    if (policy)
+        log(`Policy: ${POLICY_FILE} found at the repository root`);
     const mode = (values.mode ?? env.AUTOHEAL_MODE ?? 'draft-pr');
     if (!['comment', 'draft-pr', 'pr'].includes(mode))
         throw new ConfigError('--mode must be comment, draft-pr or pr.');
@@ -174,7 +203,6 @@ async function cmdHeal(argv) {
         throw new ConfigError(`AutoHeal has no price for model "${provider.model}", so the cost limit cannot work. Set AUTOHEAL_PRICE_IN and AUTOHEAL_PRICE_OUT (US dollars per million input and output tokens; 0 and 0 for a local model).`);
     }
     const outDir = path.resolve(values.out ?? env.AUTOHEAL_OUT ?? '.autoheal-out');
-    const log = (line) => process.stderr.write(`[autoheal] ${line}\n`);
     log(`AutoHeal ${VERSION} · mode ${mode} · provider ${provider ? `${provider.name} (${provider.model})` : 'none (deterministic fixes only)'}`);
     const appUrl = values['app-url'] ?? env.AUTOHEAL_APP_URL;
     const mocksBaseUrl = values['mocks-base-url'] ?? env.AUTOHEAL_MOCKS_BASE_URL;
@@ -233,14 +261,24 @@ async function cmdHeal(argv) {
             log(`Reviews: ${reviewNote}`);
         }
     }
+    // The policy can only make the workflow's limits stricter.
+    const limits = tighten({
+        maxFailures: intOption(values['max-failures'], env.AUTOHEAL_MAX_FAILURES, 3, '--max-failures', 1, 50),
+        repeatEach: intOption(values['repeat-each'], env.AUTOHEAL_REPEAT_EACH, 5, '--repeat-each', 2, 50),
+        quarantineDays: intOption(values['quarantine-days'], env.AUTOHEAL_QUARANTINE_DAYS, 14, '--quarantine-days', 1, 90),
+        maxUsd: numOption(values['max-usd'], env.AUTOHEAL_MAX_USD, 1, '--max-usd'),
+    }, policy);
+    const policyNote = policy ? policyText(policy, limits.changed) : undefined;
+    if (policyNote)
+        log(policyNote);
     const rawSummary = await heal({
         projectRoot,
         report,
         ...(traceDirs ? { traceDirs } : {}),
         mode,
-        maxFailures: intOption(values['max-failures'], env.AUTOHEAL_MAX_FAILURES, 3, '--max-failures', 1, 50),
-        repeatEach: intOption(values['repeat-each'], env.AUTOHEAL_REPEAT_EACH, 5, '--repeat-each', 2, 50),
-        quarantineDays: intOption(values['quarantine-days'], env.AUTOHEAL_QUARANTINE_DAYS, 14, '--quarantine-days', 1, 90),
+        maxFailures: limits.maxFailures,
+        repeatEach: limits.repeatEach,
+        quarantineDays: limits.quarantineDays,
         allowWarn: values['allow-warn'] === true || env.AUTOHEAL_ALLOW_WARN === '1',
         checkFlaky: values['no-flaky-check'] !== true && env.AUTOHEAL_NO_FLAKY_CHECK !== '1',
         flakyRuns: 3,
@@ -248,7 +286,7 @@ async function cmdHeal(argv) {
         ...(mocksBaseUrl ? { mocksBaseUrl } : {}),
         ...(env.AUTOHEAL_OWNER ? { owner: env.AUTOHEAL_OWNER } : {}),
         budget: {
-            maxUsd: numOption(values['max-usd'], env.AUTOHEAL_MAX_USD, 1, '--max-usd'),
+            maxUsd: limits.maxUsd,
             maxSteps: intOption(values['max-steps'], env.AUTOHEAL_MAX_STEPS, 30, '--max-steps', 1, 500),
             maxTokens: intOption(values['max-tokens'], env.AUTOHEAL_MAX_TOKENS, 400_000, '--max-tokens', 1000, 50_000_000),
         },
@@ -260,6 +298,7 @@ async function cmdHeal(argv) {
         ...(env.AUTOHEAL_SCREENSHOTS === 'false' ? {} : { evidenceDir: path.join(outDir, 'evidence') }),
         ...(reviews ? { reviews } : {}),
         ...(reviewNote ? { reviewNote } : {}),
+        ...(policy ? { policy, repoPrefix: path.relative(repoRoot, projectRoot).split(path.sep).join('/'), ...(policyNote ? { policyNote } : {}) } : {}),
     }).finally(() => app?.stop());
     if (appNote)
         rawSummary.app = appNote;
@@ -282,8 +321,8 @@ async function cmdHeal(argv) {
         outputs['pr-body-file'] = path.join(outDir, 'pr-body.md');
     }
     // Issues only for confident app bugs; the rest are listed in the job summary.
-    const minConfidence = numOption(undefined, env.AUTOHEAL_ISSUE_MIN_CONFIDENCE, 0.6, 'AUTOHEAL_ISSUE_MIN_CONFIDENCE');
-    const appBugs = env.AUTOHEAL_OPEN_ISSUES === 'false' ? [] : summary.results.filter((r) => r.status === 'APP_BUG' && r.confidence >= minConfidence).slice(0, 10);
+    const minConfidence = Math.max(numOption(undefined, env.AUTOHEAL_ISSUE_MIN_CONFIDENCE, 0.6, 'AUTOHEAL_ISSUE_MIN_CONFIDENCE'), policy?.issues.minConfidence ?? 0);
+    const appBugs = env.AUTOHEAL_OPEN_ISSUES === 'false' || policy?.issues.enabled === false ? [] : summary.results.filter((r) => r.status === 'APP_BUG' && r.confidence >= minConfidence).slice(0, 10);
     const issues = appBugs.map((r, i) => ({ title: issueTitle(r), test: r.failure.title, file: `issue-${i + 1}.md` }));
     for (const [i, r] of appBugs.entries())
         await writeFile(path.join(outDir, `issue-${i + 1}.md`), issueBody(summary, r));

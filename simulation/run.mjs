@@ -24,6 +24,9 @@
  *           the profile assertion is not steered by the text it checks; the
  *           fixes and the app bug are linked to the commits that caused them
  *   reviews  an earlier AutoHeal PR with the same fix was closed: not proposed again
+ *   policy  .autoheal.yml protects the page objects, skips the flaky test and
+ *           lowers max-failures: the AI fixes only the login test; a broken
+ *           policy file stops the job
  *
  * Usage: npm run simulate [-- <scenario> ...]
  */
@@ -463,6 +466,29 @@ const scenarios = {
     }
   },
 
+  policy() {
+    const policyText = ['# Team rules for AutoHeal', 'protect:', '  - pages/', 'skip:', '  titles: [status badge]', 'limits:', '  max-failures: 3', 'fixes:', '  allow: [rules, ai]', ''].join('\n');
+    const dir = prepare('policy', (d) => writeFileSync(path.join(d, '.autoheal.yml'), policyText));
+    const script = fixScript(file(dir, 'tests/login.spec.ts'), file(dir, 'pages/profile.ts'));
+    writeFileSync(path.join(dir, 'script.json'), JSON.stringify(script));
+    const po = file(dir, 'pages/profile.ts');
+    const { code, summary } = heal(dir, ['--mode', 'draft-pr', '--no-flaky-check'], { AUTOHEAL_PROVIDER: 'scripted', AUTOHEAL_SCRIPT: path.join(dir, 'script.json'), AUTOHEAL_PRICE_IN: '4', AUTOHEAL_PRICE_OUT: '20' });
+    check(code === 0, `exit code 0 (got ${code})`);
+    const badge = byTest(summary, 'status badge');
+    check(badge?.skipped === true && badge.status === 'UNFIXED', 'flaky test left alone by skip.titles (not quarantined)');
+    check(!existsSync(path.join(dir, 'playwright-quarantine.json')), 'no quarantine file');
+    check(byTest(summary, 'user can log in')?.status === 'FIXED', 'login test still fixed by the AI');
+    const profile = byTest(summary, 'profile greets');
+    check(profile?.status !== 'FIXED', `the page-object fix was refused (status ${profile?.status})`);
+    check(file(dir, 'pages/profile.ts') === po, 'protected page object unchanged');
+    check(summary?.policy?.includes('1 protected path') && summary.policy.includes('fixes allowed: rules, ai'), `policy noted in the summary (${summary?.policy})`);
+    const body = existsSync(path.join(dir, '.autoheal-out', 'pr-body.md')) ? file(dir, '.autoheal-out/pr-body.md') : '';
+    check(/Policy \(\.autoheal\.yml\)/.test(body), 'PR body says a policy applied');
+    writeFileSync(path.join(dir, '.autoheal.yml'), 'fixes:\n  alow: [ai]\n');
+    const broken = heal(dir, ['--mode', 'draft-pr']);
+    check(broken.code !== 0 && /unknown setting "alow"/.test(broken.stderr ?? ''), `a broken policy stops the job (exit ${broken.code})`);
+  },
+
   async dashboard(aiResult) {
     const result = aiResult ?? scenarios.ai();
     const { spawn } = await import('node:child_process');
@@ -502,7 +528,7 @@ const scenarios = {
 };
 
 const wanted = process.argv.slice(2);
-const order = wanted.length ? wanted : ['rules', 'ai', 'cheat', 'comment', 'fingerprint', 'reviews', 'action', 'dashboard'];
+const order = wanted.length ? wanted : ['rules', 'ai', 'cheat', 'comment', 'fingerprint', 'reviews', 'policy', 'action', 'dashboard'];
 let aiResult;
 for (const name of order) {
   if (!scenarios[name]) {

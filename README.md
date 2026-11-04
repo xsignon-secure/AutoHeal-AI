@@ -47,6 +47,7 @@ It is MIT licensed and runs entirely on your GitHub runner. No AutoHeal server, 
 - **Looks at the live app.** Give `start-command` (for example `npm run start`) and `start-url`, and the heal job starts your app so the AI can open pages and check locators against the real thing. The app runs like your tests: in the sandbox, without the AI key or tokens, and it is stopped at the end. If it doesn't come up, AutoHeal heals from the traces and says so in the PR.
 - **Finds the cause.** For every fix and every app bug, AutoHeal searches your repository history for the app commit that made the test fail: the one that renamed "Log in" to "Sign in", or changed the price from $10 to $12. Test files and AutoHeal's own files never count. The PR and the issue name that commit and link it, and fixes caused by the same commit are grouped together. The template checks out the last 200 commits (`fetch-depth: 200`) for this; with a shallow checkout the search simply finds nothing.
 - **Learns from reviews.** Every AutoHeal PR carries a hidden list of its fixes. Before healing, AutoHeal reads your last closed AutoHeal PRs (read-only, `pull-requests: read`) and sees which were merged as written, merged after a reviewer edited them (and what they changed), or closed. A rule or fingerprint fix that reviewers already closed is not proposed again, and the AI is told what reviewers kept and changed. Turn it off with `learn-from-reviews: false`.
+- **Team rules in the repo.** A `.autoheal.yml` policy file says what AutoHeal may do: folders it must never change, tests it leaves alone, which kinds of fixes it may propose, how weak a locator may be, and tighter limits. It can only make AutoHeal stricter than the workflow, and both jobs enforce it. See [Policy file](#policy-file-autohealyml).
 - **Repo memory.** Fixes that worked are saved in your repo, one small file per fix under `.autoheal/memory/`, so two open fix PRs never conflict. The agent reads them next time, so it learns your app's naming habits.
 - **Hard budgets.** The cost limit per job (`max-usd`, default $1), the number of AI calls and the number of tokens are all capped. Each failure gets an equal share of what is left, so one hard failure cannot use up the whole job. Before every AI call, AutoHeal checks that call's worst case (its estimated input plus the full output allowance), so no single call can cross the limit. The cost is an estimate from public prices; set `price-in` and `price-out` if yours differ (required for models it has no price for). When a limit stops the job, the report says so and nothing half-done is kept.
 - **Bring your own model.** Claude by default (`claude-opus-5-5`). OpenAI, or any OpenAI-compatible server (Ollama, vLLM, LM Studio), also works. With no key at all, it still triages, quarantines and applies rule-based fixes.
@@ -105,7 +106,7 @@ PRs opened with the default `GITHUB_TOKEN` do not start other workflows; GitHub 
   with:
     app-id: ${{ vars.AUTOHEAL_APP_ID }}
     private-key: ${{ secrets.AUTOHEAL_APP_KEY }}
-- uses: xsignon-secure/AutoHeal-AI/publish@v0.7.0
+- uses: xsignon-secure/AutoHeal-AI/publish@v0.8.0
   with:
     github-token: ${{ steps.app-token.outputs.token }}
     # ...the other inputs from the template
@@ -123,9 +124,42 @@ A fine-grained PAT limited to this repository works too, but it lives longer, so
 
 AutoHeal never pushes to your base branch, never auto-merges, and never runs on its own `autoheal/*` branches. Pass the same `mode` to both jobs (the template does).
 
+## Policy file (`.autoheal.yml`)
+
+Put a `.autoheal.yml` at the root of your repository to set team rules. Copy [`templates/autoheal-policy.yml`](templates/autoheal-policy.yml) to start. Every setting is optional:
+
+```yaml
+version: 1
+protect:                  # never changed by a fix (a path ending in / covers its folder)
+  - tests/payments/
+skip:                     # left alone completely: reported, never touched
+  files: [tests/legacy/**]
+  titles: ["visual snapshot"]
+fixes:
+  allow: [rules, fingerprint, same-change, ai]   # drop ai for no AI fixes
+  min-strength: good      # never write a locator weaker than this
+  max-per-pr: 10
+quarantine:
+  enabled: true
+  max-days: 7
+limits:
+  max-usd: 0.50
+  max-failures: 3
+  repeat-each: 8          # higher is stricter
+issues:
+  enabled: true
+  min-confidence: 0.7
+```
+
+- **Stricter only.** Each limit takes the stricter of the policy and the workflow, and a switch the workflow turned off stays off. A loose policy changes nothing.
+- **Checked twice.** The heal job reads the file before any of your code runs. The publish job reads it again from its own checkout and refuses a patch that breaks it. A fix can never change `.autoheal.yml` itself.
+- **Mistakes stop the job.** An unknown setting, a bad value or a path outside the repository fails the heal job with the line number, so a typo can't loosen anything without you noticing.
+- The file uses a small, safe part of YAML: maps, lists, quoted strings, numbers, `true`/`false` and comments.
+- The PR and the job summary say which policy applied.
+
 ## Inputs
 
-**Heal action** (`xsignon-secure/AutoHeal-AI@v0.7.0`):
+**Heal action** (`xsignon-secure/AutoHeal-AI@v0.8.0`):
 
 | Input | Default | |
 |---|---|---|
@@ -160,7 +194,7 @@ AutoHeal never pushes to your base branch, never auto-merges, and never runs on 
 
 Outputs: `outcome` (`fixed`, `blocked`, `app-bug`, `quarantined`, `unfixed`, `nothing-to-do` or `error`), `fixed`, `blocked`, `has-result`.
 
-**Publish action** (`xsignon-secure/AutoHeal-AI/publish@v0.7.0`): `result-dir`, `mode`, `base-branch`, `run-id`, `commit`, `pr-number`, `blocked`, `open-issues`, `allowed-paths`, `allow-warn`, `quarantine-days`, `github-token`, `dashboard-url`, `dashboard-secret`. Output: `pr-url`.
+**Publish action** (`xsignon-secure/AutoHeal-AI/publish@v0.8.0`): `result-dir`, `mode`, `base-branch`, `run-id`, `commit`, `pr-number`, `blocked`, `open-issues`, `allowed-paths`, `allow-warn`, `quarantine-days`, `github-token`, `dashboard-url`, `dashboard-secret`. Output: `pr-url`.
 
 `allowed-paths` limits which files a fix may change. The default is `**/tests/**, **/test/**, **/e2e/**, **/playwright/**, **/*.spec.*, **/*.test.*, **/test_*.py, **/*_test.py`. If your page objects live somewhere else (for example `src/pages/**`), add that folder. Files that tools load or run on their own (configs, `conftest.py`, `__init__.py`, setup and teardown files, `.pnpmfile.cjs`, gulp and grunt files) are never patched. Keep `allow-warn` and `quarantine-days` the same as in the heal job.
 
