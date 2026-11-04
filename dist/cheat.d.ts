@@ -29,4 +29,5 @@ export interface CheatReport {
 /** Strip comments so commented-out code neither counts nor hides. */
 export declare function stripComments(source: string): string;
 export declare function expectations(source: string): string[];
+export declare function assertionSubjects(source: string): string[];
 export declare function scanChange(before: string, after: string, file?: string): CheatReport;

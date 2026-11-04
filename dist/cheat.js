@@ -91,7 +91,7 @@ const COMPUTED_TEST = /\b(?:test|it|describe)(?:\s*\.\s*describe)?\s*\[/;
  */
 const NAVIGATION = /\.(?:goto|waitForURL|wait_for_url|route|routeFromHAR|route_from_har|newPage|new_page|setContent|set_content|expect_navigation|waitForNavigation)\s*\(([^()]*(?:\([^()]*\)[^()]*)*)\)/g;
 /** A URL written into the test. Locators never need one. */
-const URL_LITERAL = /['"`]\s*(?:data|javascript|blob|file|about|https?|wss?|ftp):[^'"`]*['"`]/gi;
+const URL_LITERAL = /['"`]\s*(?:(?:data|javascript|blob|file|about|https?|wss?|ftp):|\/\/|\\\\)[^'"`]*['"`]/gi;
 /** User actions. Deleting one removes a step of what the test checks. */
 const ACTION = /\.(?:click|dblclick|fill|press|pressSequentially|press_sequentially|type|check|uncheck|setChecked|set_checked|hover|tap|selectOption|select_option|setInputFiles|set_input_files|dragTo|drag_to|dispatchEvent|dispatch_event|focus|blur|clear|goto|selectText|select_text|down|up|insertText|insert_text)\s*\(/;
 /** Ways to make a locator match more than it did: .or(), or a whole-page selector. */
@@ -108,7 +108,10 @@ const TRIVIAL = /\bexpect(?:\.soft)?\s*\(\s*(?:true|false|null|undefined|-?\d+(?
  * of Python asserts. A fix may change how an element is found, never what the
  * test expects to see; a changed expectation is how an app bug gets hidden.
  */
-const EXPECTATION = /\.(?:not\.)?(?:toHaveText|toContainText|toHaveValue|toHaveValues|toHaveURL|toHaveTitle|toHaveCount|toHaveAttribute|toHaveClass|toHaveCSS|toHaveId|toHaveJSProperty|toHaveAccessibleName|toHaveAccessibleDescription|toHaveRole|toEqual|toStrictEqual|toBe|toMatch|toContain|toHaveLength|toHaveProperty|toBeGreaterThan|toBeGreaterThanOrEqual|toBeLessThan|toBeLessThanOrEqual|toBeCloseTo|to_have_text|to_contain_text|to_have_value|to_have_values|to_have_url|to_have_title|to_have_count|to_have_attribute|to_have_class|to_have_css|to_have_id|to_have_js_property|to_have_accessible_name|to_have_role)\s*\(([^()]*(?:\([^()]*\)[^()]*)*)\)|^\s*assert\s+(.+)$/gm;
+const EXPECTATION = /\.(?:not\.)?(?:to[A-Z]\w*|to_[a-z_]+)\s*\(([^()]*(?:\([^()]*\)[^()]*)*)\)|^\s*assert\s+(.+)$/gm;
+/** What an assertion looks at: the argument of expect(...). Changing it retargets the check. */
+const EXPECT_SUBJECT = /\bexpect(?:\.soft|\.poll)?\s*\(((?:[^()]|\((?:[^()]|\([^()]*\))*\))*)\)/g;
+const LITERAL = /'(?:[^'\\\n]|\\.)*'|"(?:[^"\\\n]|\\.)*"|`[^`]*`|\b(?:true|false|True|False)\b|-?\b\d+(?:\.\d+)?\b/g;
 function declaration(source, name) {
     const n = name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
     const js = new RegExp(`\\b(?:const|let|var)\\s+${n}\\s*(?::[^=\\n]+)?=\\s*([^;\\n]+)`).exec(source);
@@ -126,7 +129,8 @@ export function expectations(source) {
             const parts = value.split(/\s(?:==|!=|>=|<=|>|<|not in|in|is not|is)\s/);
             value = parts.length > 1 ? (parts[parts.length - 1] ?? value) : value;
         }
-        value = value.replace(/\s+/g, ' ').trim();
+        // A raised timeout is a warning of its own, not a changed expectation.
+        value = value.replace(/\btimeout\s*[:=]\s*[\d_]+\s*,?/g, '').replace(/\s+/g, ' ').trim();
         out.push(value);
         // Follow a variable to where it is set in this file, so moving the
         // expected value into `const price = '$12'` changes the expectation too.
@@ -139,6 +143,48 @@ export function expectations(source) {
         }
     }
     return out;
+}
+/**
+ * The content an assertion is about: the text in getByText / getByLabel /
+ * hasText / name inside expect(...), 'text=' selectors, and state options
+ * such as checked or visible. Changing one changes what is checked, so it is
+ * an expected value. A test id or CSS selector is identity, not content, and
+ * may change.
+ */
+const SUBJECT_CONTENT = /\b(?:getBy(?:Text|Label|Placeholder|AltText|Title)|get_by_(?:text|label|placeholder|alt_text|title))\s*\(\s*('(?:[^'\\\n]|\\.)*'|"(?:[^"\\\n]|\\.)*"|`[^`]*`|\/(?:[^/\\\n]|\\.)+\/[a-z]*|[A-Za-z_$][\w$]*)|\b(?:hasText|has_text|hasNotText|has_not_text|name)\s*[:=]\s*('(?:[^'\\\n]|\\.)*'|"(?:[^"\\\n]|\\.)*"|`[^`]*`|\/(?:[^/\\\n]|\\.)+\/[a-z]*|[A-Za-z_$][\w$]*)|\b(checked|pressed|selected|expanded|disabled|visible|includeHidden|include_hidden|exact)\s*[:=]\s*(true|false|True|False)|(['"`]\s*text\s*=[^'"`]*['"`])/g;
+export function assertionSubjects(source) {
+    const out = [];
+    for (const m of source.matchAll(EXPECT_SUBJECT)) {
+        for (const c of (m[1] ?? '').matchAll(SUBJECT_CONTENT)) {
+            const value = c[1] ?? c[2] ?? (c[3] ? `${c[3]}=${c[4]}` : c[5]) ?? '';
+            out.push(value);
+            if (/^[A-Za-z_$][\w$]*$/.test(value) && !/^(?:true|false|True|False)$/.test(value)) {
+                const init = declaration(source, value);
+                if (init !== undefined)
+                    out.push(`${value} = ${init}`);
+            }
+        }
+    }
+    return out;
+}
+/** Where each navigation call goes, following a constant back to its value. */
+function navigationTargets(source) {
+    const out = [];
+    for (const m of source.matchAll(NAVIGATION)) {
+        const arg = (m[1] ?? '').replace(/\s+/g, ' ').trim();
+        out.push(arg);
+        for (const name of arg.replace(LITERAL, '').match(/\b[A-Za-z_$][\w$]*\b/g) ?? []) {
+            if (/^(?:await|this|page|self|timeout|waitUntil|wait_until)$/.test(name))
+                continue;
+            const init = declaration(source, name);
+            if (init !== undefined)
+                out.push(`${name} = ${init}`);
+        }
+    }
+    return out;
+}
+function actionNames(source) {
+    return [...source.matchAll(new RegExp(ACTION.source, 'g'))].map((m) => m[0].replace(/[\s(.]/g, '')).sort();
 }
 function missing(before, after) {
     const left = new Map();
@@ -174,8 +220,8 @@ export function scanChange(before, after, file) {
         block('skip-added', 'a skip, only, fixme, fail or xfail marker was added');
     if (count(b, COMPUTED_TEST) > count(a, COMPUTED_TEST))
         block('skip-added', "test[...] was added, which can call skip, only or fixme without naming them");
-    const navBefore = [...a.matchAll(NAVIGATION)].map((m) => (m[1] ?? '').replace(/\s+/g, ' ').trim());
-    const navAfter = [...b.matchAll(NAVIGATION)].map((m) => (m[1] ?? '').replace(/\s+/g, ' ').trim());
+    const navBefore = navigationTargets(a);
+    const navAfter = navigationTargets(b);
     const navChanged = missing(navBefore, navAfter).concat(missing(navAfter, navBefore));
     if (navChanged.length) {
         block('navigation-changed', `where the test navigates changed (${navChanged.slice(0, 2).map((x) => JSON.stringify(x.slice(0, 60))).join(', ')}); a fix may change how an element is found, never which page is tested`);
@@ -183,10 +229,19 @@ export function scanChange(before, after, file) {
     const urls = missing((b.match(URL_LITERAL) ?? []).map((u) => u.toLowerCase()), (a.match(URL_LITERAL) ?? []).map((u) => u.toLowerCase()));
     if (urls.length)
         block('url-added', `a URL was written into the test (${urls[0]?.slice(0, 60)}); locators never need one`);
-    const actionsBefore = count(a, ACTION);
-    const actionsAfter = count(b, ACTION);
-    if (actionsAfter < actionsBefore)
-        block('step-removed', `user actions went from ${actionsBefore} to ${actionsAfter}; a fix may retarget a step, not delete it`);
+    const actionsBefore = actionNames(a);
+    const actionsAfter = actionNames(b);
+    if (actionsAfter.length < actionsBefore.length)
+        block('step-removed', `user actions went from ${actionsBefore.length} to ${actionsAfter.length}; a fix may retarget a step, not delete it`);
+    else if (actionsAfter.join() !== actionsBefore.join()) {
+        block('action-changed', `the actions changed (${missing(actionsBefore, actionsAfter).join(', ')} → ${missing(actionsAfter, actionsBefore).join(', ')}); a fix may change which element is used, not what is done to it`);
+    }
+    if (count(b, /\bawait\b/) < count(a, /\bawait\b/))
+        block('await-removed', 'an await was removed, so a step or check may no longer be waited for');
+    const subjectsGone = missing(assertionSubjects(a), assertionSubjects(b));
+    if (subjectsGone.length) {
+        block('assertion-retargeted', `what an assertion looks at changed (${subjectsGone.slice(0, 2).map((x) => JSON.stringify(x.slice(0, 60))).join(', ')}); a check must stay on the same text, test id or state`);
+    }
     if (count(b, WIDENING) > count(a, WIDENING))
         block('locator-widened', 'a locator was widened with .or() or a whole-page selector, so it can match something other than the intended element');
     const added = addedLines(a, b);

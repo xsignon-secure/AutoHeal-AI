@@ -28,10 +28,10 @@ test('allowed-paths: tests and specs yes, app source and executed files no', () 
 });
 
 test('the anti-cheat scan runs again on the trusted checkout', () => {
-  const before = "test('t', async ({ page }) => {\n  await page.goto('/');\n  await expect(page.getByText('Total $10')).toBeVisible();\n});\n";
+  const before = "test('t', async ({ page }) => {\n  await page.goto('/');\n  await page.getByRole('button', { name: 'Buy' }).click();\n  await expect(page.getByText('Total $10')).toBeVisible();\n});\n";
   const root = repo({ 'tests/a.spec.ts': before.replace("goto('/')", "goto('data:text/html,<h1>Total $10</h1>')") });
   assert.throws(() => rescan(root, [{ path: 'tests/a.spec.ts' }], new Map([['tests/a.spec.ts', before]])), /navigation-changed/);
-  const ok = repo({ 'tests/a.spec.ts': before.replace("getByText('Total $10')", "getByTestId('total')") });
+  const ok = repo({ 'tests/a.spec.ts': before.replace("name: 'Buy'", "name: 'Purchase'") });
   assert.doesNotThrow(() => rescan(ok, [{ path: 'tests/a.spec.ts' }], new Map([['tests/a.spec.ts', before]])));
 });
 

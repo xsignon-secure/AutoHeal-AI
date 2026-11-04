@@ -4,6 +4,14 @@ All notable changes to AutoHeal AI. Versions follow [semantic versioning](https:
 
 ## 0.3.3 (2026-11-04)
 
+### Security
+Closes the holes from the third audit:
+- **What an assertion looks at is an expected value.** The text in `getByText`, `getByLabel`, `hasText` or `name` inside `expect(...)`, `text=` selectors, and state options such as `checked` or `visible`, can no longer change. A test id or CSS selector inside `expect` still can.
+- **Navigation constants are followed.** `const HOME = '/'` changed to another page is blocked like a changed `goto`. Protocol-relative URLs (`//host`) count as URLs.
+- **Actions can't be neutered.** The action methods (`click`, `fill`…) must stay the same, and no `await` may be removed.
+- **Publish checks git's own reading.** The file list must match `git apply --numstat`, and after applying, `git status` must show exactly those files.
+- **Regression set.** `test/bypasses/corpus.mjs` holds every bypass from all three audits (27) and real fixes that must still pass. CI runs it on every change.
+
 ### Fixed
 - The `autoheal` command was dropped from the npm package: npm 12 removes a `bin` path that starts with `./`. The path is now `dist/cli.js`, so `npx xsignon-autoheal` works.
 
