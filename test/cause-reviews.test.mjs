@@ -63,7 +63,7 @@ test('reviews: the PR body carries the fixes in a hidden marker that survives a 
   assert.deepEqual(readMarker('<!-- autoheal-fixes:bm90IGpzb24= -->'), []);
   const body = prBody({ tool: 'autoheal-ai', version: '0.7.0', startedAt: '', finishedAt: '', mode: 'draft-pr', provider: 'none', model: 'none', outcome: 'fixed', changes: true, changedFiles: [], totalFailures: 1, skippedFailures: 0, minutesSaved: 0, spend: { steps: 0, inputTokens: 0, outputTokens: 0, usd: 0, priced: true }, reviews: { merged: 2, edited: 1, closed: 1 }, results: [{ failure: { index: 1, file: 'tests/a.spec.ts', title: 'a', kind: 'timeout', message: '' }, category: 'TEST_BUG', rootCause: 'LOCATOR_DRIFT', confidence: 0.9, reasons: [], status: 'FIXED', summary: '', spend: { steps: 0, inputTokens: 0, outputTokens: 0, usd: 0, priced: true }, fix: { by: 'ai', file: 'tests/a.spec.ts', explanation: 'x', diff: '', locators: [{ before: "locator('#a')", after: "getByText('A')", from: 'fair', to: 'good', direction: 1 }] }, cause: { commit: 'a'.repeat(40), short: 'aaaaaaa', subject: 'Rename A', files: ['app/a.html'], evidence: '"a" → "A"' } }] });
   assert.equal(readMarker(body)[0].before, "locator('#a')", 'AI fixes are marked by their locator change');
-  assert.match(body, /Likely cause \| `aaaaaaa` "Rename A"/);
+  assert.match(body, /Likely cause \| \[?`aaaaaaa`(?:\]\([^)]+\))? "Rename A"/, 'linked when GitHub env vars are set, plain otherwise');
   assert.match(body, /Learned from 4 earlier AutoHeal PRs: 2 merged as written, 1 edited by a reviewer, 1 closed/);
 });
 
