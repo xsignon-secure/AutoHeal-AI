@@ -22,3 +22,6 @@ export { loadFingerprints, saveFingerprints, lookup, learn, domFromTrace, domFro
 export { parseSelector, sourcePattern, renderLocator, locatorFor, rankOf, strengthOf, locatorCalls, locatorChanges, type ParsedLocator, type LocatorChange, type Strength } from './locators.js';
 export { startApp, checkAppUrl, type StartedApp, type StartOptions } from './app.js';
 export { uiChanges } from './evidence.js';
+export { findCause, literals, termsFromLocators, termsFromValues, type Cause, type CauseQuery } from './cause.js';
+export { reviewHistory, reviewText, rejected, fixesMarker, readMarker, type ReviewHistory, type ReviewedFix, type MarkedFix, type ReviewOutcome } from './reviews.js';
+export { causeText } from './evidence.js';

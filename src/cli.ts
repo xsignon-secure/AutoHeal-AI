@@ -21,6 +21,7 @@ import { chooseSandbox, sandboxMode } from './sandbox.js';
 import { checkAppUrl, startApp, type StartedApp } from './app.js';
 import { domFromZip, learn, saveFingerprints, type FingerprintEntry } from './fingerprints.js';
 import { readTrace } from './runtime.js';
+import { reviewHistory, type ReviewHistory } from './reviews.js';
 import { VERSION } from './version.js';
 
 export const USAGE = `autoheal ${VERSION}: free, self-hosted AI agent that fixes failing Playwright tests
@@ -209,6 +210,18 @@ async function cmdHeal(argv: string[]): Promise<number> {
     }
   }
   const liveUrl = app?.url ?? appUrl;
+  // Learn from reviews: what happened to earlier AutoHeal PRs (GitHub only, read-only token).
+  let reviews: ReviewHistory | undefined;
+  let reviewNote: string | undefined;
+  if (env.AUTOHEAL_LEARN_REVIEWS !== 'false' && env.GITHUB_REPOSITORY && env.GITHUB_TOKEN) {
+    try {
+      reviews = await reviewHistory({ repo: env.GITHUB_REPOSITORY, token: env.GITHUB_TOKEN, ...(env.GITHUB_API_URL ? { apiUrl: env.GITHUB_API_URL } : {}) });
+      log(`Reviews: ${reviews.prs.merged} merged, ${reviews.prs.edited} edited, ${reviews.prs.closed} closed earlier AutoHeal PR(s)`);
+    } catch (error) {
+      reviewNote = `could not be read (${error instanceof Error ? error.message : String(error)}); give the heal job \`pull-requests: read\``;
+      log(`Reviews: ${reviewNote}`);
+    }
+  }
   const rawSummary = await heal({
     projectRoot,
     report,
@@ -234,6 +247,8 @@ async function cmdHeal(argv: string[]): Promise<number> {
     sandbox: sandboxChoice.sandbox,
     sandboxNote: sandboxChoice.note,
     ...(env.AUTOHEAL_SCREENSHOTS === 'false' ? {} : { evidenceDir: path.join(outDir, 'evidence') }),
+    ...(reviews ? { reviews } : {}),
+    ...(reviewNote ? { reviewNote } : {}),
   }).finally(() => app?.stop());
   if (appNote) rawSummary.app = appNote;
   // Belt and braces: scrub every string before anything is written or posted.

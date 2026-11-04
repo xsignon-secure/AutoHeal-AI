@@ -19,6 +19,7 @@ import { chooseSandbox, sandboxMode } from './sandbox.js';
 import { checkAppUrl, startApp } from './app.js';
 import { domFromZip, learn, saveFingerprints } from './fingerprints.js';
 import { readTrace } from './runtime.js';
+import { reviewHistory } from './reviews.js';
 import { VERSION } from './version.js';
 export const USAGE = `autoheal ${VERSION}: free, self-hosted AI agent that fixes failing Playwright tests
 
@@ -219,6 +220,19 @@ async function cmdHeal(argv) {
         }
     }
     const liveUrl = app?.url ?? appUrl;
+    // Learn from reviews: what happened to earlier AutoHeal PRs (GitHub only, read-only token).
+    let reviews;
+    let reviewNote;
+    if (env.AUTOHEAL_LEARN_REVIEWS !== 'false' && env.GITHUB_REPOSITORY && env.GITHUB_TOKEN) {
+        try {
+            reviews = await reviewHistory({ repo: env.GITHUB_REPOSITORY, token: env.GITHUB_TOKEN, ...(env.GITHUB_API_URL ? { apiUrl: env.GITHUB_API_URL } : {}) });
+            log(`Reviews: ${reviews.prs.merged} merged, ${reviews.prs.edited} edited, ${reviews.prs.closed} closed earlier AutoHeal PR(s)`);
+        }
+        catch (error) {
+            reviewNote = `could not be read (${error instanceof Error ? error.message : String(error)}); give the heal job \`pull-requests: read\``;
+            log(`Reviews: ${reviewNote}`);
+        }
+    }
     const rawSummary = await heal({
         projectRoot,
         report,
@@ -244,6 +258,8 @@ async function cmdHeal(argv) {
         sandbox: sandboxChoice.sandbox,
         sandboxNote: sandboxChoice.note,
         ...(env.AUTOHEAL_SCREENSHOTS === 'false' ? {} : { evidenceDir: path.join(outDir, 'evidence') }),
+        ...(reviews ? { reviews } : {}),
+        ...(reviewNote ? { reviewNote } : {}),
     }).finally(() => app?.stop());
     if (appNote)
         rawSummary.app = appNote;

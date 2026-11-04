@@ -45,6 +45,8 @@ It is MIT licensed and runs entirely on your GitHub runner. No AutoHeal server, 
 - **Strong locators.** Fixes follow Playwright's own order: `getByRole` with a name, then label, placeholder, text, alt or title, then test id, and CSS last. The PR shows each changed locator and whether it got stronger or weaker.
 - **One UI change, one fix.** When one UI change breaks many tests, AutoHeal fixes the first and reuses that fix for every other test with the same broken locator, even past `max-failures`. If the fix was in a shared page object, the other tests are just rerun to prove they pass. Each reuse is still proven by its own stability rerun and runtime check. The PR groups those tests under one change.
 - **Looks at the live app.** Give `start-command` (for example `npm run start`) and `start-url`, and the heal job starts your app so the AI can open pages and check locators against the real thing. The app runs like your tests: in the sandbox, without the AI key or tokens, and it is stopped at the end. If it doesn't come up, AutoHeal heals from the traces and says so in the PR.
+- **Finds the cause.** For every fix and every app bug, AutoHeal searches your repository history for the app commit that made the test fail: the one that renamed "Log in" to "Sign in", or changed the price from $10 to $12. Test files and AutoHeal's own files never count. The PR and the issue name that commit and link it, and fixes caused by the same commit are grouped together. The template checks out the last 200 commits (`fetch-depth: 200`) for this; with a shallow checkout the search simply finds nothing.
+- **Learns from reviews.** Every AutoHeal PR carries a hidden list of its fixes. Before healing, AutoHeal reads your last closed AutoHeal PRs (read-only, `pull-requests: read`) and sees which were merged as written, merged after a reviewer edited them (and what they changed), or closed. A rule or fingerprint fix that reviewers already closed is not proposed again, and the AI is told what reviewers kept and changed. Turn it off with `learn-from-reviews: false`.
 - **Repo memory.** Fixes that worked are saved in your repo, one small file per fix under `.autoheal/memory/`, so two open fix PRs never conflict. The agent reads them next time, so it learns your app's naming habits.
 - **Hard budgets.** The cost limit per job (`max-usd`, default $1), the number of AI calls and the number of tokens are all capped. Each failure gets an equal share of what is left, so one hard failure cannot use up the whole job. Before every AI call, AutoHeal checks that call's worst case (its estimated input plus the full output allowance), so no single call can cross the limit. The cost is an estimate from public prices; set `price-in` and `price-out` if yours differ (required for models it has no price for). When a limit stops the job, the report says so and nothing half-done is kept.
 - **Bring your own model.** Claude by default (`claude-opus-5-5`). OpenAI, or any OpenAI-compatible server (Ollama, vLLM, LM Studio), also works. With no key at all, it still triages, quarantines and applies rule-based fixes.
@@ -103,7 +105,7 @@ PRs opened with the default `GITHUB_TOKEN` do not start other workflows; GitHub 
   with:
     app-id: ${{ vars.AUTOHEAL_APP_ID }}
     private-key: ${{ secrets.AUTOHEAL_APP_KEY }}
-- uses: xsignon-secure/AutoHeal-AI/publish@v0.6.0
+- uses: xsignon-secure/AutoHeal-AI/publish@v0.7.0
   with:
     github-token: ${{ steps.app-token.outputs.token }}
     # ...the other inputs from the template
@@ -123,7 +125,7 @@ AutoHeal never pushes to your base branch, never auto-merges, and never runs on 
 
 ## Inputs
 
-**Heal action** (`xsignon-secure/AutoHeal-AI@v0.6.0`):
+**Heal action** (`xsignon-secure/AutoHeal-AI@v0.7.0`):
 
 | Input | Default | |
 |---|---|---|
@@ -151,13 +153,14 @@ AutoHeal never pushes to your base branch, never auto-merges, and never runs on 
 | `start-command` | | Starts your app in the heal job (for example `npm run start`). Runs in the sandbox without secrets, and is stopped at the end |
 | `start-url` | `app-url` | Address to wait for after `start-command` (localhost only) |
 | `start-timeout` | `120` | Seconds to wait for `start-url` to answer |
+| `learn-from-reviews` | `true` | Read earlier AutoHeal PRs (needs `pull-requests: read`) and don't propose a change reviewers already closed |
 | `mocks-base-url` | | Live API to compare your mocks with (a shallow shape check, used as a triage hint only) |
 | `result-name` | `autoheal-result` | Name of the artifact handed to the publish job |
 | `github-token` | `github.token` | Only used to download a run given as a URL |
 
 Outputs: `outcome` (`fixed`, `blocked`, `app-bug`, `quarantined`, `unfixed`, `nothing-to-do` or `error`), `fixed`, `blocked`, `has-result`.
 
-**Publish action** (`xsignon-secure/AutoHeal-AI/publish@v0.6.0`): `result-dir`, `mode`, `base-branch`, `run-id`, `commit`, `pr-number`, `blocked`, `open-issues`, `allowed-paths`, `allow-warn`, `quarantine-days`, `github-token`, `dashboard-url`, `dashboard-secret`. Output: `pr-url`.
+**Publish action** (`xsignon-secure/AutoHeal-AI/publish@v0.7.0`): `result-dir`, `mode`, `base-branch`, `run-id`, `commit`, `pr-number`, `blocked`, `open-issues`, `allowed-paths`, `allow-warn`, `quarantine-days`, `github-token`, `dashboard-url`, `dashboard-secret`. Output: `pr-url`.
 
 `allowed-paths` limits which files a fix may change. The default is `**/tests/**, **/test/**, **/e2e/**, **/playwright/**, **/*.spec.*, **/*.test.*, **/test_*.py, **/*_test.py`. If your page objects live somewhere else (for example `src/pages/**`), add that folder. Files that tools load or run on their own (configs, `conftest.py`, `__init__.py`, setup and teardown files, `.pnpmfile.cjs`, gulp and grunt files) are never patched. Keep `allow-warn` and `quarantine-days` the same as in the heal job.
 

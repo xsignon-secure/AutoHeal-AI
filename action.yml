@@ -63,6 +63,9 @@ inputs:
   start-url:
     description: Address to wait for after start-command (localhost only). Defaults to app-url.
     default: ''
+  learn-from-reviews:
+    description: Read earlier AutoHeal PRs (merged, edited or closed) and learn from them. The heal job needs the pull-requests read permission.
+    default: 'true'
   start-timeout:
     description: Seconds to wait for start-url to answer.
     default: '120'
@@ -162,6 +165,7 @@ runs:
         AUTOHEAL_START_COMMAND: ${{ inputs.start-command }}
         AUTOHEAL_START_URL: ${{ inputs.start-url }}
         AUTOHEAL_START_TIMEOUT: ${{ inputs.start-timeout }}
+        AUTOHEAL_LEARN_REVIEWS: ${{ inputs.learn-from-reviews }}
         AUTOHEAL_MOCKS_BASE_URL: ${{ inputs.mocks-base-url }}
         AUTOHEAL_OPEN_ISSUES: ${{ inputs.open-issues }}
         AUTOHEAL_ISSUE_MIN_CONFIDENCE: ${{ inputs.issue-min-confidence }}

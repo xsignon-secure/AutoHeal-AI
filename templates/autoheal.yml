@@ -75,6 +75,8 @@ jobs:
     permissions:
       contents: read
       actions: read
+      # Read earlier AutoHeal PRs, to learn what reviewers kept, edited or closed.
+      pull-requests: read
     outputs:
       run-id: ${{ steps.run.outputs.id }}
       sha: ${{ steps.run.outputs.sha }}
@@ -108,6 +110,8 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ steps.run.outputs.sha }}
+          # History, so AutoHeal can name the app commit that broke a test.
+          fetch-depth: 200
           # No token on disk while tests and proposed fixes run.
           persist-credentials: false
 
@@ -140,7 +144,7 @@ jobs:
       - name: AutoHeal
         id: autoheal
         # Pin this (and publish below) to a commit SHA if your policy requires it.
-        uses: xsignon-secure/AutoHeal-AI@v0.6.0
+        uses: xsignon-secure/AutoHeal-AI@v0.7.0
         with:
           report: autoheal-artifacts
           mode: ${{ github.event.inputs.mode || 'draft-pr' }}
@@ -180,7 +184,7 @@ jobs:
           path: autoheal-result
 
       - name: Publish
-        uses: xsignon-secure/AutoHeal-AI/publish@v0.6.0
+        uses: xsignon-secure/AutoHeal-AI/publish@v0.7.0
         with:
           # Folders a fix may change. Add yours if page objects live outside tests/ or e2e/.
           # allowed-paths: 'tests/**, e2e/**, pages/**'

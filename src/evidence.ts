@@ -6,6 +6,20 @@
  */
 
 import type { FailureResult, HealSummary } from './types.js';
+import type { Cause } from './cause.js';
+import { fixesMarker } from './reviews.js';
+
+/** One line naming the commit, e.g. `abc1234` "Rename login" (Ada, 2026-11-03): "Log in" → "Sign in" in `app/login.tsx`. */
+export function causeText(c: Cause, repoUrl?: string): string {
+  const sha = repoUrl && /^https:\/\/[^\s|()]+$/.test(repoUrl) && /^[0-9a-f]{40}$/.test(c.commit) ? `[\`${cell(c.short)}\`](${repoUrl}/commit/${c.commit})` : `\`${cell(c.short)}\``;
+  const who = [c.author, c.date].filter(Boolean).map((x) => cell(String(x))).join(', ');
+  return `${sha} "${cell(c.subject)}"${who ? ` (${who})` : ''}: ${cell(c.evidence)}`;
+}
+
+function repoUrl(): string | undefined {
+  const env = process.env;
+  return env.GITHUB_SERVER_URL && env.GITHUB_REPOSITORY ? `${env.GITHUB_SERVER_URL}/${env.GITHUB_REPOSITORY}` : undefined;
+}
 
 const BADGE: Record<string, string> = {
   FIXED: '✅ FIXED',
@@ -43,13 +57,14 @@ export function uiChanges(results: FailureResult[]): string[] {
   const groups = new Map<string, { label: string; tests: string[] }>();
   for (const r of results) {
     if (r.status !== 'FIXED' || !r.fix) continue;
-    const root = r.fix.sameAs ?? r.failure.title;
+    const root = r.cause?.commit ?? r.fix.sameAs ?? r.failure.title;
     const g = groups.get(root) ?? { label: '', tests: [] };
     g.tests.push(r.failure.title);
     if (!r.fix.sameAs) {
       const l = r.fix.locators?.[0];
       g.label = l ? `\`${cell(l.before)}\` → \`${cell(l.after)}\`` : `fixed in \`${cell(r.fix.file)}\``;
     }
+    if (r.cause && !g.label.includes(r.cause.short)) g.label = `${g.label || 'one change'}, from commit ${causeText(r.cause, repoUrl())},`;
     groups.set(root, g);
   }
   const shared = [...groups.values()].filter((g) => g.tests.length > 1);
@@ -83,6 +98,7 @@ function resultBlock(r: FailureResult): string {
       out.push(`| Screenshots | ${files} in ${where} |`);
     }
   } else if (r.runtime?.note) out.push(`| Runtime guard | ${cell(r.runtime.note)} |`);
+  if (r.cause) out.push(`| Likely cause | ${causeText(r.cause, repoUrl())} |`);
   if (r.quarantine) out.push(`| Quarantine | ${r.quarantine.days} days, then it counts again |`);
   if (r.failure.screenshot && r.spend.steps > 0) out.push(`| Visual grounding | the AI saw the page at the moment of failure (${r.failure.screenshot === 'attachment' ? 'Playwright failure screenshot' : 'trace frame'}) |`);
   out.push(`| AI spend | ${r.spend.inputTokens + r.spend.outputTokens} tokens · ${money(r.spend.usd, r.spend.priced)} |`);
@@ -110,6 +126,11 @@ function totals(summary: HealSummary): string {
   const lines = [`Spend: ${summary.spend.inputTokens + summary.spend.outputTokens} tokens · ${money(summary.spend.usd, summary.spend.priced)} · model \`${summary.model}\``];
   if (summary.sandbox) lines.push(`Sandbox: ${summary.sandbox.replace(/[\r\n]+/g, ' ')}`);
   if (summary.app) lines.push(`Live app: ${summary.app.replace(/[\r\n]+/g, ' ')}`);
+  if (summary.reviews) {
+    const r = summary.reviews;
+    const n = r.merged + r.edited + r.closed;
+    lines.push(r.note ? `Earlier AutoHeal PRs: ${r.note.replace(/[\r\n]+/g, ' ')}` : `Learned from ${n} earlier AutoHeal PR${n === 1 ? '' : 's'}: ${r.merged} merged as written, ${r.edited} edited by a reviewer, ${r.closed} closed.`);
+  }
   if (summary.fingerprints) lines.push(`Element fingerprints: ${summary.fingerprints} saved in \`.autoheal/fingerprints/\`, so the next broken locator for these elements can be fixed without AI.`);
   return lines.join('\n\n');
 }
@@ -121,7 +142,16 @@ export function prBody(summary: HealSummary): string {
   const kept = summary.results.filter((r) => r.status === 'FIXED' || r.status === 'QUARANTINED');
   const fixed = kept.filter((r) => r.status === 'FIXED').length;
   const quarantined = kept.length - fixed;
+  const marked = kept
+    .filter((r) => r.status === 'FIXED' && r.fix)
+    .map((r) => {
+      const before = r.fix?.before ?? r.fix?.locators?.[0]?.before;
+      const after = r.fix?.after ?? r.fix?.locators?.[0]?.after;
+      return { file: r.fix?.file ?? r.failure.file, test: r.failure.title, by: r.fix?.by ?? 'rules', ...(before !== undefined ? { before } : {}), ...(after !== undefined ? { after } : {}) };
+    });
   const lines = [
+    // Read by the next heal run to learn what reviewers kept, edited or closed.
+    fixesMarker(marked),
     `## AutoHeal AI: ${fixed} test fix${fixed === 1 ? '' : 'es'}${quarantined ? `, ${quarantined} quarantined` : ''}`,
     '',
     summary.run?.url ? `Failed run: ${summary.run.url}` : '',

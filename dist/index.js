@@ -21,4 +21,7 @@ export { loadFingerprints, saveFingerprints, lookup, learn, domFromTrace, domFro
 export { parseSelector, sourcePattern, renderLocator, locatorFor, rankOf, strengthOf, locatorCalls, locatorChanges } from './locators.js';
 export { startApp, checkAppUrl } from './app.js';
 export { uiChanges } from './evidence.js';
+export { findCause, literals, termsFromLocators, termsFromValues } from './cause.js';
+export { reviewHistory, reviewText, rejected, fixesMarker, readMarker } from './reviews.js';
+export { causeText } from './evidence.js';
 //# sourceMappingURL=index.js.map

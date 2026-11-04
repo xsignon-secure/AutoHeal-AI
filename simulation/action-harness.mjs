@@ -112,6 +112,8 @@ export function runAction({ actionDir, projectDir, inputs, github, env, skip = [
         GITHUB_STEP_SUMMARY: path.join(temp, 'summary.md'),
         RUNNER_TEMP: temp,
         GITHUB_REPOSITORY: github.repository,
+        // No real GitHub in the simulation: API calls fail fast unless a scenario sets a stub.
+        GITHUB_API_URL: process.env.SIM_GITHUB_API_URL ?? 'http://127.0.0.1:9',
       },
     });
     const outputs = {};
