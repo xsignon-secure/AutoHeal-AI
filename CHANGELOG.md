@@ -2,6 +2,19 @@
 
 All notable changes to AutoHeal AI. Versions follow [semantic versioning](https://semver.org/).
 
+## 0.4.0 (2026-11-04)
+
+### Added
+- **Guard v2: runtime checks.** After a fix passes the code scan and the stability rerun, AutoHeal runs the fixed test once more with `--trace=on` and compares the two traces. It records which assertions ran, on which elements, against which values and on which page, and where each action landed. A fix is blocked when the fixed run:
+  - skips an assertion the failed run made, or checks another value (`runtime-fewer-checks`, `runtime-no-checks`);
+  - runs a shared step on another page (`runtime-other-page`);
+  - lands an action that worked before somewhere else on the page (`runtime-other-element`).
+- **Before/after evidence in the PR.** A "Runtime guard" row says what was compared and where the fixed step acted. A "Screenshots" row links the failed run's screenshot and the fixed run's at the same step, saved as the run artifact `<result-name>-evidence` (14 days). New input `screenshots` (default `true`) turns this off.
+
+### Limits
+- The failed run's trace stops at the failure, so steps after it are checked by the code scan only. A step that failed (for example a click on a renamed button) has no earlier position to compare with.
+- Needs a Playwright Test trace from the failed run. pytest fixes keep the code and rerun checks.
+
 ## 0.3.3 (2026-11-04)
 
 ### Security

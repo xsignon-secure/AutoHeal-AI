@@ -30,6 +30,9 @@ inputs:
   vision:
     description: "Show the AI the page at the moment of failure (Playwright's failure screenshot or the trace's last frame). auto (default) = on for Anthropic and OpenAI, off for other endpoints; true or false."
     default: auto
+  screenshots:
+    description: Save before/after screenshots of each kept fix as a run artifact (<result-name>-evidence, kept 14 days) and link them from the PR. They come from the same traces your test job uploads. 'false' turns this off.
+    default: 'true'
   effort:
     description: Anthropic effort (low, medium, high, xhigh, max).
     default: medium
@@ -120,6 +123,7 @@ runs:
         AUTOHEAL_MODEL: ${{ inputs.model }}
         AUTOHEAL_EFFORT: ${{ inputs.effort }}
         AUTOHEAL_VISION: ${{ inputs.vision }}
+        AUTOHEAL_SCREENSHOTS: ${{ inputs.screenshots }}
         AUTOHEAL_MAX_FAILURES: ${{ inputs.max-failures }}
         AUTOHEAL_REPEAT_EACH: ${{ inputs.repeat-each }}
         AUTOHEAL_MAX_USD: ${{ inputs.max-usd }}
@@ -136,6 +140,7 @@ runs:
         AUTOHEAL_COMMIT: ${{ inputs.commit || github.event.workflow_run.head_sha || github.sha }}
         AUTOHEAL_BRANCH: ${{ inputs.branch || github.event.workflow_run.head_branch || github.ref_name }}
         AUTOHEAL_OWNER: '@${{ github.event.workflow_run.actor.login || github.actor }}'
+        AUTOHEAL_EVIDENCE_ARTIFACT: ${{ inputs.result-name }}-evidence
         GITHUB_TOKEN: ${{ inputs.github-token }}
       run: |
         set +e
@@ -161,6 +166,17 @@ runs:
     # The heal job only uploads a patch. The publish job (publish/action.yml)
     # checks it in a fresh checkout and opens the PR, so the token that can
     # push never shares a job with your tests or the AI's proposed fixes.
+    # Before/after screenshots of kept fixes, linked from the PR. Only images
+    # AutoHeal itself wrote from the traces; the upload never fails the job.
+    - name: Upload before/after screenshots
+      if: always() && steps.heal.outputs.exit-code != ''
+      uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+      with:
+        name: ${{ inputs.result-name }}-evidence
+        path: ${{ runner.temp }}/autoheal-out/evidence
+        retention-days: 14
+        if-no-files-found: ignore
+
     - name: Upload the result for the publish job
       if: always() && steps.package.outputs.result-dir != ''
       uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2

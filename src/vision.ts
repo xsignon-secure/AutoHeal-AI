@@ -150,8 +150,35 @@ export function frameFromTrace(entries: Map<string, Buffer>): Screenshot | null 
       }
     }
   }
+  return pickFrame(entries, frames, failedAt);
+}
+
+function screencastFrames(entries: Map<string, Buffer>): Array<{ entry: string; timestamp: number }> {
+  const frames: Array<{ entry: string; timestamp: number }> = [];
+  for (const [name, buf] of entries) {
+    if (!name.endsWith('.trace')) continue;
+    for (const line of buf.toString('utf8').split('\n')) {
+      if (!line.startsWith('{') || !line.includes('screencast-frame')) continue;
+      try {
+        const event = JSON.parse(line) as TraceEvent;
+        const entry = typeof event.file === 'string' ? event.file : typeof event.sha1 === 'string' ? `resources/${event.sha1}` : undefined;
+        if (event.type === 'screencast-frame' && typeof event.timestamp === 'number' && entry) frames.push({ entry, timestamp: event.timestamp });
+      } catch {
+        // skip
+      }
+    }
+  }
+  return frames;
+}
+
+/** The last screencast frame at or before `until` (a trace timestamp), or the last frame. */
+export function frameAt(entries: Map<string, Buffer>, until?: number): Screenshot | null {
+  return pickFrame(entries, screencastFrames(entries), until);
+}
+
+function pickFrame(entries: Map<string, Buffer>, frames: Array<{ entry: string; timestamp: number }>, until: number | undefined): Screenshot | null {
   frames.sort((a, b) => a.timestamp - b.timestamp);
-  const candidates = failedAt === undefined ? frames : frames.filter((f) => f.timestamp <= failedAt + 250);
+  const candidates = until === undefined ? frames : frames.filter((f) => f.timestamp <= until + 250);
   for (const frame of [...(candidates.length ? candidates : frames)].reverse()) {
     const image = entries.get(frame.entry);
     if (image) {
@@ -226,4 +253,15 @@ export function visionEnabled(providerName: string | undefined, env: NodeJS.Proc
   if (setting === 'false' || setting === '0' || setting === 'off') return false;
   if (setting === 'true' || setting === '1' || setting === 'on') return true;
   return providerName === 'anthropic' || providerName === 'openai' || providerName === 'scripted';
+}
+
+/** The screenshot at `until` (trace clock) from a trace.zip on disk, or null. */
+export async function frameFromFile(file: string, until?: number): Promise<Screenshot | null> {
+  try {
+    const buf = await readSmallFile(file, MAX_ZIP_BYTES);
+    if (!buf) return null;
+    return frameAt(readZip(buf, (name) => name.endsWith('.trace') || name.startsWith('resources/') || name.startsWith('screencast/')), until);
+  } catch {
+    return null;
+  }
 }

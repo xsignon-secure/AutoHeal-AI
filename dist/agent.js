@@ -294,6 +294,7 @@ export async function aiFix(ctx) {
                                 log,
                                 ...(outcome.guard ? { guard: outcome.guard } : {}),
                                 ...(outcome.stability ? { stability: outcome.stability } : {}),
+                                ...(outcome.runtime ? { runtime: outcome.runtime } : {}),
                             };
                             results.push({ type: 'tool_result', id: call.id, content: 'Kept: the fix passed both anti-cheat scans and the stability rerun. You are done.' });
                         }

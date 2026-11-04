@@ -13,7 +13,7 @@
  */
 
 import { execFile } from 'node:child_process';
-import { access, readdir, readFile, rm, writeFile } from 'node:fs/promises';
+import { access, mkdir, readdir, readFile, rm, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { promisify } from 'node:util';
 import { aiFix, aiTriage, relativeImports, safePath, type VerifyOutcome } from './agent.js';
@@ -26,9 +26,10 @@ import { findReport } from './report-files.js';
 import { loadMemory, memoryEntryPath, memoryText, relevantMemory, remember } from './memory.js';
 import type { Provider } from './providers/types.js';
 import { triage as triageFailure, type Triage } from './triage.js';
-import { MINUTES_SAVED, type FailureInfo, type FailureResult, type FixInfo, type GuardInfo, type HealSummary, type Mode, type Outcome, type Status } from './types.js';
+import { MINUTES_SAVED, type FailureInfo, type FailureResult, type FixInfo, type GuardInfo, type HealSummary, type Mode, type Outcome, type RuntimeInfo, type Status } from './types.js';
 import { VERSION } from './version.js';
-import { failureScreenshot, visionEnabled } from './vision.js';
+import { failureScreenshot, frameFromFile, visionEnabled, type Screenshot } from './vision.js';
+import { compareRuns, findTrace, recordFromFile, type RuntimeFinding } from './runtime.js';
 
 const run = promisify(execFile);
 
@@ -54,6 +55,8 @@ export interface HealOptions {
   /** Injected engine (tests); default: start playwright-e2e-mcp. */
   mcp?: ToolCaller;
   log?: (line: string) => void;
+  /** Where to save before/after screenshots of kept fixes (the CLI uses <out>/evidence). */
+  evidenceDir?: string;
 }
 
 interface DryFix {
@@ -348,6 +351,58 @@ export async function heal(options: HealOptions): Promise<HealSummary> {
     const fixedTitles = new Set<string>();
 
     /** Anti-cheat both ways, write, prove stability, keep or revert. */
+    /** Runs the fixed test once with a trace and compares it with the failed run's trace. */
+    async function runtimeCheck(failure: FailureInfo, grep: string): Promise<{ findings?: RuntimeFinding[]; info: RuntimeInfo }> {
+      const oldTrace = failure.tracePath ? path.resolve(root, failure.tracePath) : '';
+      const old = oldTrace ? await recordFromFile(oldTrace) : null;
+      if (!old || !old.steps.length) return { info: { checked: false, note: 'no trace from the failed run, so only the code was checked' } };
+      const since = Date.now() - 2000;
+      const r = await mcp.call('run-test', { testFiles: [failure.file], grep, args: ['--trace=on'], retries: 0, retryOnFailure: false, timeoutMs: 600_000 }, 660_000);
+      const file = r.ok ? await findTrace(root, ['.'], since, failure.title) : null;
+      const now = file ? await recordFromFile(file) : null;
+      if (!now || !now.steps.length) return { info: { checked: false, note: 'the traced rerun left no readable trace, so only the code was checked' } };
+      const findings = compareRuns(old, now);
+      const checks = now.steps.filter((x) => x.kind === 'expect').length;
+      const repeated = old.steps.filter((x) => x.kind === 'expect').length;
+      const failedStep = old.failedAt !== undefined ? old.steps[old.failedAt] : undefined;
+      const same = failedStep ? now.steps.filter((x) => x.title === failedStep.title && x.expected === failedStep.expected) : [];
+      const match = same.find((x) => x.box);
+      const info: RuntimeInfo = { checked: true, checks, repeated, ...(match?.box ? { box: match.box } : {}) };
+      if (!findings.length && options.evidenceDir) {
+        const shots = await saveEvidence(oldTrace, file as string, same[0]?.end ?? now.steps.at(-1)?.end).catch(() => null);
+        if (shots) info.evidence = shots;
+      }
+      log(`  runtime guard: ${findings.length ? `${findings.length} problem(s)` : `ok (${checks} assertion(s) ran, all ${repeated} from the failed run repeated)`}`);
+      return { findings, info };
+    }
+
+    let shotCount = 0;
+    /** Saves the failed run's screenshot and the fixed run's screenshot at the same step. */
+    async function saveEvidence(oldTrace: string, newTrace: string, end: number | undefined): Promise<RuntimeInfo['evidence'] | null> {
+      const dir = options.evidenceDir;
+      if (!dir || shotCount >= 20) return null;
+      const before = await failureScreenshot(root, path.relative(root, oldTrace));
+      const after = await frameFromFile(newTrace, end);
+      if (!before && !after) return null;
+      const n = ++shotCount;
+      await mkdir(dir, { recursive: true });
+      const save = async (shot: Screenshot | null, label: string): Promise<string | undefined> => {
+        if (!shot) return undefined;
+        const name = `${n}-${label}.${shot.mediaType === 'image/png' ? 'png' : 'jpeg'}`;
+        await writeFile(path.join(dir, name), Buffer.from(shot.data, 'base64'), { flag: 'wx' });
+        return name;
+      };
+      const out: NonNullable<RuntimeInfo['evidence']> = {};
+      const b = await save(before, 'before');
+      const a = await save(after, 'after');
+      if (b) out.before = b;
+      if (a) out.after = a;
+      const env = process.env;
+      if (env.AUTOHEAL_EVIDENCE_ARTIFACT && /^[\w.-]{1,100}$/.test(env.AUTOHEAL_EVIDENCE_ARTIFACT)) out.artifact = env.AUTOHEAL_EVIDENCE_ARTIFACT;
+      if (env.GITHUB_SERVER_URL && env.GITHUB_REPOSITORY && env.GITHUB_RUN_ID) out.url = `${env.GITHUB_SERVER_URL}/${env.GITHUB_REPOSITORY}/actions/runs/${env.GITHUB_RUN_ID}`;
+      return out;
+    }
+
     async function verify(failure: FailureInfo, rel: string, content: string): Promise<VerifyOutcome> {
       const abs = safePath(root, rel);
       if (!abs) return { kept: false, blocked: false, message: 'Path not allowed.' };
@@ -405,6 +460,20 @@ export async function heal(options: HealOptions): Promise<HealSummary> {
         return { kept: false, blocked: false, guard, stability: { runs, passed: false, detail }, message: `The test still fails with this change:\n${detail}` };
       }
 
+      // Guard v2: one traced run of the fixed test, compared with the failed run's trace.
+      const runtime: { findings?: RuntimeFinding[]; info: RuntimeInfo } = pytest
+        ? { info: { checked: false, note: 'the runtime check reads Playwright Test traces; pytest fixes are checked by code and reruns' } }
+        : await runtimeCheck(failure, grep);
+      if (runtime.findings?.length) {
+        await writeFile(abs, before);
+        if (originals.get(rel) === before) originals.delete(rel);
+        const reasons = runtime.findings.map((f) => `BLOCK ${f.rule}: ${f.message}`).join('; ');
+        log(`  runtime guard rejected a change to ${rel}: ${reasons}`);
+        const blockedGuard: GuardInfo = { ...guard, findings: [...guard.findings, ...runtime.findings.map((f) => ({ severity: 'BLOCK' as const, rule: f.rule, message: f.message }))] };
+        return { kept: false, blocked: true, guard: blockedGuard, stability: { runs, passed: true, detail: `passed ${runs}×` }, message: `Runtime guard: ${reasons}` };
+      }
+      const runtimeInfo = runtime.info;
+
       // The rest of the file must not get worse: only tests that were already
       // failing may fail. A change to a shared file (a page object or helper)
       // also reruns every spec that imports it.
@@ -431,7 +500,7 @@ export async function heal(options: HealOptions): Promise<HealSummary> {
         };
       }
       const scope = importers.length ? `the rest of the file and ${importers.length} other spec(s) using ${rel}` : 'the rest of the file';
-      return { kept: true, blocked: false, guard, stability: { runs, passed: true, detail: `passed ${runs}× and ${scope} did not get worse` }, message: 'kept' };
+      return { kept: true, blocked: false, guard, stability: { runs, passed: true, detail: `passed ${runs}× and ${scope} did not get worse` }, runtime: runtimeInfo, message: 'kept' };
     }
 
     // 3–5. One failure at a time.
@@ -501,6 +570,7 @@ export async function heal(options: HealOptions): Promise<HealSummary> {
               const outcome = await verify(failure, dry.file, next);
               if (outcome.guard) result.guard = outcome.guard;
               if (outcome.stability) result.stability = outcome.stability;
+              if (outcome.runtime) result.runtime = outcome.runtime;
               if (outcome.kept) {
                 fixed = true;
                 result.status = 'FIXED';
@@ -529,6 +599,7 @@ export async function heal(options: HealOptions): Promise<HealSummary> {
           });
           if (agent.guard) result.guard = agent.guard;
           if (agent.stability) result.stability = agent.stability;
+          if (agent.runtime) result.runtime = agent.runtime;
           if (agent.result === 'fixed' && agent.file && agent.before !== undefined && agent.after !== undefined) {
             fixed = true;
             result.status = 'FIXED';

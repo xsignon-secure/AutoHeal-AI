@@ -162,6 +162,10 @@ const scenarios = {
     const firstFix = requests.find((r) => r.tools > 0);
     check(firstFix?.images?.length === 1 && /image\/(png|jpeg)/.test(firstFix.images[0].mediaType) && firstFix.images[0].bytes > 1000, `the AI got the failure screenshot (${JSON.stringify(firstFix?.images)})`);
     check(Boolean(l?.failure?.screenshot) && /Visual grounding/.test(body), `PR body says the AI saw the page at the moment of failure (${l?.failure?.screenshot})`);
+    // Guard v2: a traced rerun was compared with the failed run, and the screenshots were saved.
+    check(/Runtime guard \| traced rerun: \d+ assertion/.test(body) && l?.runtime?.checked === true, `the runtime guard compared the failed and fixed runs (${JSON.stringify(l?.runtime)})`);
+    const ev = l?.runtime?.evidence ?? {};
+    check(Boolean(ev.before && ev.after) && [ev.before, ev.after].every((f) => readFileSync(path.join(dir, '.autoheal-out', 'evidence', f)).length > 1000), `before/after screenshots saved for the PR (${JSON.stringify(ev)})`);
     const out = readFileSync(path.join(dir, '.autoheal-out', 'summary.json'), 'utf8') + body;
     check(!/[A-Za-z0-9+/]{2000}/.test(out), 'no image data in summary.json or the PR body');
     check(

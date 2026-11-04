@@ -44,6 +44,20 @@ export interface GuardInfo {
   findings: Array<CheatFinding | { severity: string; rule: string; message: string }>;
 }
 
+/** Guard v2: what the traced run of the fix showed, compared with the failed run. */
+export interface RuntimeInfo {
+  /** True when both traces were read and compared. */
+  checked: boolean;
+  /** Assertions the fixed run made, and how many of the failed run's it repeated. */
+  checks?: number;
+  repeated?: number;
+  /** Where the formerly failing step acted in the fixed run. */
+  box?: { x: number; y: number; width: number; height: number };
+  /** Screenshot files saved for the PR: the failed run, and the fixed run at the same step. */
+  evidence?: { before?: string; after?: string; url?: string; artifact?: string };
+  note?: string;
+}
+
 export interface FailureResult {
   failure: Omit<FailureInfo, 'detail'>;
   category: Category;
@@ -55,6 +69,7 @@ export interface FailureResult {
   fix?: FixInfo;
   guard?: GuardInfo;
   stability?: { runs: number; passed: boolean; detail: string };
+  runtime?: RuntimeInfo;
   quarantine?: { days: number };
   spend: BudgetSnapshot;
 }
