@@ -140,7 +140,7 @@ jobs:
       - name: AutoHeal
         id: autoheal
         # Pin this (and publish below) to a commit SHA if your policy requires it.
-        uses: xsignon-secure/AutoHeal-AI@v0.3.2
+        uses: xsignon-secure/AutoHeal-AI@v0.3.3
         with:
           report: autoheal-artifacts
           mode: ${{ github.event.inputs.mode || 'draft-pr' }}
@@ -177,7 +177,7 @@ jobs:
           path: autoheal-result
 
       - name: Publish
-        uses: xsignon-secure/AutoHeal-AI/publish@v0.3.2
+        uses: xsignon-secure/AutoHeal-AI/publish@v0.3.3
         with:
           # Folders a fix may change. Add yours if page objects live outside tests/ or e2e/.
           # allowed-paths: 'tests/**, e2e/**, pages/**'

@@ -2,6 +2,11 @@
 
 All notable changes to AutoHeal AI. Versions follow [semantic versioning](https://semver.org/).
 
+## 0.3.3 (2026-11-04)
+
+### Fixed
+- The `autoheal` command was dropped from the npm package: npm 12 removes a `bin` path that starts with `./`. The path is now `dist/cli.js`, so `npx xsignon-autoheal` works.
+
 ## 0.3.2 (2026-11-03)
 
 ### Security

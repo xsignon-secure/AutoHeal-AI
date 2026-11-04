@@ -1,6 +1,6 @@
 {
   "name": "xsignon-autoheal",
-  "version": "0.3.2",
+  "version": "0.3.3",
   "description": "Free, self-hosted AI agent that fixes failing Playwright tests inside your own GitHub Actions, with your own AI key. Triage first, anti-cheat guard, stability proof, evidence-first PRs.",
   "author": "xsignon-secure (https://github.com/xsignon-secure)",
   "license": "MIT",
@@ -9,7 +9,7 @@
   "repository": { "type": "git", "url": "git+https://github.com/xsignon-secure/AutoHeal-AI.git" },
   "bugs": { "url": "https://github.com/xsignon-secure/AutoHeal-AI/issues" },
   "keywords": ["playwright", "e2e", "self-healing", "ai-agent", "flaky-tests", "github-action", "mcp", "test-automation", "free", "open-source"],
-  "bin": { "autoheal": "./dist/cli.js" },
+  "bin": { "autoheal": "dist/cli.js" },
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",
   "exports": { ".": { "types": "./dist/index.d.ts", "import": "./dist/index.js" } },
