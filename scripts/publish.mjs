@@ -199,6 +199,12 @@ export function checkFiles(root, files, changedList, allowed = allowedPaths(env.
   }
 }
 
+function sameFiles(seen, expected, what) {
+  const a = [...new Set(seen)].sort();
+  const b = [...new Set(expected)].sort();
+  if (JSON.stringify(a) !== JSON.stringify(b)) throw new Refused(`${what} shows different files than the patch header (${a.slice(0, 5).join(', ')})`);
+}
+
 /** Re-runs the anti-cheat scan on each changed source file: the trusted copy before, the patched copy after. */
 export function rescan(root, files, befores, allowWarn = env.ALLOW_WARN === 'true') {
   for (const f of files) {
@@ -330,7 +336,23 @@ export function publishPatch({ root, dir, mode, base, runId, fixed }) {
   const checked = path.join(mkdtempSync(path.join(os.tmpdir(), 'autoheal-')), 'checked.diff');
   writeFileSync(checked, patch, { mode: 0o600 });
   git(['apply', '--check', '--whitespace=nowarn', checked], { cwd: root });
+  // git's own reading of the patch must name exactly the files we checked.
+  const numstat = git(['apply', '--numstat', '-z', checked], { cwd: root }).split('\0').filter(Boolean);
+  const applied = numstat.map((row) => {
+    const [add, del, ...rest] = row.split('\t');
+    if (add === '-' || del === '-') throw new Refused(`git sees binary data in the patch (${rest.join('\t')})`);
+    return rest.join('\t');
+  });
+  sameFiles(applied, files.map((f) => f.path), 'git apply --numstat');
   git(['apply', '--whitespace=nowarn', checked], { cwd: root });
+  // And the working tree must have changed in exactly those files.
+  const resultRel = path.relative(realpathSync(root), realpathSync(dir)).split(path.sep).join('/');
+  const status = git(['status', '--porcelain=v1', '-z', '--untracked-files=all', '--ignored=no'], { cwd: root })
+    .split('\0')
+    .filter(Boolean)
+    .map((entry) => entry.slice(3))
+    .filter((p) => !(resultRel && !resultRel.startsWith('..') && (p === resultRel || p.startsWith(`${resultRel}/`))));
+  sameFiles(status, files.map((f) => f.path), 'git status after applying');
   // The heal job's own checks are not trusted: run them again here.
   rescan(root, files, befores);
   const results = readJson(dir, 'summary.json')?.results;

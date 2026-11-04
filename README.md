@@ -26,9 +26,10 @@ It is MIT licensed and runs entirely on your GitHub runner. No AutoHeal server, 
   - points the test at another page (a changed `goto`, `route` or `waitForURL`, or any URL written into the test);
   - deletes a user action such as a click or fill;
   - widens a locator with `.or()` or a whole-page selector;
+  - changes what an assertion looks at (the text, role name or state inside `expect(...)`), or changes an action (`click` to `hover`) or drops an `await`;
   - adds code a test fix never needs (environment variables, processes, system modules, raw network calls) or hides such code behind built-up names and globals.
 
-  On top of those rules, a fix may only *add* locators, waits, literals and names the file already uses (a token-level allowlist), so a fake comment inside a string or a split-up string cannot hide new code. Fixed waits, `force: true` and retries are blocked; raised timeouts are blocked unless you allow warnings. The scan is a strong filter, not a proof. The stability rerun and your review of the draft PR are the other two layers.
+  On top of those rules, a fix may only *add* locators, waits, literals and names the file already uses (a token-level allowlist), so a fake comment inside a string or a split-up string cannot hide new code. Fixed waits, `force: true` and retries are blocked; raised timeouts are blocked unless you allow warnings. Every bypass found in our audits is in [`test/bypasses/corpus.mjs`](test/bypasses/corpus.mjs), and CI checks each one is blocked. The scan is a strong filter, not a proof. The stability rerun and your review of the draft PR are the other two layers.
 - **Stability proof.** A fix is kept only if the test passes `--repeat-each=5` and the rest of the file does not get worse. A fix to a page object or helper also reruns every spec that imports it. A rerun that crashes or runs no tests counts as a failure. Anything else is reverted before the model even sees the result. The repeats run back to back, so tests must clean up after themselves. If a test shares a database or other state without resetting it, a good fix can fail the proof and be reverted (lower `repeat-each`, or isolate the data). A bad fix is never kept because of this.
 - **Secrets are scrubbed.** Before anything goes to the AI or into a PR, issue, comment or job summary, AutoHeal redacts known credential shapes: API keys, GitHub, AWS, Slack and Stripe tokens, JWTs, private keys, `Bearer` headers, `password=` values and passwords in URLs. It also redacts the value of every secret-looking environment variable on the runner.
 - **It sees the page.** When a test fails, the AI is shown the page at that moment: Playwright's own failure screenshot, or the last frame from the trace before the failing step. So it can tell that a button moved, was renamed or is hidden behind a dialog, instead of guessing from the error text. The image comes from your run's own files (no extra browser run) and goes only to your AI provider. It never goes into a PR, issue, comment or the dashboard. It is on for Anthropic and OpenAI; turn it off with `vision: false`. Keep `screenshot: 'only-on-failure'` or a trace with screenshots in your config so there is something to see.
@@ -91,7 +92,7 @@ PRs opened with the default `GITHUB_TOKEN` do not start other workflows; GitHub 
   with:
     app-id: ${{ vars.AUTOHEAL_APP_ID }}
     private-key: ${{ secrets.AUTOHEAL_APP_KEY }}
-- uses: xsignon-secure/AutoHeal-AI/publish@v0.3.2
+- uses: xsignon-secure/AutoHeal-AI/publish@v0.3.3
   with:
     github-token: ${{ steps.app-token.outputs.token }}
     # ...the other inputs from the template
@@ -111,7 +112,7 @@ AutoHeal never pushes to your base branch, never auto-merges, and never runs on 
 
 ## Inputs
 
-**Heal action** (`xsignon-secure/AutoHeal-AI@v0.3.2`):
+**Heal action** (`xsignon-secure/AutoHeal-AI@v0.3.3`):
 
 | Input | Default | |
 |---|---|---|
@@ -140,7 +141,7 @@ AutoHeal never pushes to your base branch, never auto-merges, and never runs on 
 
 Outputs: `outcome` (`fixed`, `blocked`, `app-bug`, `quarantined`, `unfixed`, `nothing-to-do` or `error`), `fixed`, `blocked`, `has-result`.
 
-**Publish action** (`xsignon-secure/AutoHeal-AI/publish@v0.3.2`): `result-dir`, `mode`, `base-branch`, `run-id`, `commit`, `pr-number`, `blocked`, `open-issues`, `allowed-paths`, `allow-warn`, `quarantine-days`, `github-token`, `dashboard-url`, `dashboard-secret`. Output: `pr-url`.
+**Publish action** (`xsignon-secure/AutoHeal-AI/publish@v0.3.3`): `result-dir`, `mode`, `base-branch`, `run-id`, `commit`, `pr-number`, `blocked`, `open-issues`, `allowed-paths`, `allow-warn`, `quarantine-days`, `github-token`, `dashboard-url`, `dashboard-secret`. Output: `pr-url`.
 
 `allowed-paths` limits which files a fix may change. The default is `**/tests/**, **/test/**, **/e2e/**, **/playwright/**, **/*.spec.*, **/*.test.*, **/test_*.py, **/*_test.py`. If your page objects live somewhere else (for example `src/pages/**`), add that folder. Files that tools load or run on their own (configs, `conftest.py`, `__init__.py`, setup and teardown files, `.pnpmfile.cjs`, gulp and grunt files) are never patched. Keep `allow-warn` and `quarantine-days` the same as in the heal job.
 
