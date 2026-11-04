@@ -5,6 +5,9 @@
  * the stability rerun, the spend counters).
  */
 import type { FailureResult, HealSummary } from './types.js';
+import type { Cause } from './cause.js';
+/** One line naming the commit, e.g. `abc1234` "Rename login" (Ada, 2026-11-03): "Log in" → "Sign in" in `app/login.tsx`. */
+export declare function causeText(c: Cause, repoUrl?: string): string;
 /** Groups fixes by the UI change behind them: one change that broke several tests. */
 export declare function uiChanges(results: FailureResult[]): string[];
 export declare function prBody(summary: HealSummary): string;

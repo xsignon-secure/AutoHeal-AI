@@ -2,6 +2,12 @@
 
 All notable changes to AutoHeal AI. Versions follow [semantic versioning](https://semver.org/).
 
+## 0.7.0 (2026-11-04)
+
+### Added
+- **Find the cause.** For each fixed locator and each app bug, AutoHeal searches the repository history (`git log -S`, test and AutoHeal files excluded) for the most recent app commit that removed the old text or added the new one, and checks the direction of the change. The PR shows a "Likely cause" row with the commit linked, the app-bug issue names it, and "One UI change, one fix" groups fixes by that commit. The workflow template now checks out 200 commits (`fetch-depth: 200`).
+- **Learn from reviews.** AutoHeal PR bodies now start with a hidden list of their fixes. Before healing, the heal process reads the last 20 closed AutoHeal PRs from the same repository and sorts each fix into merged as written, edited by a reviewer (the reviewer's change to that file is read from the compare view) or closed. A rule or fingerprint fix equal to one that was closed is not proposed again, and the result says which PR closed it. The AI's repo memory includes what reviewers kept, edited and closed. The job summary counts them. New input `learn-from-reviews` (default `true`); the template's heal job now has `pull-requests: read`. If the PRs can't be read, healing goes on and the summary says why.
+
 ## 0.6.0 (2026-11-04)
 
 ### Added

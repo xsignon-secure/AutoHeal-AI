@@ -21,7 +21,9 @@
  *   fingerprint  fingerprints saved from a green run of the old app; no AI key:
  *           the renamed button is found again (fixed without tokens), a
  *           second test with the same broken locator gets the same fix, and
- *           the profile assertion is not steered by the text it checks
+ *           the profile assertion is not steered by the text it checks; the
+ *           fixes and the app bug are linked to the commits that caused them
+ *   reviews  an earlier AutoHeal PR with the same fix was closed: not proposed again
  *
  * Usage: npm run simulate [-- <scenario> ...]
  */
@@ -49,7 +51,7 @@ const check = (cond, label) => {
   if (!cond) failures++;
 };
 
-function prepare(name, setup) {
+function prepare(name, setup, afterCommit) {
   const dir = path.join(workRoot, name);
   rmSync(dir, { recursive: true, force: true });
   mkdirSync(dir, { recursive: true });
@@ -60,6 +62,10 @@ function prepare(name, setup) {
   git('init', '-q');
   git('add', '-A');
   git('-c', 'user.email=sim@example.com', '-c', 'user.name=sim', 'commit', '-qm', 'dummy shop');
+  afterCommit?.(dir, (msg) => {
+    git('add', '-A');
+    git('-c', 'user.email=dev@example.com', '-c', 'user.name=Dev', 'commit', '-qm', msg);
+  });
   writeFileSync(path.join(dir, '.git', 'info', 'exclude'), 'autoheal-artifacts/\n.autoheal-out/\nscript.json\n');
   // The "CI run" that failed.
   spawnSync('npx', ['playwright', 'test'], { cwd: dir, stdio: 'pipe', env: { ...process.env, CI: '1' } });
@@ -115,6 +121,33 @@ function fixScript(login, po) {
       ],
     },
   ];
+}
+
+/** The dummy shop with fingerprints from a green run of the old app, then two app commits that break tests. */
+function fingerprintRepo(name) {
+  return prepare(
+    name,
+    (d) => {
+      // A second test that clicks the same button: one UI change, two broken tests.
+      writeFileSync(path.join(d, 'tests', 'checkout-login.spec.ts'), file(d, 'tests/login.spec.ts').replace("'user can log in'", "'checkout asks to log in'"));
+      // A green run of the app as it was ("Log in"), traced, then `autoheal fingerprint`.
+      const old = file(d, 'app/server.mjs').replace('>Sign in</button>', '>Log in</button>').replace('id="welcome-message"', 'id="greeting"');
+      writeFileSync(path.join(d, 'app/server.mjs'), old);
+      const green = spawnSync('npx', ['playwright', 'test', 'tests/login.spec.ts', 'tests/profile.spec.ts', '--trace', 'on'], { cwd: d, encoding: 'utf8', env: { ...process.env, CI: '1' } });
+      check(green.status === 0, `green run of the old app passed (${green.status})`);
+      const fp = spawnSync(process.execPath, [cli, 'fingerprint', '--traces', 'test-results'], { cwd: d, encoding: 'utf8' });
+      check(fp.status === 0 && /saved [1-9]\d* element fingerprint/.test(fp.stderr), `fingerprints saved from the green run (${fp.stderr.trim()})`);
+      // The base commit is the old app; the changes below come as their own commits.
+      writeFileSync(path.join(d, 'app/server.mjs'), old.replace('$12', '$10'));
+      for (const x of ['test-results', 'playwright-report']) rmSync(path.join(d, x), { recursive: true, force: true });
+    },
+    (d, commit) => {
+      writeFileSync(path.join(d, 'app/server.mjs'), file(d, 'app/server.mjs').replace('>Log in</button>', '>Sign in</button>').replace('id="greeting"', 'id="welcome-message"'));
+      commit('Rename the login button to Sign in');
+      writeFileSync(path.join(d, 'app/server.mjs'), file(d, 'app/server.mjs').replace('$10', '$12'));
+      commit('Raise the Pro price');
+    },
+  );
 }
 
 const scenarios = {
@@ -246,19 +279,7 @@ const scenarios = {
   },
 
   fingerprint() {
-    const dir = prepare('fingerprint', (d) => {
-      // A second test that clicks the same button: one UI change, two broken tests.
-      writeFileSync(path.join(d, 'tests', 'checkout-login.spec.ts'), file(d, 'tests/login.spec.ts').replace("'user can log in'", "'checkout asks to log in'"));
-      // A green run of the app as it was ("Log in"), traced, then `autoheal fingerprint`.
-      const server = file(d, 'app/server.mjs');
-      writeFileSync(path.join(d, 'app/server.mjs'), server.replace('>Sign in</button>', '>Log in</button>').replace("'#welcome-message'", "'#greeting'").replace('id="welcome-message"', 'id="greeting"'));
-      const green = spawnSync('npx', ['playwright', 'test', 'tests/login.spec.ts', 'tests/profile.spec.ts', '--trace', 'on'], { cwd: d, encoding: 'utf8', env: { ...process.env, CI: '1' } });
-      check(green.status === 0, `green run of the old app passed (${green.status})`);
-      const fp = spawnSync(process.execPath, [cli, 'fingerprint', '--traces', 'test-results'], { cwd: d, encoding: 'utf8' });
-      check(fp.status === 0 && /saved [1-9]\d* element fingerprint/.test(fp.stderr), `fingerprints saved from the green run (${fp.stderr.trim()})`);
-      writeFileSync(path.join(d, 'app/server.mjs'), server);
-      for (const x of ['test-results', 'playwright-report']) rmSync(path.join(d, x), { recursive: true, force: true });
-    });
+    const dir = fingerprintRepo('fingerprint');
     const saved = readdirSync(path.join(dir, '.autoheal', 'fingerprints'));
     check(saved.length >= 3, `fingerprints committed with the repo (${saved.length})`);
     const { code, summary } = heal(dir, ['--mode', 'draft-pr', '--max-failures', '2']);
@@ -280,6 +301,41 @@ const scenarios = {
     check(/element fingerprint, no AI tokens/.test(body) && /Locator: .*strong/.test(body), 'PR body names the fingerprint fix and the locator strength');
     const rerun = spawnSync('npx', ['playwright', 'test', 'tests/login.spec.ts', 'tests/checkout-login.spec.ts'], { cwd: dir, encoding: 'utf8' });
     check(rerun.status === 0, 'both fixed tests pass in a fresh Playwright run');
+    // Find the cause: the app commits behind the fixes and the app bug.
+    check(first?.cause?.subject === 'Rename the login button to Sign in' && /Log in.*Sign in/.test(first.cause.evidence), `fix linked to the commit that renamed the button (${JSON.stringify(first?.cause)})`);
+    check(second?.cause?.commit === first?.cause?.commit, 'the same-change fix has the same cause');
+    check(/Likely cause/.test(body) && /Rename the login button to Sign in/.test(body), 'PR body names the commit');
+  },
+
+  reviews() {
+    // An earlier AutoHeal PR made the same fingerprint fix, and a reviewer closed it.
+    const dir = fingerprintRepo('reviews');
+    const marker = Buffer.from(JSON.stringify([{ file: 'tests/checkout-login.spec.ts', test: 'checkout-login.spec.ts › checkout asks to log in', by: 'fingerprint', before: "getByRole('button', { name: 'Log in' })", after: "getByRole('button', { name: 'Sign in' })" }])).toString('base64');
+    const pulls = [{ number: 5, body: `<!-- autoheal-fixes:${marker} -->\nAutoHeal`, merged_at: null, closed_at: '2026-11-01T00:00:00Z', head: { ref: 'autoheal/77', repo: { full_name: 'acme/shop' } }, base: { repo: { full_name: 'acme/shop' } } }];
+    // A stub GitHub API on a free port (the port is written to a file once it listens).
+    const portFile = path.join(dir, '.git', 'stub-port');
+    const stub = spawn(
+      process.execPath,
+      ['-e', `const s = require('http').createServer((q, r) => { r.setHeader('content-type', 'application/json'); r.end(q.url.startsWith('/repos/acme/shop/pulls?') ? ${JSON.stringify(JSON.stringify(pulls))} : '[]'); }).listen(0, '127.0.0.1', () => require('fs').writeFileSync(${JSON.stringify(portFile)}, String(s.address().port)))`],
+      { stdio: 'ignore' },
+    );
+    for (let i = 0; i < 50 && !existsSync(portFile); i++) Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 100);
+    const port = readFileSync(portFile, 'utf8').trim();
+    try {
+      const { code, summary } = heal(dir, ['--mode', 'draft-pr', '--max-failures', '5', '--no-flaky-check'], { GITHUB_REPOSITORY: 'acme/shop', GITHUB_TOKEN: 'fake', GITHUB_API_URL: `http://127.0.0.1:${port}` });
+      check(code === 0, `exit code 0 (got ${code})`);
+      check(summary?.reviews?.closed === 1 && !summary.reviews.note, `read 1 closed AutoHeal PR (${JSON.stringify(summary?.reviews)})`);
+      const r = byTest(summary, 'checkout asks to log in');
+      check(r?.fix?.by !== 'fingerprint' && r?.reasons.some((x) => /closed without merging in PR #5/.test(x)), `the change reviewers closed was not proposed again (${r?.status}: ${r?.reasons?.join('; ')})`);
+      check(file(dir, 'tests/checkout-login.spec.ts').includes("name: 'Log in'"), 'test file unchanged');
+      // Find the cause works for app bugs too: the commit that changed the value.
+      const price = byTest(summary, 'pro plan price');
+      check(price?.status === 'APP_BUG' && price.cause?.subject === 'Raise the Pro price', `app bug linked to the commit that changed the price (${JSON.stringify(price?.cause)})`);
+      const issue = readdirSync(path.join(dir, '.autoheal-out')).filter((f) => /^issue-\d+\.md$/.test(f)).map((f) => file(dir, `.autoheal-out/${f}`)).join('\n');
+      check(/Likely cause/.test(issue) && /Raise the Pro price/.test(issue), 'the app-bug issue names the commit');
+    } finally {
+      stub.kill();
+    }
   },
 
   action() {
@@ -445,7 +501,7 @@ const scenarios = {
 };
 
 const wanted = process.argv.slice(2);
-const order = wanted.length ? wanted : ['rules', 'ai', 'cheat', 'comment', 'fingerprint', 'action', 'dashboard'];
+const order = wanted.length ? wanted : ['rules', 'ai', 'cheat', 'comment', 'fingerprint', 'reviews', 'action', 'dashboard'];
 let aiResult;
 for (const name of order) {
   if (!scenarios[name]) {

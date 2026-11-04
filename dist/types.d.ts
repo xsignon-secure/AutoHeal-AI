@@ -1,6 +1,7 @@
 import type { BudgetSnapshot } from './budget.js';
 import type { CheatFinding } from './cheat.js';
 import type { Category, RootCause } from './triage.js';
+import type { Cause } from './cause.js';
 /** Rough engineer minutes each result saves (shown on the dashboard). */
 export declare const MINUTES_SAVED: Readonly<Record<string, number>>;
 export type Mode = 'comment' | 'draft-pr' | 'pr';
@@ -103,6 +104,8 @@ export interface FailureResult {
     quarantine?: {
         days: number;
     };
+    /** The app commit that most likely caused this failure. */
+    cause?: Cause;
     spend: BudgetSnapshot;
 }
 export type Outcome = 'fixed' | 'blocked' | 'app-bug' | 'quarantined' | 'nothing-to-do' | 'unfixed' | 'error';
@@ -138,4 +141,11 @@ export interface HealSummary {
     app?: string;
     /** Element fingerprints saved with this change. */
     fingerprints?: number;
+    /** What earlier AutoHeal PRs taught this run. */
+    reviews?: {
+        merged: number;
+        edited: number;
+        closed: number;
+        note?: string;
+    };
 }

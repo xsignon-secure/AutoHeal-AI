@@ -16,6 +16,7 @@ import { type ToolCaller } from './mcp.js';
 import type { Provider } from './providers/types.js';
 import { type FailureResult, type HealSummary, type Mode, type Outcome } from './types.js';
 import type { Sandbox } from './sandbox.js';
+import { type ReviewHistory } from './reviews.js';
 export interface HealOptions {
     projectRoot: string;
     /** JSON report, blob-report folder, or a GitHub Actions / GitLab run URL. */
@@ -44,6 +45,10 @@ export interface HealOptions {
     sandboxNote?: string;
     /** Where to save before/after screenshots of kept fixes (the CLI uses <out>/evidence). */
     evidenceDir?: string;
+    /** What happened to earlier AutoHeal PRs (see reviews.ts). */
+    reviews?: ReviewHistory;
+    /** Why reviews could not be read, for the PR. */
+    reviewNote?: string;
 }
 export declare function escapeRegex(text: string): string;
 /** Spec files that import `rel` (relative imports, or Python module imports). */

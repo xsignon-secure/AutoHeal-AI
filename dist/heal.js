@@ -30,6 +30,8 @@ import { failureScreenshot, frameFromFile, visionEnabled } from './vision.js';
 import { compareRuns, findTrace, readTrace, recordFromFile } from './runtime.js';
 import { domFromZip, fingerprintPath, learn, loadFingerprints, lookup, saveFingerprints } from './fingerprints.js';
 import { bestMatch, elements } from './snapshot.js';
+import { findCause, termsFromLocators, termsFromValues } from './cause.js';
+import { rejected, reviewText } from './reviews.js';
 import { locatorChanges, locatorFor, parseSelector, rankOf, renderLocator, sourcePattern } from './locators.js';
 const run = promisify(execFile);
 const NEW_FILE = '\u0000AUTOHEAL_NEW_FILE';
@@ -236,6 +238,7 @@ export async function heal(options) {
         minutesSaved: 0,
         ...(options.run ? { run: options.run } : {}),
         ...(options.sandboxNote ? { sandbox: options.sandboxNote } : {}),
+        ...(options.reviews || options.reviewNote ? { reviews: { ...(options.reviews?.prs ?? { merged: 0, edited: 0, closed: 0 }), ...(options.reviewNote ? { note: options.reviewNote } : {}) } } : {}),
     };
     // A CI run URL is downloaded by a short-lived engine that holds the token
     // and runs nothing else. The engine that runs tests and proposed fixes
@@ -652,6 +655,12 @@ export async function heal(options) {
         };
         /** Verifies one proposal and fills in the result. True when it was kept. */
         async function attempt(failure, result, p) {
+            const no = rejected(options.reviews, p.file, p.before, p.after);
+            if (no) {
+                log(`  skipped: reviewers closed the same change in PR #${no.pr}`);
+                result.reasons = [...result.reasons, `the same change (${p.before} → ${p.after}) was closed without merging in PR #${no.pr}, so it was not proposed again`];
+                return false;
+            }
             const outcome = await verify(failure, p.file, p.next);
             if (outcome.guard)
                 result.guard = outcome.guard;
@@ -820,7 +829,7 @@ export async function heal(options) {
                         projectRoot: root,
                         failure,
                         triage: t,
-                        memory: memoryText(relevantMemory(memory, failure.file)) + (hint ? `\n${hint}` : ''),
+                        memory: [memoryText(relevantMemory(memory, failure.file)), hint, options.reviews ? reviewText(options.reviews, failure.file) : ''].filter(Boolean).join('\n'),
                         budget,
                         ...(options.appUrl ? { appUrl: options.appUrl } : {}),
                         screenshot,
@@ -960,6 +969,34 @@ export async function heal(options) {
                         r.summary = `The final heal guard over all changes said ${verdict}; every test change was reverted.`;
                     }
                 }
+            }
+        }
+        // Find the cause: the app commit behind each fix and each app bug.
+        if (await isGitRepo(root)) {
+            const found = new Map();
+            const lookupCause = async (q) => {
+                if (!q.removed.length && !q.added.length)
+                    return null;
+                const k = JSON.stringify(q);
+                if (!found.has(k))
+                    found.set(k, await findCause(root, q).catch(() => null));
+                return found.get(k) ?? null;
+            };
+            for (const r of summary.results) {
+                const q = r.status === 'FIXED' && r.fix?.locators?.length ? termsFromLocators(r.fix.locators) : r.status === 'APP_BUG' ? termsFromValues(r.failure.expected, r.failure.actual) : null;
+                const cause = q ? await lookupCause(q) : null;
+                if (cause) {
+                    r.cause = cause;
+                    log(`Cause of "${r.failure.title}": ${cause.short} ${cause.subject}`);
+                }
+            }
+            // A test fixed by the same change has the same cause.
+            for (const r of summary.results) {
+                if (r.cause || !r.fix?.sameAs)
+                    continue;
+                const first = summary.results.find((x) => x.failure.title === r.fix?.sameAs);
+                if (first?.cause)
+                    r.cause = first.cause;
             }
         }
         // Repo memory for kept fixes.
