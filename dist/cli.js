@@ -16,11 +16,15 @@ import { redactDeep } from './redact.js';
 import { findReport } from './report-files.js';
 import { eventsFrom, uploadEvents } from './upload.js';
 import { chooseSandbox, sandboxMode } from './sandbox.js';
+import { checkAppUrl, startApp } from './app.js';
+import { domFromZip, learn, saveFingerprints } from './fingerprints.js';
+import { readTrace } from './runtime.js';
 import { VERSION } from './version.js';
 export const USAGE = `autoheal ${VERSION}: free, self-hosted AI agent that fixes failing Playwright tests
 
 Usage:
   autoheal heal --report <path|run URL> [options]
+  autoheal fingerprint --traces <dir> [--project <dir>]
   autoheal upload --summary <summary.json> [--pr-url URL] [--issues issues.json]
   autoheal dashboard [--port 8080] [--host 0.0.0.0] [--db autoheal.db]
   autoheal --version
@@ -38,6 +42,10 @@ heal options (each also reads the AUTOHEAL_* variable in brackets):
   --max-steps <n>        AI calls per job (default 30) [AUTOHEAL_MAX_STEPS]
   --max-tokens <n>       AI tokens per job (default 400000) [AUTOHEAL_MAX_TOKENS]
   --app-url <url>        running app for live locator checks [AUTOHEAL_APP_URL]
+  --start-command <cmd>  start the app first (e.g. "npm run start"); it runs like the
+                         tests (sandbox, no secrets) and stops at the end [AUTOHEAL_START_COMMAND]
+  --start-url <url>      address to wait for (default --app-url; localhost only) [AUTOHEAL_START_URL]
+  --start-timeout <s>    seconds to wait for it (default 120) [AUTOHEAL_START_TIMEOUT]
   --mocks-base-url <u>   live API to compare mocks with [AUTOHEAL_MOCKS_BASE_URL]
   --no-flaky-check       skip the flaky rerun
   --allow-warn           accept anti-cheat WARN findings (default: block them)
@@ -49,6 +57,9 @@ AUTOHEAL_VISION (auto | true | false: show the AI the failure screenshot).
 AI provider (bring your own key; none = deterministic fixes only):
   ANTHROPIC_API_KEY (default model claude-opus-5-5), or OPENAI_API_KEY + AUTOHEAL_MODEL,
   or AUTOHEAL_BASE_URL + AUTOHEAL_MODEL for a local OpenAI-compatible server.
+
+fingerprint: saves element fingerprints from the traces of a green run
+(trace: 'on'), so the first broken locator can already be fixed without AI.
 
 Exit codes: 0 done, 1 error, 2 bad usage, 3 a fix was blocked by the anti-cheat guard.
 `;
@@ -111,6 +122,9 @@ async function cmdHeal(argv) {
             'max-steps': { type: 'string' },
             'max-tokens': { type: 'string' },
             'app-url': { type: 'string' },
+            'start-command': { type: 'string' },
+            'start-url': { type: 'string' },
+            'start-timeout': { type: 'string' },
             'mocks-base-url': { type: 'string' },
             'no-flaky-check': { type: 'boolean' },
             'allow-warn': { type: 'boolean' },
@@ -173,6 +187,38 @@ async function cmdHeal(argv) {
         throw new ConfigError(error instanceof Error ? error.message : String(error));
     }
     log(`Sandbox: ${sandboxChoice.note}`);
+    // The live app: started here when there is a start command, so the AI can check locators on the real page.
+    const startCommand = values['start-command'] ?? env.AUTOHEAL_START_COMMAND;
+    const startUrl = values['start-url'] ?? env.AUTOHEAL_START_URL ?? appUrl;
+    let app = null;
+    let appNote;
+    if (startCommand) {
+        if (!startUrl)
+            throw new ConfigError('--start-command needs --start-url (or --app-url): the address to wait for.');
+        try {
+            checkAppUrl(startUrl);
+        }
+        catch (error) {
+            throw new ConfigError(error instanceof Error ? error.message : String(error));
+        }
+        try {
+            app = await startApp({
+                command: startCommand,
+                url: startUrl,
+                cwd: projectRoot,
+                timeoutMs: intOption(values['start-timeout'], env.AUTOHEAL_START_TIMEOUT, 120, '--start-timeout', 5, 1800) * 1000,
+                sandbox: sandboxChoice.sandbox,
+                log,
+            });
+            appNote = app.note;
+        }
+        catch (error) {
+            // The app is a help, not a must: heal from the traces alone and say why.
+            appNote = `not started (${error instanceof Error ? error.message : String(error)}); locators were checked against the trace only`;
+            log(`Live app: ${appNote}`);
+        }
+    }
+    const liveUrl = app?.url ?? appUrl;
     const rawSummary = await heal({
         projectRoot,
         report,
@@ -184,7 +230,7 @@ async function cmdHeal(argv) {
         allowWarn: values['allow-warn'] === true || env.AUTOHEAL_ALLOW_WARN === '1',
         checkFlaky: values['no-flaky-check'] !== true && env.AUTOHEAL_NO_FLAKY_CHECK !== '1',
         flakyRuns: 3,
-        ...(appUrl ? { appUrl } : {}),
+        ...(liveUrl ? { appUrl: liveUrl } : {}),
         ...(mocksBaseUrl ? { mocksBaseUrl } : {}),
         ...(env.AUTOHEAL_OWNER ? { owner: env.AUTOHEAL_OWNER } : {}),
         budget: {
@@ -198,7 +244,9 @@ async function cmdHeal(argv) {
         sandbox: sandboxChoice.sandbox,
         sandboxNote: sandboxChoice.note,
         ...(env.AUTOHEAL_SCREENSHOTS === 'false' ? {} : { evidenceDir: path.join(outDir, 'evidence') }),
-    });
+    }).finally(() => app?.stop());
+    if (appNote)
+        rawSummary.app = appNote;
     // Belt and braces: scrub every string before anything is written or posted.
     const summary = redactDeep(rawSummary);
     await mkdir(outDir, { recursive: true });
@@ -238,6 +286,46 @@ async function cmdHeal(argv) {
         return 1;
     }
     return summary.outcome === 'blocked' ? 3 : 0;
+}
+/** Saves fingerprints from every trace.zip under --traces (a green run with trace: 'on'). */
+async function cmdFingerprint(argv) {
+    const { values } = parseArgs({ args: argv, options: { traces: { type: 'string' }, project: { type: 'string' } }, strict: true });
+    if (!values.traces)
+        throw new ConfigError('--traces is required (a folder with trace.zip files, e.g. test-results).');
+    const projectRoot = path.resolve(values.project ?? '.');
+    const dir = path.resolve(projectRoot, values.traces);
+    const entries = new Map();
+    let traces = 0;
+    const walk = async (d, depth) => {
+        if (depth > 6)
+            return;
+        const { readdir, lstat } = await import('node:fs/promises');
+        for (const name of (await readdir(d).catch(() => [])).slice(0, 5000)) {
+            const p = path.join(d, name);
+            const st = await lstat(p).catch(() => null);
+            if (!st || st.isSymbolicLink() || name === 'node_modules')
+                continue;
+            if (st.isDirectory())
+                await walk(p, depth + 1);
+            else if (name.endsWith('.zip') && traces < 2000) {
+                const buf = await readTrace(p);
+                if (!buf)
+                    continue;
+                try {
+                    for (const e of learn(domFromZip(buf)))
+                        entries.set(`${e.selector}\n${e.page ?? ''}`, e);
+                    traces++;
+                }
+                catch {
+                    // not a trace
+                }
+            }
+        }
+    };
+    await walk(dir, 0);
+    const written = await saveFingerprints(projectRoot, [...entries.values()]);
+    process.stderr.write(`[autoheal] Read ${traces} trace(s); saved ${written.length} element fingerprint(s) in .autoheal/fingerprints/. Commit them.\n`);
+    return 0;
 }
 async function cmdUpload(argv) {
     const { values } = parseArgs({
@@ -318,6 +406,8 @@ export async function main(argv) {
             return await cmdHeal(rest);
         if (command === 'upload')
             return await cmdUpload(rest);
+        if (command === 'fingerprint')
+            return await cmdFingerprint(rest);
         if (command === 'dashboard')
             return await cmdDashboard(rest);
         process.stderr.write(`Unknown command: ${command}\n\n${USAGE}`);

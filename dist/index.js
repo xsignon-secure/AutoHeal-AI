@@ -16,4 +16,9 @@ export { redact, makeRedactor, redactDeep, secretValues, REDACTED } from './reda
 export { eventsFrom, uploadEvents } from './upload.js';
 export * from './providers/index.js';
 export { VERSION } from './version.js';
+export { readSnapshots, elements, textOf, targetOf, roleOf, nameOf, labelOf, fingerprintOf, bestMatch, similarity } from './snapshot.js';
+export { loadFingerprints, saveFingerprints, lookup, learn, domFromTrace, domFromZip, fingerprintPath, FINGERPRINT_DIR } from './fingerprints.js';
+export { parseSelector, sourcePattern, renderLocator, locatorFor, rankOf, strengthOf, locatorCalls, locatorChanges } from './locators.js';
+export { startApp, checkAppUrl } from './app.js';
+export { uiChanges } from './evidence.js';
 //# sourceMappingURL=index.js.map

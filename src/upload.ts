@@ -53,7 +53,8 @@ export function eventsFrom(summary: HealSummary, links: { prUrl?: string; issueU
     if (summary.run?.url) event.run_url = summary.run.url;
     if (summary.run?.commit) event.commit_sha = summary.run.commit;
     if (summary.run?.branch) event.branch = summary.run.branch;
-    if (r.fix) event.fix_by = r.fix.by;
+    // Older dashboards know rules and ai; every non-AI fix counts as rules.
+    if (r.fix) event.fix_by = r.fix.by === 'ai' ? 'ai' : 'rules';
     if (links.prUrl && (r.status === 'FIXED' || r.status === 'QUARANTINED')) event.pr_url = links.prUrl;
     const issue = links.issueUrls?.[r.failure.title];
     if (issue && r.status === 'APP_BUG') event.issue_url = issue;

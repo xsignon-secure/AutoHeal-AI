@@ -5,6 +5,8 @@
  * the stability rerun, the spend counters).
  */
 import type { FailureResult, HealSummary } from './types.js';
+/** Groups fixes by the UI change behind them: one change that broke several tests. */
+export declare function uiChanges(results: FailureResult[]): string[];
 export declare function prBody(summary: HealSummary): string;
 /** GitHub rejects bodies over 65,536 characters. */
 export declare function fitGithub(text: string, max?: number): string;

@@ -2,6 +2,22 @@
 
 All notable changes to AutoHeal AI. Versions follow [semantic versioning](https://semver.org/).
 
+## 0.6.0 (2026-11-04)
+
+### Added
+- **Element fingerprints.** AutoHeal now reads the DOM snapshots in Playwright traces. For every step that found its element, it saves a fingerprint of that element (role, accessible name, test id, id, `name`, label, placeholder, link, nearby heading) under `.autoheal/fingerprints/`, one small file per locator. When a locator breaks, it finds the element with the same fingerprint on the failed page and writes the strongest locator for it, with no AI tokens. The fix then goes through the same anti-cheat scans, stability rerun and runtime guard as any other. For an assertion, the value being checked never counts toward a match, so a fingerprint can't steer a check onto another element that shows the expected value. A match must be clear (most of the fingerprint still matches and it is well ahead of the next element), or, for an action, be the only element of its kind left in the same place.
+- **`autoheal fingerprint --traces <dir>`** saves fingerprints from a green run with `trace: 'on'`, so the first broken locator can already be fixed without AI.
+- **Locator strength.** Deterministic fixes pick the strongest unique locator in Playwright's order (role and name, label, placeholder, text, alt or title, test id, then CSS). When the engine's fix and the fingerprint fix both apply, the stronger one is tried first. The PR shows every changed locator and whether it got stronger or weaker.
+- **One UI change, one fix.** A kept fix for a broken locator is reused for every other failing test with the same broken locator, including failures past `max-failures`. If the fix was in a shared file, those tests are rerun to prove they pass; otherwise the same locator change is made in their file. Each is proven on its own. The PR groups them under "One UI change, one fix".
+- **Live app.** New inputs `start-command`, `start-url` and `start-timeout`. The heal job starts your app, waits for it to answer, and gives the AI `inspect_page` and `validate_selector` on the real page. The app runs in the sandbox with the same scrubbed environment as the tests, only on this machine (`localhost`), and is stopped at the end. If it does not start, AutoHeal heals from the traces and the PR says why.
+- The publish job accepts fingerprint files only in their exact shape (known fields, short strings, file name equal to the hash of its content), at most 60 per PR.
+
+### Fixed
+- The runtime guard's "same page" check read the snapshot phase only from the older `snapshotName` field. Current Playwright writes it to `phase`, so that check now runs on their traces too.
+
+### Changed
+- The dashboard counts fingerprint and same-change fixes as rule fixes, so dashboards from before 0.6.0 keep accepting uploads.
+
 ## 0.5.0 (2026-11-04)
 
 ### Security

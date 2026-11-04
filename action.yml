@@ -57,6 +57,15 @@ inputs:
   app-url:
     description: URL of a running copy of the app, for live locator checks (optional).
     default: ''
+  start-command:
+    description: Command that starts your app in the heal job (for example "npm run start"), so the AI can check locators on the real page. It runs like your tests (in the sandbox, without the AI key or tokens) and is stopped at the end. Optional.
+    default: ''
+  start-url:
+    description: Address to wait for after start-command (localhost only). Defaults to app-url.
+    default: ''
+  start-timeout:
+    description: Seconds to wait for start-url to answer.
+    default: '120'
   mocks-base-url:
     description: Live API base URL to compare mocks with (optional).
     default: ''
@@ -150,6 +159,9 @@ runs:
         AUTOHEAL_QUARANTINE_DAYS: ${{ inputs.quarantine-days }}
         AUTOHEAL_ALLOW_WARN: ${{ inputs.allow-warn == 'true' && '1' || '' }}
         AUTOHEAL_APP_URL: ${{ inputs.app-url }}
+        AUTOHEAL_START_COMMAND: ${{ inputs.start-command }}
+        AUTOHEAL_START_URL: ${{ inputs.start-url }}
+        AUTOHEAL_START_TIMEOUT: ${{ inputs.start-timeout }}
         AUTOHEAL_MOCKS_BASE_URL: ${{ inputs.mocks-base-url }}
         AUTOHEAL_OPEN_ISSUES: ${{ inputs.open-issues }}
         AUTOHEAL_ISSUE_MIN_CONFIDENCE: ${{ inputs.issue-min-confidence }}

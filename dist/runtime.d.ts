@@ -46,6 +46,8 @@ export interface RuntimeFinding {
 }
 /** Reads the steps of one test from a trace.zip's entries. */
 export declare function recordFromTrace(entries: Map<string, Buffer>): RunRecord;
+/** Reads a regular file through one handle (no symlinks, size checked on the open file), or null. */
+export declare function readTrace(file: string): Promise<Buffer | null>;
 export declare function recordFromFile(file: string): Promise<RunRecord | null>;
 /** Compares the failed run with the fixed run. Empty = nothing suspicious. */
 export declare function compareRuns(before: RunRecord, after: RunRecord): RuntimeFinding[];

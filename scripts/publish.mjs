@@ -32,15 +32,17 @@ const env = process.env;
 const SAFE = ['-c', 'core.hooksPath=/dev/null', '-c', 'core.fsmonitor=false', '-c', 'core.attributesFile=/dev/null', '-c', 'commit.gpgsign=false'];
 const MAX_PATCH_BYTES = 2 * 1024 * 1024;
 const MAX_FILES = 60;
+const MAX_FINGERPRINT_FILES = 60;
 const MAX_BODY = 60_000;
 const SOURCE = /\.(?:ts|tsx|mts|cts|js|jsx|mjs|cjs|py)$/;
-const NEW_OK = /(?:^|\/)(?:\.autoheal\/memory\/[0-9a-f]{16}\.json|playwright-quarantine\.json)$/;
+const NEW_OK = /(?:^|\/)(?:\.autoheal\/(?:memory|fingerprints)\/[0-9a-f]{16}\.json|playwright-quarantine\.json)$/;
 /** Files that tools run or load on their own: never patched, even inside the allowed paths. */
 const CONFIG = /(?:^|\/)(?:[\w.-]+\.(?:config|setup|conf)\.[cm]?[jt]sx?|(?:global|jest|vitest|test)[-.]?(?:setup|teardown)[\w.-]*\.[cm]?[jt]sx?|conftest\.py|setup\.py|noxfile\.py|__init__\.py|__main__\.py|sitecustomize\.py|usercustomize\.py|package\.json|\.pnpmfile\.cjs|[gG]ulpfile\.[\w.]+|[gG]runtfile\.[\w.]+|Jakefile[\w.]*|\.eslintrc[\w.]*|\.babelrc[\w.]*|babel\.config[\w.]*)$/;
 /** Where fixes may land unless the workflow says otherwise. */
 export const DEFAULT_ALLOWED_PATHS = ['**/tests/**', '**/test/**', '**/e2e/**', '**/playwright/**', '**/*.spec.*', '**/*.test.*', '**/test_*.py', '**/*_test.py'];
 const QUARANTINE_FILE = /(?:^|\/)playwright-quarantine\.json$/;
 const MEMORY_FILE = /(?:^|\/)\.autoheal\/memory\/([0-9a-f]{16})\.json$/;
+const FINGERPRINT_FILE = /(?:^|\/)\.autoheal\/fingerprints\/([0-9a-f]{16})\.json$/;
 
 const { scanChange } = await import(new URL('../dist/cheat.js', import.meta.url).href);
 
@@ -172,11 +174,13 @@ export function parsePatch(patch) {
 
 /** Checks each patched file against the checkout and the allowed paths. */
 export function checkFiles(root, files, changedList, allowed = allowedPaths(env.ALLOWED_PATHS)) {
-  if (files.length > MAX_FILES) throw new Refused(`too many files (${files.length})`);
+  const prints = files.filter((f) => FINGERPRINT_FILE.test(f.path)).length;
+  if (files.length - prints > MAX_FILES) throw new Refused(`too many files (${files.length - prints})`);
+  if (prints > MAX_FINGERPRINT_FILES) throw new Refused(`too many fingerprint files (${prints})`);
   const realRoot = realpathSync(root);
   for (const f of files) {
     if (changedList && !changedList.includes(f.path)) throw new Refused(`${f.path} is not in the list of healed files`);
-    const own = QUARANTINE_FILE.test(f.path) || MEMORY_FILE.test(f.path);
+    const own = QUARANTINE_FILE.test(f.path) || MEMORY_FILE.test(f.path) || FINGERPRINT_FILE.test(f.path);
     if (!own && CONFIG.test(f.path)) throw new Refused(`${f.path} is a file that tools load or run; fixes may only change tests and page objects`);
     if (!own && !allowed.some((m) => m(f.path))) throw new Refused(`${f.path} is outside allowed-paths; fixes may only change tests and page objects there`);
     if (f.isNew) {
@@ -293,6 +297,31 @@ export function checkMemory(root, rel) {
   if (id !== expect) throw new Refused(`${rel}: the file name does not match its content`);
 }
 
+const FINGERPRINT_KEYS = ['tag', 'role', 'name', 'text', 'testId', 'id', 'nameAttr', 'type', 'label', 'placeholder', 'href', 'near'];
+
+/** An element fingerprint: only the expected short fields, named after its own content. */
+export function checkFingerprint(root, rel) {
+  const id = FINGERPRINT_FILE.exec(rel)?.[1];
+  const text = readRegular(path.join(root, rel), 16 * 1024);
+  let e;
+  try {
+    e = JSON.parse(text ?? '');
+  } catch {
+    throw new Refused(`${rel}: not valid JSON`);
+  }
+  const keys = ['at', 'selector', 'page', 'file', 'fingerprint'];
+  if (!e || typeof e !== 'object' || Array.isArray(e) || Object.keys(e).some((k) => !keys.includes(k))) throw new Refused(`${rel}: unexpected fields`);
+  if (!str(e.at, 40) || Number.isNaN(Date.parse(e.at)) || !str(e.selector, 1000) || (e.page !== undefined && !str(e.page, 400)) || (e.file !== undefined && !str(e.file, 400))) {
+    throw new Refused(`${rel}: not an AutoHeal fingerprint`);
+  }
+  const fp = e.fingerprint;
+  if (!fp || typeof fp !== 'object' || Array.isArray(fp) || Object.keys(fp).some((k) => !FINGERPRINT_KEYS.includes(k))) throw new Refused(`${rel}: unexpected fingerprint fields`);
+  if (typeof fp.tag !== 'string' || !/^[A-Z][A-Z0-9-]{0,40}$/.test(fp.tag)) throw new Refused(`${rel}: bad tag`);
+  for (const k of FINGERPRINT_KEYS) if (fp[k] !== undefined && (typeof fp[k] !== 'string' || fp[k].length > 200)) throw new Refused(`${rel}: ${k} is too long`);
+  const expect = createHash('sha256').update(`${e.selector}\n${e.page ?? ''}`).digest('hex').slice(0, 16);
+  if (id !== expect) throw new Refused(`${rel}: the file name does not match its content`);
+}
+
 function lstatOrNull(p) {
   try {
     return lstatSync(p);
@@ -359,6 +388,7 @@ export function publishPatch({ root, dir, mode, base, runId, fixed }) {
   for (const f of files) {
     if (QUARANTINE_FILE.test(f.path)) checkQuarantine(root, f.path, befores.get(f.path) ?? null, results);
     if (MEMORY_FILE.test(f.path)) checkMemory(root, f.path);
+    if (FINGERPRINT_FILE.test(f.path)) checkFingerprint(root, f.path);
   }
   git(['add', '--', ...files.map((f) => f.path)], { cwd: root });
   const staged = git(['diff', '--cached', '--name-only'], { cwd: root }).split('\n').filter(Boolean).sort();

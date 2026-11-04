@@ -9,7 +9,8 @@ AutoHeal runs an AI model against your code inside CI, so it is designed on the 
   - runs the anti-cheat scan again on every changed file;
   - refuses files outside `allowed-paths` and files that tools load or run;
   - accepts a quarantine entry only for a test the run found flaky, for at most `quarantine-days`, and never removes one;
-  - accepts a memory file only with AutoHeal's exact fields and the file name AutoHeal derives from its content.
+  - accepts a memory file only with AutoHeal's exact fields and the file name AutoHeal derives from its content;
+  - accepts an element fingerprint file the same way: known fields only, short strings, the file name equal to the hash of its locator and page, and at most 60 per PR.
 
   `@mentions` in PR, issue and comment text from the heal job are neutralized so they notify no one.
 - **No forks.** The workflow template skips runs from forks, and manual runs look the run up and refuse forks too, so untrusted code never runs with your AI key.
@@ -25,7 +26,8 @@ AutoHeal runs an AI model against your code inside CI, so it is designed on the 
 - **Short-lived push token.** Use a GitHub App token, installed on the one repository and expiring after an hour, rather than a PAT. See the README.
 - **Secrets stay out of test runs.** Your tests, and every proposed fix, run in a child process without the AI key, the dashboard secret, `GITHUB_TOKEN`/`GH_TOKEN`, the Actions runtime tokens or `GITHUB_ENV`/`GITHUB_PATH`/`GITHUB_OUTPUT` (so they cannot change later steps). A run given as a URL is downloaded by a separate engine process that runs no tests. The workflow checks out with `persist-credentials: false`.
 - **Screenshots go only to your AI provider.** With vision on (the default for Anthropic and OpenAI), the failure screenshot from your run's own artifacts is sent to the provider with the prompt. Text in an image cannot be scrubbed, so if your test pages show real customer data or secrets, set `vision: false`. Screenshots are never written into a PR, issue, comment, `summary.json` or the dashboard, and text in the image is treated as data like everything else. The runtime guard saves a before and after screenshot of each kept fix as a run artifact (`<result-name>-evidence`, 14 days), which anyone who can read the repository's Actions artifacts can download, like the traces your test job uploads. Set `screenshots: false` if that is too much.
-- **Live page checks stay on your app.** With `app-url` set, the model can only open pages on that origin.
+- **Live page checks stay on your app.** With `app-url` set, the model can only open pages on that origin. An app started with `start-command` is your repository's code, so it is treated like a test: it runs in the sandbox, with the same environment as the tests (no AI key, no tokens), must answer on `localhost`, and is stopped when the job ends.
+- **Fingerprints are hints, not authority.** Element fingerprints are learned from traces, which test code can shape. A fingerprint can only propose a locator; that proposal passes the same anti-cheat scans, stability rerun, runtime guard and review as any other fix. For an assertion, the value the assertion checks never counts toward a match.
 - **The model cannot quarantine.** Only real reruns that pass and fail on the same code can mark a test flaky.
 - **Nothing is merged.** Fixes arrive as a (draft) PR for a human to review.
 - **Dashboard.** Uploads are HMAC-signed with a 5 minute window and strictly validated before anything touches the database. They carry no code, diffs or error text.

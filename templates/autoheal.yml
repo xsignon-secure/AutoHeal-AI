@@ -140,7 +140,7 @@ jobs:
       - name: AutoHeal
         id: autoheal
         # Pin this (and publish below) to a commit SHA if your policy requires it.
-        uses: xsignon-secure/AutoHeal-AI@v0.5.0
+        uses: xsignon-secure/AutoHeal-AI@v0.6.0
         with:
           report: autoheal-artifacts
           mode: ${{ github.event.inputs.mode || 'draft-pr' }}
@@ -153,6 +153,9 @@ jobs:
           # price-in: '0'   # required for models AutoHeal has no price for
           # price-out: '0'
           max-usd: '1.00'
+          # Start your app so the AI can check locators on the real page (runs in the sandbox, no secrets):
+          # start-command: npm run start
+          # start-url: http://localhost:3000
 
   publish:
     needs: heal
@@ -177,7 +180,7 @@ jobs:
           path: autoheal-result
 
       - name: Publish
-        uses: xsignon-secure/AutoHeal-AI/publish@v0.5.0
+        uses: xsignon-secure/AutoHeal-AI/publish@v0.6.0
         with:
           # Folders a fix may change. Add yours if page objects live outside tests/ or e2e/.
           # allowed-paths: 'tests/**, e2e/**, pages/**'
