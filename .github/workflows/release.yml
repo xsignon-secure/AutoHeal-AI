@@ -78,7 +78,8 @@ jobs:
           cache: ''
       - name: Publish to npm with provenance
         run: |
-          tgz="$(ls pkg/*.tgz)"
+          # "./" so npm reads a local file, not a GitHub shorthand (pkg/name).
+          tgz="./$(ls pkg/*.tgz)"
           npx -y npm@12.2.1 publish "$tgz" --provenance --access public --ignore-scripts
       - name: GitHub release
         env:
