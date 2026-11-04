@@ -3,6 +3,7 @@ export { triage, type Triage, type TriageInput, type Category, type RootCause } 
 export { checkAllowlist, tokenizeJs, tokenizePy } from './allowlist.js';
 export { scanChange, stripComments, type CheatReport, type CheatFinding, type Verdict } from './cheat.js';
 export { aiFix, aiTriage, safePath, relativeImports, estimateTokens, openingParts, SYSTEM_PROMPT } from './agent.js';
+export { chooseSandbox, sandboxMode, wrapCommand, type Sandbox, type SandboxChoice, type SandboxMode } from './sandbox.js';
 export { recordFromTrace, recordFromFile, compareRuns, findTrace, type RunRecord, type RunStep, type RuntimeFinding } from './runtime.js';
 export { failureScreenshot, frameFromTrace, frameAt, frameFromFile, readZip, pngSize, jpegSize, imageTokens, visionEnabled, MAX_IMAGE_BYTES, type Screenshot } from './vision.js';
 export { Budget, PRICES, priceFor, type BudgetLimits, type BudgetSnapshot } from './budget.js';

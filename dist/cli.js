@@ -15,6 +15,7 @@ import { ConfigError, providerFromEnv } from './providers/index.js';
 import { redactDeep } from './redact.js';
 import { findReport } from './report-files.js';
 import { eventsFrom, uploadEvents } from './upload.js';
+import { chooseSandbox, sandboxMode } from './sandbox.js';
 import { VERSION } from './version.js';
 export const USAGE = `autoheal ${VERSION}: free, self-hosted AI agent that fixes failing Playwright tests
 
@@ -164,6 +165,14 @@ async function cmdHeal(argv) {
     const mocksBaseUrl = values['mocks-base-url'] ?? env.AUTOHEAL_MOCKS_BASE_URL;
     // Screenshots from an earlier run in the same folder would be mixed up with this run's.
     await rm(path.join(outDir, 'evidence'), { recursive: true, force: true });
+    let sandboxChoice;
+    try {
+        sandboxChoice = chooseSandbox(sandboxMode(env.AUTOHEAL_SANDBOX));
+    }
+    catch (error) {
+        throw new ConfigError(error instanceof Error ? error.message : String(error));
+    }
+    log(`Sandbox: ${sandboxChoice.note}`);
     const rawSummary = await heal({
         projectRoot,
         report,
@@ -186,6 +195,8 @@ async function cmdHeal(argv) {
         provider,
         run: runInfo(),
         log,
+        sandbox: sandboxChoice.sandbox,
+        sandboxNote: sandboxChoice.note,
         ...(env.AUTOHEAL_SCREENSHOTS === 'false' ? {} : { evidenceDir: path.join(outDir, 'evidence') }),
     });
     // Belt and braces: scrub every string before anything is written or posted.

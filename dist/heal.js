@@ -213,6 +213,7 @@ export async function heal(options) {
         spend: { ...EMPTY_SNAPSHOT, priced: provider ? priceFor(provider.model) !== null : true },
         minutesSaved: 0,
         ...(options.run ? { run: options.run } : {}),
+        ...(options.sandboxNote ? { sandbox: options.sandboxNote } : {}),
     };
     // A CI run URL is downloaded by a short-lived engine that holds the token
     // and runs nothing else. The engine that runs tests and proposed fixes
@@ -230,7 +231,7 @@ export async function heal(options) {
         reportRef = local.report;
         traceDirs = local.traceDirs;
     }
-    const mcp = options.mcp ?? (await McpTools.start(root));
+    const mcp = options.mcp ?? (await McpTools.start(root, { sandbox: options.sandbox ?? null }));
     /** Original content of every file this job wrote, to revert on demand. */
     const originals = new Map();
     const pytest = await isPytestProject(root);

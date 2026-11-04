@@ -15,6 +15,7 @@ import { type BudgetLimits } from './budget.js';
 import { type ToolCaller } from './mcp.js';
 import type { Provider } from './providers/types.js';
 import { type FailureResult, type HealSummary, type Mode, type Outcome } from './types.js';
+import type { Sandbox } from './sandbox.js';
 export interface HealOptions {
     projectRoot: string;
     /** JSON report, blob-report folder, or a GitHub Actions / GitLab run URL. */
@@ -37,6 +38,10 @@ export interface HealOptions {
     /** Injected engine (tests); default: start playwright-e2e-mcp. */
     mcp?: ToolCaller;
     log?: (line: string) => void;
+    /** Run the engine (tests and every proposed fix) as this user; see sandbox.ts. */
+    sandbox?: Sandbox | null;
+    /** What the PR says about the sandbox. */
+    sandboxNote?: string;
     /** Where to save before/after screenshots of kept fixes (the CLI uses <out>/evidence). */
     evidenceDir?: string;
 }

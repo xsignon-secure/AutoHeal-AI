@@ -30,6 +30,9 @@ inputs:
   vision:
     description: "Show the AI the page at the moment of failure (Playwright's failure screenshot or the trace's last frame). auto (default) = on for Anthropic and OpenAI, off for other endpoints; true or false."
     default: auto
+  sandbox:
+    description: "Run your tests and every proposed fix as a separate Linux user that cannot read the AI key or the runner's tokens. auto (default) = on when the runner is Linux with passwordless sudo (GitHub-hosted Ubuntu), otherwise off and the PR says so; user = required (fail if it cannot be set up); off."
+    default: auto
   screenshots:
     description: Save before/after screenshots of each kept fix as a run artifact (<result-name>-evidence, kept 14 days) and link them from the PR. They come from the same traces your test job uploads. 'false' turns this off.
     default: 'true'
@@ -110,6 +113,19 @@ runs:
         # dist/ is prebuilt and committed, so only runtime packages are installed, with no install scripts.
         npm ci --omit=dev --ignore-scripts --no-audit --no-fund --loglevel=error
 
+    # A separate user for your tests and the proposed fixes (scripts/sandbox-setup.sh).
+    - name: Prepare the sandbox
+      id: sandbox
+      if: inputs.sandbox != 'off'
+      shell: bash
+      working-directory: ${{ inputs.working-directory }}
+      env:
+        MODE: ${{ inputs.sandbox }}
+      run: |
+        PROJECT="$PWD" ACTION_PATH="$GITHUB_ACTION_PATH" bash "$GITHUB_ACTION_PATH/scripts/sandbox-setup.sh" && exit 0
+        if [ "$MODE" = user ]; then exit 1; fi
+        echo "::notice::AutoHeal sandbox setup failed; running without it (the PR says so)."
+
     - name: Heal
       id: heal
       shell: bash
@@ -124,6 +140,10 @@ runs:
         AUTOHEAL_EFFORT: ${{ inputs.effort }}
         AUTOHEAL_VISION: ${{ inputs.vision }}
         AUTOHEAL_SCREENSHOTS: ${{ inputs.screenshots }}
+        AUTOHEAL_SANDBOX: ${{ inputs.sandbox }}
+        AUTOHEAL_SANDBOX_USER: ${{ steps.sandbox.outputs.user }}
+        AUTOHEAL_SANDBOX_HOME: ${{ steps.sandbox.outputs.home }}
+        AUTOHEAL_SANDBOX_BROWSERS: ${{ steps.sandbox.outputs.browsers }}
         AUTOHEAL_MAX_FAILURES: ${{ inputs.max-failures }}
         AUTOHEAL_REPEAT_EACH: ${{ inputs.repeat-each }}
         AUTOHEAL_MAX_USD: ${{ inputs.max-usd }}

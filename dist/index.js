@@ -3,6 +3,7 @@ export { triage } from './triage.js';
 export { checkAllowlist, tokenizeJs, tokenizePy } from './allowlist.js';
 export { scanChange, stripComments } from './cheat.js';
 export { aiFix, aiTriage, safePath, relativeImports, estimateTokens, openingParts, SYSTEM_PROMPT } from './agent.js';
+export { chooseSandbox, sandboxMode, wrapCommand } from './sandbox.js';
 export { recordFromTrace, recordFromFile, compareRuns, findTrace } from './runtime.js';
 export { failureScreenshot, frameFromTrace, frameAt, frameFromFile, readZip, pngSize, jpegSize, imageTokens, visionEnabled, MAX_IMAGE_BYTES } from './vision.js';
 export { Budget, PRICES, priceFor } from './budget.js';

@@ -29,6 +29,7 @@ import { triage as triageFailure, type Triage } from './triage.js';
 import { MINUTES_SAVED, type FailureInfo, type FailureResult, type FixInfo, type GuardInfo, type HealSummary, type Mode, type Outcome, type RuntimeInfo, type Status } from './types.js';
 import { VERSION } from './version.js';
 import { failureScreenshot, frameFromFile, visionEnabled, type Screenshot } from './vision.js';
+import type { Sandbox } from './sandbox.js';
 import { compareRuns, findTrace, recordFromFile, type RuntimeFinding } from './runtime.js';
 
 const run = promisify(execFile);
@@ -55,6 +56,10 @@ export interface HealOptions {
   /** Injected engine (tests); default: start playwright-e2e-mcp. */
   mcp?: ToolCaller;
   log?: (line: string) => void;
+  /** Run the engine (tests and every proposed fix) as this user; see sandbox.ts. */
+  sandbox?: Sandbox | null;
+  /** What the PR says about the sandbox. */
+  sandboxNote?: string;
   /** Where to save before/after screenshots of kept fixes (the CLI uses <out>/evidence). */
   evidenceDir?: string;
 }
@@ -242,6 +247,7 @@ export async function heal(options: HealOptions): Promise<HealSummary> {
     spend: { ...EMPTY_SNAPSHOT, priced: provider ? priceFor(provider.model) !== null : true },
     minutesSaved: 0,
     ...(options.run ? { run: options.run } : {}),
+    ...(options.sandboxNote ? { sandbox: options.sandboxNote } : {}),
   };
 
   // A CI run URL is downloaded by a short-lived engine that holds the token
@@ -260,7 +266,7 @@ export async function heal(options: HealOptions): Promise<HealSummary> {
     reportRef = local.report;
     traceDirs = local.traceDirs;
   }
-  const mcp = options.mcp ?? (await McpTools.start(root));
+  const mcp = options.mcp ?? (await McpTools.start(root, { sandbox: options.sandbox ?? null }));
   /** Original content of every file this job wrote, to revert on demand. */
   const originals = new Map<string, string>();
   const pytest = await isPytestProject(root);
