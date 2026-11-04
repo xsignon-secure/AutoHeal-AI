@@ -15,7 +15,8 @@
  *     for the steps both runs got through (same app, same commit, so the same
  *     element sits in the same place).
  */
-import { lstat, readdir, readFile, realpath } from 'node:fs/promises';
+import { constants } from 'node:fs';
+import { lstat, open, readdir, realpath } from 'node:fs/promises';
 import path from 'node:path';
 import { readZip } from './vision.js';
 const MAX_TRACE_BYTES = 200 * 1024 * 1024;
@@ -113,12 +114,29 @@ export function recordFromTrace(entries) {
     }
     return failedAt === undefined ? { steps } : { steps, failedAt };
 }
-export async function recordFromFile(file) {
+/** Reads a regular file through one handle (no symlinks, size checked on the open file), or null. */
+async function readTrace(file) {
+    let fh;
     try {
-        const st = await lstat(file);
+        fh = await open(file, constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0));
+        const st = await fh.stat();
         if (!st.isFile() || st.size > MAX_TRACE_BYTES)
             return null;
-        return recordFromTrace(readZip(await readFile(file), (n) => n.endsWith('.trace')));
+        return await fh.readFile();
+    }
+    catch {
+        return null;
+    }
+    finally {
+        await fh?.close();
+    }
+}
+export async function recordFromFile(file) {
+    const buf = await readTrace(file);
+    if (!buf)
+        return null;
+    try {
+        return recordFromTrace(readZip(buf, (n) => n.endsWith('.trace')));
     }
     catch {
         return null;
@@ -203,7 +221,10 @@ export async function findTrace(root, dirs, since, title) {
             if (st.isDirectory())
                 await walk(p, depth + 1);
             else if (name === 'trace.zip' && st.mtimeMs >= since && st.size <= MAX_TRACE_BYTES && (!best || st.mtimeMs > best.mtime)) {
-                const entries = readZip(await readFile(p), (n) => n === '0-trace.trace' || n === 'test.trace');
+                const buf = await readTrace(p);
+                if (!buf)
+                    continue;
+                const entries = readZip(buf, (n) => n === '0-trace.trace' || n === 'test.trace');
                 const head = entries.get('0-trace.trace')?.toString('utf8').split('\n', 1)[0] ?? '';
                 let t = '';
                 try {
