@@ -24,6 +24,7 @@
  *           the profile assertion is not steered by the text it checks; the
  *           fixes and the app bug are linked to the commits that caused them
  *   reviews  an earlier AutoHeal PR with the same fix was closed: not proposed again
+ *   metrics `autoheal metrics` against a stub GitHub API and a quarantine file
  *   policy  .autoheal.yml protects the page objects, skips the flaky test and
  *           lowers max-failures: the AI fixes only the login test; a broken
  *           policy file stops the job
@@ -197,6 +198,7 @@ const scenarios = {
     check(memFiles.length === 2, `repo memory: one file per fix (got ${memFiles.length})`);
     const body = existsSync(path.join(dir, '.autoheal-out', 'pr-body.md')) ? file(dir, '.autoheal-out/pr-body.md') : '';
     check(/Stability proof/.test(body) && /Anti-cheat/.test(body) && /Sign in/.test(body), 'PR body has stability, anti-cheat and the diff');
+    check(/<!-- autoheal-run:[A-Za-z0-9+/=]+ -->/.test(body), 'PR body carries the run totals for metrics');
     check(summary?.spend.inputTokens > 0 && summary.spend.usd > 0, `spend recorded ($${summary?.spend.usd})`);
     // Visual grounding: the agent's first request carried the trace's failure frame.
     const requests = readFileSync(requestLog, 'utf8').trim().split('\n').filter(Boolean).map((l) => JSON.parse(l));
@@ -489,6 +491,54 @@ const scenarios = {
     check(broken.code !== 0 && /unknown setting "alow"/.test(broken.stderr ?? ''), `a broken policy stops the job (exit ${broken.code})`);
   },
 
+  metrics() {
+    const dir = path.join(workRoot, 'metrics');
+    rmSync(dir, { recursive: true, force: true });
+    mkdirSync(dir, { recursive: true });
+    const soon = new Date(Date.now() + 3 * 86_400_000).toISOString().slice(0, 10);
+    writeFileSync(path.join(dir, 'playwright-quarantine.json'), JSON.stringify({ version: 1, entries: [{ file: 'tests/a.spec.ts', title: 'flaky one', until: '2020-01-01' }, { file: 'tests/b.spec.ts', title: 'flaky two', until: soon }] }));
+    const created = new Date(Date.now() - 2 * 86_400_000).toISOString();
+    const merged = new Date(Date.now() - 86_400_000).toISOString();
+    const marker = (by) => `<!-- autoheal-fixes:${Buffer.from(JSON.stringify([{ file: 'tests/login.spec.ts', test: 'login', by }])).toString('base64')} -->`;
+    const run = `<!-- autoheal-run:${Buffer.from(JSON.stringify({ usd: 0.12, tokens: 3000, minutes: 45, failures: 1, fixed: 1, quarantined: 0 })).toString('base64')} -->`;
+    const own = { repo: { full_name: 'acme/shop' } };
+    const routes = {
+      '/repos/acme/shop/pulls': [
+        { number: 8, state: 'closed', created_at: created, merged_at: merged, body: `${marker('fingerprint')}\n${run}`, head: { ref: 'autoheal/8', ...own }, base: own },
+        { number: 9, state: 'closed', created_at: created, merged_at: null, body: marker('ai'), head: { ref: 'autoheal/9', ...own }, base: own },
+      ],
+      '/repos/acme/shop/pulls/8/commits': [{ commit: { message: 'test: AutoHeal fixes for failed run 8' } }],
+      '/repos/acme/shop/issues': [{ title: 'AutoHeal: possible app regression in "price"', state: 'open', created_at: created }],
+    };
+    const portFile = path.join(dir, 'stub-port');
+    const stub = spawn(
+      process.execPath,
+      ['-e', "const routes = JSON.parse(process.env.STUB_ROUTES); const s = require('http').createServer((q, r) => { const body = routes[new URL(q.url, 'http://x').pathname]; r.statusCode = body ? 200 : 404; r.setHeader('content-type', 'application/json'); r.end(JSON.stringify(body ?? {})); }).listen(0, '127.0.0.1', () => require('fs').writeFileSync(process.env.STUB_PORT_FILE, String(s.address().port)))"],
+      { stdio: 'ignore', env: { ...process.env, STUB_ROUTES: JSON.stringify(routes), STUB_PORT_FILE: portFile } },
+    );
+    for (let i = 0; i < 50 && !existsSync(portFile); i++) Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 100);
+    try {
+      const port = readFileSync(portFile, 'utf8').trim();
+      const summaryFile = path.join(dir, 'step-summary.md');
+      const res = spawnSync(process.execPath, [cli, 'metrics', '--repo', 'acme/shop', '--days', '30', '--json', 'm.json'], {
+        cwd: dir,
+        encoding: 'utf8',
+        env: { ...process.env, GITHUB_TOKEN: 'fake', GITHUB_API_URL: `http://127.0.0.1:${port}`, GITHUB_STEP_SUMMARY: summaryFile },
+      });
+      check(res.status === 0, `exit code 0 (got ${res.status}${res.status ? `: ${res.stderr}` : ''})`);
+      const m = existsSync(path.join(dir, 'm.json')) ? JSON.parse(file(dir, 'm.json')) : null;
+      check(m?.prs.opened === 2 && m.prs.merged === 1 && m.prs.closed === 1, `2 fix PRs: 1 merged, 1 closed (${JSON.stringify(m?.prs)})`);
+      check(m?.acceptance === 0.5 && m.noAiShare === 0.5, 'acceptance 50%, half the fixes without AI');
+      check(m?.spend.usd === 0.12 && m.minutesSaved === 45, 'spend and time saved read from the run marker');
+      check(m?.issues.opened === 1, 'one app-bug issue');
+      check(m?.quarantine?.expired.length === 1 && m.quarantine.expiringSoon.length === 1, 'one expired and one expiring quarantine entry');
+      check(/AutoHeal metrics: acme\/shop/.test(res.stdout) && /Expired quarantine entries/.test(res.stdout), 'Markdown report printed');
+      check(existsSync(summaryFile) && /Acceptance rate \| 50% \|/.test(file(dir, 'step-summary.md')), 'report written to the job summary');
+    } finally {
+      stub.kill();
+    }
+  },
+
   async dashboard(aiResult) {
     const result = aiResult ?? scenarios.ai();
     const { spawn } = await import('node:child_process');
@@ -528,7 +578,7 @@ const scenarios = {
 };
 
 const wanted = process.argv.slice(2);
-const order = wanted.length ? wanted : ['rules', 'ai', 'cheat', 'comment', 'fingerprint', 'reviews', 'policy', 'action', 'dashboard'];
+const order = wanted.length ? wanted : ['rules', 'ai', 'cheat', 'comment', 'fingerprint', 'reviews', 'policy', 'metrics', 'action', 'dashboard'];
 let aiResult;
 for (const name of order) {
   if (!scenarios[name]) {

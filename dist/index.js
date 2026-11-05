@@ -24,4 +24,6 @@ export { uiChanges } from './evidence.js';
 export { findCause, literals, termsFromLocators, termsFromValues } from './cause.js';
 export { reviewHistory, reviewText, rejected, fixesMarker, readMarker } from './reviews.js';
 export { causeText } from './evidence.js';
+export { collectMetrics, metricsMarkdown, quarantineStats, readRunMarker, runMarker } from './metrics.js';
+export { loadPolicy, parsePolicyYaml, readPolicy } from './policy.js';
 //# sourceMappingURL=index.js.map

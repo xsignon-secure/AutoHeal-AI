@@ -25,6 +25,7 @@ import { reviewHistory, type ReviewHistory } from './reviews.js';
 import { loadPolicy, policyText, PolicyError, POLICY_FILE, tighten, type Policy } from './policy.js';
 import { execFileSync } from 'node:child_process';
 import { VERSION } from './version.js';
+import { collectMetrics, metricsMarkdown } from './metrics.js';
 
 export const USAGE = `autoheal ${VERSION}: free, self-hosted AI agent that fixes failing Playwright tests
 
@@ -32,6 +33,7 @@ Usage:
   autoheal heal --report <path|run URL> [options]
   autoheal fingerprint --traces <dir> [--project <dir>]
   autoheal upload --summary <summary.json> [--pr-url URL] [--issues issues.json]
+  autoheal metrics [--repo owner/name] [--days 30] [--project <dir>] [--json <file>]
   autoheal dashboard [--port 8080] [--host 0.0.0.0] [--db autoheal.db]
   autoheal --version
 
@@ -55,6 +57,10 @@ heal options (each also reads the AUTOHEAL_* variable in brackets):
   --mocks-base-url <u>   live API to compare mocks with [AUTOHEAL_MOCKS_BASE_URL]
   --no-flaky-check       skip the flaky rerun
   --allow-warn           accept anti-cheat WARN findings (default: block them)
+
+metrics: a Markdown report of AutoHeal's PRs, fixes, spend, issues and quarantined
+tests (needs GITHUB_TOKEN or GH_TOKEN with pull-requests and issues read; repo from
+GITHUB_REPOSITORY by default). In GitHub Actions it also goes to the job summary.
 
 Policy: a .autoheal.yml at the repository root can protect paths, skip tests, limit
 fix kinds and tighten limits (never loosen them). See the README.
@@ -391,6 +397,28 @@ async function cmdUpload(argv: string[]): Promise<number> {
   return 0;
 }
 
+/** A report of how AutoHeal is doing in a repository (no AI, read-only). */
+async function cmdMetrics(argv: string[]): Promise<number> {
+  const { values } = parseArgs({ args: argv, options: { repo: { type: 'string' }, days: { type: 'string' }, project: { type: 'string' }, json: { type: 'string' } }, strict: true });
+  const env = process.env;
+  const repo = values.repo ?? env.GITHUB_REPOSITORY;
+  if (!repo) throw new ConfigError('--repo owner/name is required (or GITHUB_REPOSITORY).');
+  const token = env.GITHUB_TOKEN || env.GH_TOKEN;
+  if (!token) throw new ConfigError('Set GITHUB_TOKEN or GH_TOKEN (read access to pull requests and issues).');
+  const metrics = await collectMetrics({
+    repo,
+    token,
+    days: intOption(values.days, undefined, 30, '--days', 1, 365),
+    root: path.resolve(values.project ?? '.'),
+    ...(env.GITHUB_API_URL ? { apiUrl: env.GITHUB_API_URL } : {}),
+  });
+  const md = metricsMarkdown(metrics);
+  process.stdout.write(md);
+  if (values.json) await writeFile(path.resolve(values.json), `${JSON.stringify(metrics, null, 2)}\n`);
+  if (env.GITHUB_STEP_SUMMARY) await appendFile(env.GITHUB_STEP_SUMMARY, md);
+  return 0;
+}
+
 async function cmdDashboard(argv: string[]): Promise<number> {
   const { values } = parseArgs({ args: argv, options: { port: { type: 'string' }, host: { type: 'string' }, db: { type: 'string' } }, strict: true });
   const { startDashboard } = await import('./server/app.js');
@@ -444,6 +472,7 @@ export async function main(argv: string[]): Promise<number> {
     if (command === 'upload') return await cmdUpload(rest);
     if (command === 'fingerprint') return await cmdFingerprint(rest);
     if (command === 'dashboard') return await cmdDashboard(rest);
+    if (command === 'metrics') return await cmdMetrics(rest);
     process.stderr.write(`Unknown command: ${command}\n\n${USAGE}`);
     return 2;
   } catch (error) {

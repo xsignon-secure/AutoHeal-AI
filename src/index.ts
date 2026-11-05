@@ -25,3 +25,5 @@ export { uiChanges } from './evidence.js';
 export { findCause, literals, termsFromLocators, termsFromValues, type Cause, type CauseQuery } from './cause.js';
 export { reviewHistory, reviewText, rejected, fixesMarker, readMarker, type ReviewHistory, type ReviewedFix, type MarkedFix, type ReviewOutcome } from './reviews.js';
 export { causeText } from './evidence.js';
+export { collectMetrics, metricsMarkdown, quarantineStats, readRunMarker, runMarker, type Metrics, type RunTotals } from './metrics.js';
+export { loadPolicy, parsePolicyYaml, readPolicy, type Policy } from './policy.js';
