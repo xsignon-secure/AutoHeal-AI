@@ -2,6 +2,18 @@
 
 All notable changes to AutoHeal AI. Versions follow [semantic versioning](https://semver.org/).
 
+## 0.10.0 (2026-11-05)
+
+### Added
+- **Cypress support.** A project with a `cypress.config.*` (and no Playwright config) is healed through Cypress: AutoHeal reads Cypress's JUnit XML (the built-in junit reporter), mochawesome JSON or `cypress.run()` results, triages each failure (a missing element or content is locator drift; `expected '<p>' to have text '$10', but the text was '$12'` and chai's `expected 'B' to equal 'A'` are app bugs; server, crash, config and compile errors are environment), shows the AI Cypress's failure screenshot, and reruns specs through Cypress's module API in the sandbox. A fix must pass 3 separate runs and leave the rest of the spec no worse. New input and option `framework` (`auto`, `playwright`, `pytest`, `cypress`). The sandbox setup copies the Cypress binary into the sandbox user's home. Fixes without AI, the runtime guard and quarantine still need Playwright traces; the README lists what works where.
+- **Cypress anti-cheat rules.** `.should(...)`, `.and(...)` and chai assertions are counted and their expected values protected; the asserted text of `cy.contains(...)` may not change; `cy.visit` counts as navigation; `cy.intercept`, `cy.stub`, `cy.clock`, `cy.window`, `.invoke`, `cy.exec`, `cy.task`, `cy.request`, `Cypress.env`, `Cypress.config`, `uncaught:exception` and `fail` handlers, `xit`/`xdescribe`, `this.skip()`, `context.skip`, `cy.wait(<ms>)` and `{ force: true }` are blocked or warned. Cypress changes always get the strict local scan (WARN blocks).
+- **Benchmark.** `npm run bench` builds a project with 13 cases (9 UI changes a heal should fix: renamed button, link, label, placeholder, aria-label, changed test id, id and class, and a renamed button next to a look-alike; 4 app changes it must leave alone: a changed price, a changed heading, a removed feature and a button that now does something else), records a green run, breaks it, and heals it with and without fingerprints (and with your AI key when `BENCH_AI=1`). It reports fixed, wrong fixes, false fixes on traps, tokens, cost and time. Results for this release are in [`bench/RESULTS.md`](bench/RESULTS.md).
+- The simulation has a `cypress` scenario that runs the dummy shop with real Cypress in CI.
+
+### Changed
+- The publish job's default `allowed-paths` includes `**/*.cy.*`, and it never patches `cypress/support/`, `cypress/plugins/` or `cypress.env.json`.
+- `summary.json` records the `framework`.
+
 ## 0.9.0 (2026-11-05)
 
 ### Added

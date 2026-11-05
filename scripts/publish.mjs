@@ -42,9 +42,9 @@ const MAX_BODY = 60_000;
 const SOURCE = /\.(?:ts|tsx|mts|cts|js|jsx|mjs|cjs|py)$/;
 const NEW_OK = /(?:^|\/)(?:\.autoheal\/(?:memory|fingerprints)\/[0-9a-f]{16}\.json|playwright-quarantine\.json)$/;
 /** Files that tools run or load on their own: never patched, even inside the allowed paths. */
-const CONFIG = /(?:^|\/)(?:[\w.-]+\.(?:config|setup|conf)\.[cm]?[jt]sx?|(?:global|jest|vitest|test)[-.]?(?:setup|teardown)[\w.-]*\.[cm]?[jt]sx?|conftest\.py|setup\.py|noxfile\.py|__init__\.py|__main__\.py|sitecustomize\.py|usercustomize\.py|package\.json|\.pnpmfile\.cjs|[gG]ulpfile\.[\w.]+|[gG]runtfile\.[\w.]+|Jakefile[\w.]*|\.eslintrc[\w.]*|\.babelrc[\w.]*|babel\.config[\w.]*)$/;
+const CONFIG = /(?:^|\/)(?:[\w.-]+\.(?:config|setup|conf)\.[cm]?[jt]sx?|(?:global|jest|vitest|test)[-.]?(?:setup|teardown)[\w.-]*\.[cm]?[jt]sx?|conftest\.py|setup\.py|noxfile\.py|__init__\.py|__main__\.py|sitecustomize\.py|usercustomize\.py|package\.json|\.pnpmfile\.cjs|[gG]ulpfile\.[\w.]+|[gG]runtfile\.[\w.]+|Jakefile[\w.]*|\.eslintrc[\w.]*|\.babelrc[\w.]*|babel\.config[\w.]*|cypress(?:\.env)?\.json|cypress\/(?:support|plugins)\/.+)$/;
 /** Where fixes may land unless the workflow says otherwise. */
-export const DEFAULT_ALLOWED_PATHS = ['**/tests/**', '**/test/**', '**/e2e/**', '**/playwright/**', '**/*.spec.*', '**/*.test.*', '**/test_*.py', '**/*_test.py'];
+export const DEFAULT_ALLOWED_PATHS = ['**/tests/**', '**/test/**', '**/e2e/**', '**/playwright/**', '**/*.spec.*', '**/*.test.*', '**/*.cy.*', '**/test_*.py', '**/*_test.py'];
 const QUARANTINE_FILE = /(?:^|\/)playwright-quarantine\.json$/;
 const MEMORY_FILE = /(?:^|\/)\.autoheal\/memory\/([0-9a-f]{16})\.json$/;
 const FINGERPRINT_FILE = /(?:^|\/)\.autoheal\/fingerprints\/([0-9a-f]{16})\.json$/;

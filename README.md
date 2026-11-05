@@ -1,10 +1,10 @@
 # AutoHeal AI
 
-**A free, self-hosted AI agent that fixes failing Playwright tests in your own CI, with your own AI key, and refuses to cheat.**
+**A free, self-hosted AI agent that fixes failing Playwright and Cypress tests in your own CI, with your own AI key, and refuses to cheat.**
 
 Think of it as autonomous quality maintenance: your suite keeps itself green between releases, and every change still comes to you as a reviewable PR with proof.
 
-When your Playwright workflow fails, AutoHeal reads the report and traces, decides *why* each test failed, and acts on it:
+When your Playwright (or Cypress) workflow fails, AutoHeal reads the report and traces, decides *why* each test failed, and acts on it:
 
 | What it found | What it does |
 |---|---|
@@ -107,7 +107,7 @@ PRs opened with the default `GITHUB_TOKEN` do not start other workflows; GitHub 
   with:
     app-id: ${{ vars.AUTOHEAL_APP_ID }}
     private-key: ${{ secrets.AUTOHEAL_APP_KEY }}
-- uses: xsignon-secure/AutoHeal-AI/publish@v0.9.0
+- uses: xsignon-secure/AutoHeal-AI/publish@v0.10.0
   with:
     github-token: ${{ steps.app-token.outputs.token }}
     # ...the other inputs from the template
@@ -160,13 +160,14 @@ issues:
 
 ## Inputs
 
-**Heal action** (`xsignon-secure/AutoHeal-AI@v0.9.0`):
+**Heal action** (`xsignon-secure/AutoHeal-AI@v0.10.0`):
 
 | Input | Default | |
 |---|---|---|
 | `report` | `autoheal-artifacts` | Downloaded artifacts folder, a report file, or a run URL |
 | `mode` | `draft-pr` | `comment`, `draft-pr` or `pr` |
-| `working-directory` | `.` | Folder of the Playwright project |
+| `working-directory` | `.` | Folder of the Playwright, pytest or Cypress project |
+| `framework` | `auto` | `playwright`, `pytest` or `cypress`; `auto` reads the config files |
 | `run-id`, `commit`, `branch` | the triggering run | The failed run (the template fills these in) |
 | `anthropic-api-key` | | Your Anthropic key (model `claude-opus-5-5` unless `model` is set) |
 | `openai-api-key` | | Your OpenAI key (set `model`) |
@@ -195,9 +196,9 @@ issues:
 
 Outputs: `outcome` (`fixed`, `blocked`, `app-bug`, `quarantined`, `unfixed`, `nothing-to-do` or `error`), `fixed`, `blocked`, `has-result`.
 
-**Publish action** (`xsignon-secure/AutoHeal-AI/publish@v0.9.0`): `result-dir`, `mode`, `base-branch`, `run-id`, `commit`, `pr-number`, `blocked`, `open-issues`, `allowed-paths`, `allow-warn`, `quarantine-days`, `github-token`, `dashboard-url`, `dashboard-secret`. Output: `pr-url`.
+**Publish action** (`xsignon-secure/AutoHeal-AI/publish@v0.10.0`): `result-dir`, `mode`, `base-branch`, `run-id`, `commit`, `pr-number`, `blocked`, `open-issues`, `allowed-paths`, `allow-warn`, `quarantine-days`, `github-token`, `dashboard-url`, `dashboard-secret`. Output: `pr-url`.
 
-`allowed-paths` limits which files a fix may change. The default is `**/tests/**, **/test/**, **/e2e/**, **/playwright/**, **/*.spec.*, **/*.test.*, **/test_*.py, **/*_test.py`. If your page objects live somewhere else (for example `src/pages/**`), add that folder. Files that tools load or run on their own (configs, `conftest.py`, `__init__.py`, setup and teardown files, `.pnpmfile.cjs`, gulp and grunt files) are never patched. Keep `allow-warn` and `quarantine-days` the same as in the heal job.
+`allowed-paths` limits which files a fix may change. The default is `**/tests/**, **/test/**, **/e2e/**, **/playwright/**, **/*.spec.*, **/*.test.*, **/*.cy.*, **/test_*.py, **/*_test.py`. If your page objects live somewhere else (for example `src/pages/**`), add that folder. Files that tools load or run on their own (configs, `conftest.py`, `__init__.py`, setup and teardown files, `cypress/support/`, `cypress/plugins/`, `cypress.env.json`, `.pnpmfile.cjs`, gulp and grunt files) are never patched. Keep `allow-warn` and `quarantine-days` the same as in the heal job.
 
 If a fix is blocked by the anti-cheat guard, the publish job fails, so that someone looks at it. The good fixes from the same run still get their PR.
 
@@ -217,6 +218,31 @@ Your key goes only to that provider. AutoHeal does not pass it to your tests, yo
 ## pytest-playwright
 
 The same pipeline works for Python projects (`pytest.ini`, `pyproject.toml` or `conftest.py` with no `playwright.config.*`). Use the commented Python setup block in the workflow template. Stability is proven with 3 separate runs.
+
+## Cypress
+
+A project with a `cypress.config.*` (and no `playwright.config.*`) is healed through Cypress itself. Set `framework: cypress` to force it.
+
+**In your test workflow,** use Cypress's built-in junit reporter and upload the reports and screenshots when the run fails:
+
+```yaml
+- run: npx cypress run --reporter junit --reporter-options "mochaFile=cypress/results/results-[hash].xml"
+- uses: actions/upload-artifact@v4
+  if: failure()
+  with:
+    name: cypress-results
+    path: |
+      cypress/results/
+      cypress/screenshots/
+```
+
+mochawesome JSON and the JSON from `cypress.run()` work too. In the AutoHeal workflow, install with `npm ci` (which downloads the Cypress binary); see the comment in the template.
+
+**What is the same:** triage (a missing element is a test bug; `expected '<p>' to have text '$10', but the text was '$12'` is an app bug), the AI fix, the policy file, budgets, the sandbox (the setup step copies the Cypress binary into the sandbox user's home), "find the cause", reviews and metrics. Every fix must pass 3 separate Cypress runs of the spec, and the rest of the spec must not get worse. The AI sees Cypress's failure screenshot.
+
+**The anti-cheat scan knows Cypress.** On top of the rules above, a fix may not change or remove a `.should(...)`, `.and(...)` or chai `expect(...)`, change the text of a `cy.contains(...)` that is asserted, change `cy.visit(...)`, add `cy.intercept`, `cy.stub`, `cy.clock`, `cy.window`, `.invoke(...)`, `cy.exec`, `cy.task`, `cy.request`, `Cypress.env`, `Cypress.config` or an `uncaught:exception` handler, or add `it.skip`, `xit`, `this.skip()`, `cy.wait(<ms>)` or `{ force: true }`. Cypress has no engine heal guard, so every Cypress fix gets the strict local scan: a WARN finding blocks it even with `allow-warn`.
+
+**What needs Playwright:** fixes without AI (rule-based locators, element fingerprints and "one UI change, one fix") and the runtime guard read Playwright traces, and quarantine writes `playwright-quarantine.json`. On Cypress, healing a broken selector needs an AI key, and a flaky test is reported but not quarantined. `start-command` works, and the AI can open pages of your app; it then writes the Cypress selector itself.
 
 ## Command line
 
@@ -275,6 +301,17 @@ Securing it:
 - **Allowlist.** Set `AUTOHEAL_DASHBOARD_REPOS` so only your repos can upload.
 - **Size cap.** The database keeps the newest 100,000 results (`AUTOHEAL_DASHBOARD_MAX_EVENTS`), so even a leaked secret cannot fill the disk. Every query uses bound parameters.
 
+## Benchmark
+
+`npm run bench` builds a small app and a Playwright test per case, records a green run, makes 13 UI changes in one commit and heals the failed run. 9 changes only moved or renamed an element (a good heal fixes them); 4 changed what the app does (a changed price, a changed heading, a removed feature, a button that now does something else), where the test is right and must not be "fixed". Results for 0.10.0, with no AI key:
+
+| Setup | Fixed | Wrong fixes | False fixes on traps | AI tokens |
+|---|---|---|---|---|
+| No fingerprints (rules only) | 0/9 | 0 | 0/4 | 0 |
+| With fingerprints from a green run | 8/9 | 0 | 0/4 | 0 |
+
+The one miss is a "Save" button renamed to "Save draft" next to a new "Save and publish": the fingerprint match is not clear enough, so AutoHeal leaves it for the AI or a person instead of guessing. Without fingerprints, every locator fix needs the AI. Per-case results are in [`bench/RESULTS.md`](bench/RESULTS.md). Run `BENCH_AI=1 npm run bench` with `ANTHROPIC_API_KEY` set to add an AI setup (it costs a little).
+
 ## What it costs
 
 AutoHeal is free. You pay only your AI provider. With the default limits, one job stops at $1. Most runs cost much less, because triage and rule-based fixes use no tokens.
@@ -284,7 +321,8 @@ AutoHeal is free. You pay only your AI provider. With the default limits, one jo
 ```bash
 npm ci
 npm test            # unit tests
-npm run simulate    # end-to-end runs against a dummy shop app with real Playwright
+npm run simulate    # end-to-end runs against a dummy shop app with real Playwright (and Cypress, when installed)
+npm run bench       # the benchmark below
 ```
 
 The simulation copies `simulation/fixture` (a small shop app with a renamed button, a moved element, a changed price and a flaky badge). It runs the real suite, heals it, and checks every outcome. That includes a scripted AI that tries to cheat, and both jobs of the GitHub Action run against a local git remote and a fake `gh`, including eight tampered patches the publish job must refuse. See [CONTRIBUTING.md](CONTRIBUTING.md).

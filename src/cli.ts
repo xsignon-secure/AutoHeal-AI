@@ -26,6 +26,7 @@ import { loadPolicy, policyText, PolicyError, POLICY_FILE, tighten, type Policy 
 import { execFileSync } from 'node:child_process';
 import { VERSION } from './version.js';
 import { collectMetrics, metricsMarkdown } from './metrics.js';
+import { frameworkSetting, isCypressProject } from './cypress.js';
 
 export const USAGE = `autoheal ${VERSION}: free, self-hosted AI agent that fixes failing Playwright tests
 
@@ -41,6 +42,9 @@ heal options (each also reads the AUTOHEAL_* variable in brackets):
   --report <p>           JSON report, blob-report folder, artifacts folder, or a
                          GitHub Actions / GitLab run URL (needs GITHUB_TOKEN)
   --project <dir>        project root (default: current directory)
+  --framework <f>        auto | playwright | pytest | cypress (default auto: from the
+                         config files) [AUTOHEAL_FRAMEWORK]. Cypress reads JUnit XML,
+                         mochawesome or cypress.run() results from --report
   --mode <m>             comment | draft-pr | pr (default draft-pr) [AUTOHEAL_MODE]
   --out <dir>            where summary.json and the Markdown go (default .autoheal-out)
   --max-failures <n>     failures to work on per run (default 3) [AUTOHEAL_MAX_FAILURES]
@@ -132,6 +136,7 @@ async function cmdHeal(argv: string[]): Promise<number> {
     args: argv,
     options: {
       report: { type: 'string' },
+      framework: { type: 'string' },
       project: { type: 'string' },
       mode: { type: 'string' },
       out: { type: 'string' },
@@ -168,8 +173,23 @@ async function cmdHeal(argv: string[]): Promise<number> {
   if (!['comment', 'draft-pr', 'pr'].includes(mode)) throw new ConfigError('--mode must be comment, draft-pr or pr.');
   let report = values.report ?? env.AUTOHEAL_REPORT;
   if (!report) throw new ConfigError('--report is required (a report file, artifacts folder, or run URL).');
+  let setting: ReturnType<typeof frameworkSetting>;
+  try {
+    setting = frameworkSetting(values.framework ?? env.AUTOHEAL_FRAMEWORK);
+  } catch (error) {
+    throw new ConfigError(error instanceof Error ? error.message : String(error));
+  }
+  const cypress = setting === 'cypress' || (setting === 'auto' && (await isCypressProject(projectRoot)));
   let traceDirs: string[] | undefined;
-  if (!/^https?:\/\//.test(report)) {
+  if (cypress) {
+    // Cypress results (JUnit XML, mochawesome or cypress.run() JSON) are found by the Cypress tools.
+    if (/^https?:\/\//.test(report)) throw new ConfigError('For Cypress, download the run\'s artifacts into the project and pass the folder as --report.');
+    const abs = path.resolve(projectRoot, report);
+    if (!(await stat(abs).catch(() => null))) throw new ConfigError(`Report not found: ${report}`);
+    const rel = path.relative(projectRoot, abs);
+    if (rel.startsWith('..') || path.isAbsolute(rel)) throw new ConfigError('The report must be inside the project folder (download artifacts into it).');
+    report = rel || '.';
+  } else if (!/^https?:\/\//.test(report)) {
     const abs = path.resolve(projectRoot, report);
     const info = await stat(abs).catch(() => null);
     if (!info) throw new ConfigError(`Report not found: ${report}`);
@@ -269,6 +289,7 @@ async function cmdHeal(argv: string[]): Promise<number> {
     projectRoot,
     report,
     ...(traceDirs ? { traceDirs } : {}),
+    framework: cypress ? 'cypress' : setting,
     mode,
     maxFailures: limits.maxFailures,
     repeatEach: limits.repeatEach,

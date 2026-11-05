@@ -210,6 +210,9 @@ const ALLOWED = new Set(
     // actions (a fix may retarget or change the action, never add logic)
     'click', 'dblclick', 'fill', 'press', 'pressSequentially', 'press_sequentially', 'check', 'uncheck', 'setChecked', 'set_checked', 'hover',
     'focus', 'blur', 'clear', 'selectOption', 'select_option', 'tap', 'scrollIntoViewIfNeeded', 'scroll_into_view_if_needed',
+    // Cypress commands that find elements (and .should, which waits for a condition)
+    'cy', 'get', 'contains', 'find', 'within', 'eq', 'parent', 'parents', 'closest', 'children', 'siblings', 'next', 'prev', 'shadow',
+    'should', 'select', 'rightclick', 'scrollIntoView', 'includeShadowDom', 'matchCase',
     // plain values and receivers
     'true', 'false', 'True', 'False', 'None', 'null', 'undefined', 'this', 'self',
   ],
@@ -228,11 +231,14 @@ const DENY = new Set([
   'skip', 'only', 'fixme', 'fail', 'slow', 'setTimeout', 'waitForTimeout', 'wait_for_timeout', 'sleep', 'force', 'retries', 'not', 'not_to_be_visible',
   'catch', 'try', 'except', 'finally', 'pass', 'if', 'else', 'elif', 'while', 'for', 'const', 'let', 'var', 'new', 'lambda', 'class', 'with', 'yield',
   'delete', 'void', 'typeof', 'instanceof', 'debugger', 'or', 'or_', 'goto', 'newPage', 'new_page', 'waitForNavigation', 'expect_navigation',
+  // Cypress: faking the app, its clock or the network, running commands, and changing pages
+  'Cypress', 'intercept', 'stub', 'spy', 'clock', 'tick', 'invoke', 'task', 'readFile', 'writeFile', 'visit', 'origin', 'session', 'wrap',
+  'then', 'on', 'wait', 'config',
 ]);
 
 /** Removing these means removing a check or a test. */
 const PROTECTED = new Set([
-  'expect', 'assert', 'test', 'it', 'describe', 'step', 'soft', 'poll',
+  'expect', 'assert', 'test', 'it', 'describe', 'step', 'soft', 'poll', 'should', 'specify', 'context',
   'toHaveText', 'toContainText', 'toHaveValue', 'toHaveValues', 'toHaveURL', 'toHaveTitle', 'toHaveCount', 'toHaveAttribute', 'toHaveClass',
   'toHaveCSS', 'toHaveId', 'toHaveJSProperty', 'toHaveAccessibleName', 'toHaveAccessibleDescription', 'toHaveRole', 'toEqual', 'toStrictEqual',
   'toBe', 'toMatch', 'toContain', 'toHaveLength', 'toHaveProperty', 'toBeTruthy', 'toBeFalsy', 'toBeDefined', 'toBeNull', 'toBeChecked',

@@ -43,6 +43,11 @@ jobs:
         run: |
           npm install --no-audit --no-fund
           npx playwright install --with-deps chromium
+      - name: Install the dummy shop's Cypress
+        working-directory: simulation/cypress-fixture
+        run: |
+          npm ci --no-audit --no-fund
+          npx cypress verify
       - run: python3 -m pip install --user pyyaml
       - run: git config --global user.email ci@example.com && git config --global user.name ci
       - run: npm run simulate

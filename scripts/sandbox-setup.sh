@@ -79,6 +79,16 @@ fi
 BROWSERS="${PLAYWRIGHT_BROWSERS_PATH:-$HOME/.cache/ms-playwright}"
 if [ -d "$BROWSERS" ]; then as_sb ls "$BROWSERS" || read_only "$BROWSERS"; fi
 
+# Cypress: the binary cache is copied into the sandbox user's home (Cypress
+# writes its verification state next to the binary, so a read-only share fails).
+CYPRESS_CACHE="${CYPRESS_CACHE_FOLDER:-$HOME/.cache/Cypress}"
+if ls "$PROJECT"/cypress.config.* "$PROJECT"/cypress.json >/dev/null 2>&1 && [ -d "$CYPRESS_CACHE" ]; then
+  sudo -n mkdir -p "$SB_HOME/.cache"
+  sudo -n rm -rf "$SB_HOME/.cache/Cypress"
+  sudo -n cp -a "$CYPRESS_CACHE" "$SB_HOME/.cache/Cypress"
+  sudo -n chown -R "$SB_USER:$SB_USER" "$SB_HOME/.cache"
+fi
+
 # A quick check: the sandbox user can start Node and see the project.
 as_sb "$NODE" -e "require('fs').accessSync(process.argv[1], 6)" "$PROJECT" \
   || skip "the sandbox user cannot reach the project"

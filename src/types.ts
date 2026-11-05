@@ -23,6 +23,8 @@ export interface FailureInfo {
   project?: string;
   /** The Playwright trace for this failure, when the run kept one. */
   tracePath?: string;
+  /** A failure screenshot saved by the test runner (Cypress), relative to the project. */
+  screenshotPath?: string;
   /** Where the AI's screenshot of the failure came from, when it got one. */
   screenshot?: 'attachment' | 'trace';
   /** The engine's Markdown for this failure (trace steps, network, console). */
@@ -112,6 +114,8 @@ export interface HealSummary {
   minutesSaved: number;
   error?: string;
   run?: { url?: string; id?: string; commit?: string; branch?: string; repo?: string };
+  /** The test framework: playwright, pytest or cypress. */
+  framework?: string;
   /** How the tests were isolated from the AI key. */
   sandbox?: string;
   /** The app the heal job started (start-command), when it started one. */

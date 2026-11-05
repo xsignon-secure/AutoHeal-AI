@@ -13,6 +13,7 @@
  */
 import { type BudgetLimits } from './budget.js';
 import { type ToolCaller } from './mcp.js';
+import { type Framework } from './cypress.js';
 import type { Provider } from './providers/types.js';
 import { type FailureResult, type HealSummary, type Mode, type Outcome } from './types.js';
 import type { Sandbox } from './sandbox.js';
@@ -37,8 +38,10 @@ export interface HealOptions {
     budget: BudgetLimits;
     provider: Provider | null;
     run?: HealSummary['run'];
-    /** Injected engine (tests); default: start playwright-e2e-mcp. */
+    /** Injected engine (tests); default: start playwright-e2e-mcp (or the Cypress tools for a Cypress project). */
     mcp?: ToolCaller;
+    /** playwright, pytest or cypress; detected from the project when left out or 'auto'. */
+    framework?: Framework | 'auto';
     log?: (line: string) => void;
     /** Run the engine (tests and every proposed fix) as this user; see sandbox.ts. */
     sandbox?: Sandbox | null;

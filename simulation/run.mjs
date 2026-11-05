@@ -28,6 +28,10 @@
  *   policy  .autoheal.yml protects the page objects, skips the flaky test and
  *           lowers max-failures: the AI fixes only the login test; a broken
  *           policy file stops the job
+ *   cypress the same shop tested with real Cypress (simulation/cypress-fixture):
+ *           JUnit report from a failed run, scripted AI fixes the renamed
+ *           button, the price change is an app bug. Runs when the fixture's
+ *           Cypress is installed (CI does that), otherwise it is skipped.
  *
  * Usage: npm run simulate [-- <scenario> ...]
  */
@@ -154,7 +158,70 @@ function fingerprintRepo(name) {
   );
 }
 
+const cypressFixture = path.join(here, 'cypress-fixture');
+
+function cypressInstalled() {
+  if (!existsSync(path.join(cypressFixture, 'node_modules', 'cypress'))) return false;
+  return spawnSync('npx', ['cypress', 'verify'], { cwd: cypressFixture, stdio: 'pipe' }).status === 0;
+}
+
 const scenarios = {
+  cypress() {
+    if (!cypressInstalled()) {
+      console.log('  (skipped: run npm install in simulation/cypress-fixture to get Cypress)');
+      return;
+    }
+    const dir = path.join(workRoot, 'cypress');
+    rmSync(dir, { recursive: true, force: true });
+    mkdirSync(dir, { recursive: true });
+    cpSync(cypressFixture, dir, { recursive: true, filter: (src) => !src.includes(`${path.sep}node_modules`) });
+    symlinkSync(path.join(cypressFixture, 'node_modules'), path.join(dir, 'node_modules'), 'dir');
+    mkdirSync(path.join(dir, 'app'));
+    cpSync(path.join(fixture, 'app', 'server.mjs'), path.join(dir, 'app', 'server.mjs'));
+    const git = (...args) => execFileSync('git', args, { cwd: dir, stdio: 'pipe' });
+    git('init', '-q');
+    git('add', '-A');
+    git('-c', 'user.email=sim@example.com', '-c', 'user.name=sim', 'commit', '-qm', 'dummy shop (Cypress)');
+    writeFileSync(path.join(dir, '.git', 'info', 'exclude'), 'autoheal-artifacts/\n.autoheal-out/\nscript.json\ncypress/screenshots/\n');
+    // The "CI run" that failed, with Cypress's built-in junit reporter.
+    const env = { ...process.env, PORT: '4320', CI: '1' };
+    const server = spawn(process.execPath, ['app/server.mjs'], { cwd: dir, env, stdio: 'ignore' });
+    try {
+      spawnSync('npx', ['cypress', 'run', '--reporter', 'junit', '--reporter-options', 'mochaFile=autoheal-artifacts/results-[hash].xml'], { cwd: dir, env, stdio: process.env.SIM_VERBOSE ? 'inherit' : 'pipe', timeout: 600_000 });
+    } finally {
+      server.kill();
+    }
+    const xml = existsSync(path.join(dir, 'autoheal-artifacts')) ? readdirSync(path.join(dir, 'autoheal-artifacts')).filter((f) => f.endsWith('.xml')) : [];
+    check(xml.length >= 2, `Cypress wrote JUnit reports (${xml.join(', ')})`);
+    const login = file(dir, 'cypress/e2e/login.cy.js');
+    writeFileSync(
+      path.join(dir, 'script.json'),
+      JSON.stringify([
+        { calls: [{ name: 'read_file', input: { path: 'cypress/e2e/login.cy.js' } }] },
+        { calls: [{ name: 'propose_fix', input: { path: 'cypress/e2e/login.cy.js', content: login.replace(".should('have.text', 'Signed in as ada@example.com')", ''), explanation: 'Drop the check.' } }] },
+        { calls: [{ name: 'propose_fix', input: { path: 'cypress/e2e/login.cy.js', content: login.replace("'Log in')", "'Sign in')"), explanation: 'The submit button now says "Sign in".' } }] },
+      ]),
+    );
+    const res = spawnSync(
+      process.execPath,
+      [cli, 'heal', '--report', 'autoheal-artifacts', '--max-failures', '4', '--repeat-each', '3', '--no-flaky-check', '--start-command', 'node app/server.mjs', '--start-url', 'http://127.0.0.1:4320/'],
+      { cwd: dir, encoding: 'utf8', timeout: 1_200_000, env: { ...env, AUTOHEAL_PROVIDER: 'scripted', AUTOHEAL_SCRIPT: path.join(dir, 'script.json'), ANTHROPIC_API_KEY: '', OPENAI_API_KEY: '' } },
+    );
+    if (process.env.SIM_VERBOSE) console.log(res.stderr, res.stdout);
+    const summary = existsSync(path.join(dir, '.autoheal-out', 'summary.json')) ? JSON.parse(readFileSync(path.join(dir, '.autoheal-out', 'summary.json'), 'utf8')) : null;
+    check(summary?.framework === 'cypress', `framework detected as cypress (${summary?.framework})`);
+    check(summary?.totalFailures === 2, `2 failures read from the JUnit reports (got ${summary?.totalFailures})`);
+    const fixed = byTest(summary, 'user can log in');
+    check(fixed?.status === 'FIXED' && fixed.fix?.by === 'ai', `login → FIXED by the AI (${fixed?.status}: ${fixed?.summary})`);
+    check(fixed?.stability?.runs === 3 && fixed.stability.passed, 'the fix passed 3 real Cypress runs');
+    check(file(dir, 'cypress/e2e/login.cy.js').includes("cy.contains('button', 'Sign in')") && file(dir, 'cypress/e2e/login.cy.js').includes(".should('have.text'"), 'the fix kept the assertion and changed only the button text');
+    const price = byTest(summary, 'pro plan price');
+    check(price?.status === 'APP_BUG' && price.failure.expected === '$10' && price.failure.actual === '$12', `price → APP_BUG with expected $10, actual $12 (${price?.status})`);
+    check(file(dir, 'cypress/e2e/pricing.cy.js').includes("'$10'"), 'pricing spec unchanged');
+    check(res.status === 0, `exit code 0: the blocked first proposal was followed by a good fix (got ${res.status})`);
+    check(fixed?.guard?.local === 'PASS', 'the kept fix passed the strict local scan');
+  },
+
   rules() {
     const dir = prepare('rules');
     const { code, summary } = heal(dir, ['--mode', 'draft-pr']);
@@ -578,7 +645,7 @@ const scenarios = {
 };
 
 const wanted = process.argv.slice(2);
-const order = wanted.length ? wanted : ['rules', 'ai', 'cheat', 'comment', 'fingerprint', 'reviews', 'policy', 'metrics', 'action', 'dashboard'];
+const order = wanted.length ? wanted : ['rules', 'ai', 'cheat', 'comment', 'fingerprint', 'reviews', 'policy', 'metrics', 'cypress', 'action', 'dashboard'];
 let aiResult;
 for (const name of order) {
   if (!scenarios[name]) {

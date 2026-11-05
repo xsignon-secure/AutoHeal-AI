@@ -45,6 +45,8 @@ export declare function frameAt(entries: Map<string, Buffer>, until?: number): S
  * project or absolute inside it). Returns null when there is none.
  */
 export declare function failureScreenshot(root: string, tracePath: string | undefined): Promise<Screenshot | null>;
+/** A screenshot file the test runner saved (Cypress's "(failed).png"), relative to the project or absolute inside it. */
+export declare function screenshotFile(root: string, file: string | undefined): Promise<Screenshot | null>;
 /** Whether to send screenshots: AUTOHEAL_VISION=true|false, default on for Anthropic and OpenAI, off for other endpoints. */
 export declare function visionEnabled(providerName: string | undefined, env?: NodeJS.ProcessEnv): boolean;
 /** The screenshot at `until` (trace clock) from a trace.zip on disk, or null. */

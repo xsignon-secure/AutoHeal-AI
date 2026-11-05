@@ -1,5 +1,5 @@
 name: AutoHeal AI
-description: Free, self-hosted AI agent that fixes failing Playwright tests in your own GitHub Actions, with your own AI key.
+description: Free, self-hosted AI agent that fixes failing Playwright and Cypress tests in your own GitHub Actions, with your own AI key.
 author: xsignon-secure
 branding:
   icon: activity
@@ -7,14 +7,17 @@ branding:
 
 inputs:
   report:
-    description: Folder with the failed run's downloaded artifacts (Playwright JSON or blob report and test-results), a report file, or a run URL.
+    description: Folder with the failed run's downloaded artifacts (Playwright JSON or blob report and test-results, or Cypress JUnit XML / mochawesome JSON and screenshots), a report file, or a run URL (Playwright only).
     default: autoheal-artifacts
   mode:
     description: "comment (explain only), draft-pr (default) or pr. Pass the same mode to the publish action."
     default: draft-pr
   working-directory:
-    description: Folder of the Playwright (or pytest-playwright) project.
+    description: Folder of the Playwright, pytest-playwright or Cypress project.
     default: .
+  framework:
+    description: "auto (default: from the config files), playwright, pytest or cypress."
+    default: auto
   anthropic-api-key:
     description: Your Anthropic API key (default provider, model claude-opus-5-5).
     default: ''
@@ -145,6 +148,7 @@ runs:
       env:
         INPUT_REPORT: ${{ inputs.report }}
         AUTOHEAL_MODE: ${{ inputs.mode }}
+        AUTOHEAL_FRAMEWORK: ${{ inputs.framework }}
         ANTHROPIC_API_KEY: ${{ inputs.anthropic-api-key }}
         OPENAI_API_KEY: ${{ inputs.openai-api-key }}
         AUTOHEAL_BASE_URL: ${{ inputs.base-url }}

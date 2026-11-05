@@ -247,6 +247,15 @@ export async function failureScreenshot(root: string, tracePath: string | undefi
   }
 }
 
+/** A screenshot file the test runner saved (Cypress's "(failed).png"), relative to the project or absolute inside it. */
+export async function screenshotFile(root: string, file: string | undefined): Promise<Screenshot | null> {
+  if (!file || !/\.(?:png|jpe?g)$/i.test(file)) return null;
+  const abs = await insideRoot(root, file);
+  if (!abs) return null;
+  const buf = await readSmallFile(abs, MAX_IMAGE_BYTES);
+  return buf ? toScreenshot(buf, 'attachment') : null;
+}
+
 /** Whether to send screenshots: AUTOHEAL_VISION=true|false, default on for Anthropic and OpenAI, off for other endpoints. */
 export function visionEnabled(providerName: string | undefined, env: NodeJS.ProcessEnv = process.env): boolean {
   const setting = (env.AUTOHEAL_VISION ?? 'auto').toLowerCase();
