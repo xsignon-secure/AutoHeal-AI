@@ -2,6 +2,12 @@
 
 All notable changes to AutoHeal AI. Versions follow [semantic versioning](https://semver.org/).
 
+## 0.8.0 (2026-11-04)
+
+### Added
+- **Policy file.** A `.autoheal.yml` at the repository root sets team rules: `protect` (paths a fix may never change), `skip` (tests left alone, by file or title), `fixes.allow` (rules, fingerprint, same-change, ai), `fixes.min-strength` (the weakest locator a fix may write), `fixes.max-per-pr`, `quarantine` (on or off, `max-days`), `limits` (`max-usd`, `max-failures`, `repeat-each`) and `issues` (on or off, `min-confidence`). A policy can only make AutoHeal stricter than the workflow. The heal job reads it before any project code runs; the publish job checks the patch against it again and refuses changes to the policy file itself. An invalid file stops the job with the line number. Example in `templates/autoheal-policy.yml`.
+- The PR and the job summary say which policy applied, and skipped tests are listed with the rule that skipped them.
+
 ## 0.7.0 (2026-11-04)
 
 ### Added

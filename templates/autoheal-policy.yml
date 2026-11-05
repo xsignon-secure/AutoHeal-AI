@@ -1,0 +1,50 @@
+# AutoHeal AI policy: copy this file to .autoheal.yml at the root of your repo.
+#
+# It says what AutoHeal may do in this repository. Every setting is optional.
+# A policy can only make AutoHeal stricter than your workflow: limits take the
+# stricter of the two values, and a switch your workflow turned off stays off.
+# A mistake in this file (an unknown setting, a bad value) stops the heal job
+# with a clear message instead of being ignored.
+#
+# Paths are relative to the repository root. `**` matches any folders, `*`
+# anything inside one folder. A path ending in / covers everything inside it.
+
+version: 1
+
+# Files AutoHeal must never change. Tests there are still triaged and
+# reported, and AutoHeal can still fix them elsewhere (in a page object).
+protect:
+  - tests/payments/
+  # - e2e/legal/**
+
+# Tests AutoHeal leaves alone completely: listed in the report, never touched.
+skip:
+  files: []          # e.g. [tests/legacy/**]
+  titles: []         # text in the test title, e.g. ["visual snapshot"]
+
+fixes:
+  # Which kinds of fixes AutoHeal may propose:
+  #   rules        the engine's verified locator (no AI)
+  #   fingerprint  the element found again from its saved fingerprint (no AI)
+  #   same-change  the fix for another test with the same broken locator (no AI)
+  #   ai           the AI agent
+  allow: [rules, fingerprint, same-change, ai]
+  # Never write a locator weaker than this: strong, good, fair or weak.
+  # strong = getByRole with a name, label, placeholder; good = text, alt,
+  # title, test id; fair = role without a name, #id; weak = other CSS.
+  min-strength: fair
+  # At most this many fixes in one PR.
+  max-per-pr: 10
+
+quarantine:
+  enabled: true
+  max-days: 14
+
+limits:
+  max-usd: 1.00       # AI cost per job
+  max-failures: 3     # failures to work on per run
+  repeat-each: 5      # stability runs a fix must pass (a higher number is stricter)
+
+issues:
+  enabled: true
+  min-confidence: 0.6

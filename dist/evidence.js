@@ -126,6 +126,8 @@ function totals(summary) {
     const lines = [`Spend: ${summary.spend.inputTokens + summary.spend.outputTokens} tokens · ${money(summary.spend.usd, summary.spend.priced)} · model \`${summary.model}\``];
     if (summary.sandbox)
         lines.push(`Sandbox: ${summary.sandbox.replace(/[\r\n]+/g, ' ')}`);
+    if (summary.policy)
+        lines.push(summary.policy.replace(/[\r\n]+/g, ' '));
     if (summary.app)
         lines.push(`Live app: ${summary.app.replace(/[\r\n]+/g, ' ')}`);
     if (summary.reviews) {

@@ -19,6 +19,10 @@
  *   RESULT_DIR, MODE, BASE_BRANCH, RUN_ID, COMMIT, PR_NUMBER, BLOCKED,
  *   OPEN_ISSUES, GH_TOKEN, DASHBOARD_URL, DASHBOARD_SECRET, ALLOWED_PATHS,
  *   ALLOW_WARN, QUARANTINE_DAYS
+ *
+ * The repository's .autoheal.yml (read from this checkout, which the patch
+ * can never change) is enforced again here: protected paths, quarantine,
+ * fixes per PR and issues.
  */
 
 import { execFileSync } from 'node:child_process';
@@ -27,6 +31,7 @@ import { appendFileSync, closeSync, constants, fstatSync, lstatSync, mkdtempSync
 import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { isProtected, loadPolicy, PolicyError, POLICY_FILE } from '../dist/policy.js';
 
 const env = process.env;
 const SAFE = ['-c', 'core.hooksPath=/dev/null', '-c', 'core.fsmonitor=false', '-c', 'core.attributesFile=/dev/null', '-c', 'commit.gpgsign=false'];
@@ -173,6 +178,28 @@ export function parsePatch(patch) {
 }
 
 /** Checks each patched file against the checkout and the allowed paths. */
+/** The repository's .autoheal.yml, or null. A broken one stops the publish. */
+export function readPolicy(root) {
+  try {
+    return loadPolicy(root);
+  } catch (err) {
+    if (err instanceof PolicyError) throw new Refused(err.message);
+    throw err;
+  }
+}
+
+/** What the policy says about this patch (on top of the workflow's own rules). */
+export function checkPolicy(policy, files, fixed) {
+  for (const f of files) {
+    if (f.path === POLICY_FILE || f.path.endsWith(`/${POLICY_FILE}`)) throw new Refused(`${f.path}: a fix may never change the policy file`);
+    if (!policy) continue;
+    if (isProtected(policy, f.path)) throw new Refused(`${f.path} is protected by ${POLICY_FILE}`);
+    if (QUARANTINE_FILE.test(f.path) && !policy.quarantine.enabled) throw new Refused(`${f.path}: ${POLICY_FILE} turns quarantine off`);
+  }
+  const max = policy?.fixes.maxPerPr;
+  if (max !== undefined && fixed > max) throw new Refused(`${fixed} fixes, but ${POLICY_FILE} allows at most ${max} per PR`);
+}
+
 export function checkFiles(root, files, changedList, allowed = allowedPaths(env.ALLOWED_PATHS)) {
   const prints = files.filter((f) => FINGERPRINT_FILE.test(f.path)).length;
   if (files.length - prints > MAX_FILES) throw new Refused(`too many files (${files.length - prints})`);
@@ -353,6 +380,8 @@ export function publishPatch({ root, dir, mode, base, runId, fixed }) {
   const changedText = readText(dir, 'changed-files.txt', 100_000);
   const changedList = changedText === null ? null : changedText.split('\n').filter(Boolean);
   const files = parsePatch(patch);
+  const policy = readPolicy(root);
+  checkPolicy(policy, files, Math.max(Number(fixed) || 0, 0));
   checkFiles(root, files, changedList);
   const befores = new Map(files.filter((f) => !f.isNew).map((f) => [f.path, readRegular(path.join(root, f.path), 4 * 1024 * 1024)]));
   const memories = files.filter((f) => MEMORY_FILE.test(f.path));
@@ -386,7 +415,7 @@ export function publishPatch({ root, dir, mode, base, runId, fixed }) {
   rescan(root, files, befores);
   const results = readJson(dir, 'summary.json')?.results;
   for (const f of files) {
-    if (QUARANTINE_FILE.test(f.path)) checkQuarantine(root, f.path, befores.get(f.path) ?? null, results);
+    if (QUARANTINE_FILE.test(f.path)) checkQuarantine(root, f.path, befores.get(f.path) ?? null, results, Math.min(Number(env.QUARANTINE_DAYS) || 14, policy?.quarantine.maxDays ?? 90));
     if (MEMORY_FILE.test(f.path)) checkMemory(root, f.path);
     if (FINGERPRINT_FILE.test(f.path)) checkFingerprint(root, f.path);
   }
@@ -536,7 +565,7 @@ async function main() {
     if (!/^[\w./-]{1,200}$/.test(base) || base.includes('..') || base.startsWith('-')) throw new Refused(`bad base branch "${base}"`);
     prUrl = publishPatch({ root, dir, mode, base, runId, fixed });
     if (prUrl) summaryLine(`Fix PR: ${prUrl}`);
-    if (env.OPEN_ISSUES !== 'false') issues = publishIssues(dir);
+    if (env.OPEN_ISSUES !== 'false' && readPolicy(root)?.issues.enabled !== false) issues = publishIssues(dir);
   }
   if (env.GITHUB_OUTPUT) appendFileSync(env.GITHUB_OUTPUT, `pr-url=${prUrl ?? ''}\n`);
   await uploadDashboard(dir, prUrl, issues);

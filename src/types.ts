@@ -83,6 +83,8 @@ export interface FailureResult {
   stability?: { runs: number; passed: boolean; detail: string };
   runtime?: RuntimeInfo;
   quarantine?: { days: number };
+  /** Left alone because .autoheal.yml says so (skip). */
+  skipped?: true;
   /** The app commit that most likely caused this failure. */
   cause?: Cause;
   spend: BudgetSnapshot;
@@ -116,6 +118,8 @@ export interface HealSummary {
   app?: string;
   /** Element fingerprints saved with this change. */
   fingerprints?: number;
+  /** What the repository's .autoheal.yml changed. */
+  policy?: string;
   /** What earlier AutoHeal PRs taught this run. */
   reviews?: { merged: number; edited: number; closed: number; note?: string };
 }

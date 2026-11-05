@@ -32,6 +32,7 @@ import { domFromZip, fingerprintPath, learn, loadFingerprints, lookup, saveFinge
 import { bestMatch, elements } from './snapshot.js';
 import { findCause, termsFromLocators, termsFromValues } from './cause.js';
 import { rejected, reviewText } from './reviews.js';
+import { isProtected, skipRule, tooWeak, POLICY_FILE } from './policy.js';
 import { locatorChanges, locatorFor, parseSelector, rankOf, renderLocator, sourcePattern } from './locators.js';
 const run = promisify(execFile);
 const NEW_FILE = '\u0000AUTOHEAL_NEW_FILE';
@@ -238,6 +239,7 @@ export async function heal(options) {
         minutesSaved: 0,
         ...(options.run ? { run: options.run } : {}),
         ...(options.sandboxNote ? { sandbox: options.sandboxNote } : {}),
+        ...(options.policyNote ? { policy: options.policyNote } : {}),
         ...(options.reviews || options.reviewNote ? { reviews: { ...(options.reviews?.prs ?? { merged: 0, edited: 0, closed: 0 }), ...(options.reviewNote ? { note: options.reviewNote } : {}) } } : {}),
     };
     // A CI run URL is downloaded by a short-lived engine that holds the token
@@ -306,8 +308,30 @@ export async function heal(options) {
             summary.outcome = 'nothing-to-do';
             return summary;
         }
-        const work = failures.slice(0, Math.max(1, options.maxFailures));
-        summary.skippedFailures = failures.length - work.length;
+        // The policy file can leave some tests alone entirely: they are listed, never touched.
+        const policy = options.policy ?? null;
+        const repoPath = (rel) => path.posix.join(options.repoPrefix ?? '', rel.replace(/\\/g, '/'));
+        const eligible = failures.filter((f) => {
+            const rule = skipRule(policy, repoPath(f.file), f.title);
+            if (!rule)
+                return true;
+            log(`Failure ${f.index}: ${f.file} › ${f.title} (left alone: ${rule} in ${POLICY_FILE})`);
+            const { detail: _detail, ...lite } = f;
+            summary.results.push({
+                failure: lite,
+                category: 'TEST_BUG',
+                rootCause: 'UNKNOWN',
+                confidence: 0,
+                reasons: [`${POLICY_FILE}: ${rule}`],
+                status: 'UNFIXED',
+                summary: `Left alone: ${POLICY_FILE} says AutoHeal should not work on this test (${rule}).`,
+                spend: EMPTY_SNAPSHOT,
+                skipped: true,
+            });
+            return false;
+        });
+        const work = eligible.slice(0, Math.max(1, options.maxFailures));
+        summary.skippedFailures = eligible.length - work.length;
         const failingTitlesByFile = new Map();
         for (const f of failures) {
             const set = failingTitlesByFile.get(f.file) ?? new Set();
@@ -432,9 +456,14 @@ export async function heal(options) {
             const abs = safePath(root, rel);
             if (!abs)
                 return { kept: false, blocked: false, message: 'Path not allowed.' };
+            if (isProtected(policy, repoPath(rel)))
+                return { kept: false, blocked: false, message: `${rel} is protected by ${POLICY_FILE}, so AutoHeal may not change it.` };
             const before = await readFile(abs, 'utf8');
             if (before === content)
                 return { kept: false, blocked: false, message: 'The proposed content is identical to the current file.' };
+            const weak = locatorChanges(before, content).find((c) => tooWeak(policy, c.to));
+            if (weak)
+                return { kept: false, blocked: false, message: `${POLICY_FILE} asks for locators that are at least ${policy?.fixes.minStrength}; \`${weak.after}\` is ${weak.to}.` };
             const local = scanChange(before, content, rel);
             const engine = await mcp.call('check-test-change', { file: rel, after: content }, 180_000);
             const engineStatus = engineVerdict(engine.data, engine.ok);
@@ -654,7 +683,25 @@ export async function heal(options) {
             ai: 'Fixed by the AI agent and proven by the stability rerun.',
         };
         /** Verifies one proposal and fills in the result. True when it was kept. */
+        /** Why the policy does not allow another fix of this kind, if it doesn't. */
+        function notAllowed(by) {
+            if (!policy)
+                return undefined;
+            if (!policy.fixes.allow.includes(by))
+                return `${POLICY_FILE} does not allow ${by === 'ai' ? 'AI' : by} fixes (fixes.allow)`;
+            const max = policy.fixes.maxPerPr;
+            if (max !== undefined && summary.results.filter((r) => r.status === 'FIXED').length >= max)
+                return `${POLICY_FILE} allows at most ${max} fix${max === 1 ? '' : 'es'} per PR (fixes.max-per-pr)`;
+            return undefined;
+        }
         async function attempt(failure, result, p) {
+            const denied = notAllowed(p.by);
+            if (denied) {
+                log(`  skipped a ${p.by} fix: ${denied}`);
+                if (!result.reasons.includes(denied))
+                    result.reasons = [...result.reasons, denied];
+                return false;
+            }
             const no = rejected(options.reviews, p.file, p.before, p.after);
             if (no) {
                 log(`  skipped: reviewers closed the same change in PR #${no.pr}`);
@@ -699,6 +746,12 @@ export async function heal(options) {
          * make the same locator change in this test's file.
          */
         async function sameChange(failure, result, move) {
+            const denied = notAllowed('same-change');
+            if (denied) {
+                if (!result.reasons.includes(denied))
+                    result.reasons = [...result.reasons, denied];
+                return false;
+            }
             const old = parseSelector(move.selector);
             const at = old ? await findLocator(failure, old) : null;
             if (at && move.locator) {
@@ -821,7 +874,13 @@ export async function heal(options) {
                         fixed = await attempt(failure, result, ruled);
                 }
                 // 4c. The AI agent.
-                if (!fixed && provider) {
+                const aiDenied = !fixed && provider ? notAllowed('ai') : undefined;
+                if (aiDenied) {
+                    result.reasons = [...result.reasons, aiDenied];
+                    if (result.status !== 'BLOCKED_CHEATING')
+                        result.summary = `No deterministic fix applied, and ${aiDenied}.`;
+                }
+                else if (!fixed && provider) {
                     const hint = fingerprintHint(failure, dom);
                     const agent = await aiFix({
                         mcp,
@@ -829,7 +888,7 @@ export async function heal(options) {
                         projectRoot: root,
                         failure,
                         triage: t,
-                        memory: [memoryText(relevantMemory(memory, failure.file)), hint, options.reviews ? reviewText(options.reviews, failure.file) : ''].filter(Boolean).join('\n'),
+                        memory: [memoryText(relevantMemory(memory, failure.file)), hint, options.reviews ? reviewText(options.reviews, failure.file) : '', policy?.protect.length ? `${POLICY_FILE} protects these paths (relative to the repository root); never change files there: ${policy.protect.join(', ')}` : ''].filter(Boolean).join('\n'),
                         budget,
                         ...(options.appUrl ? { appUrl: options.appUrl } : {}),
                         screenshot,
@@ -889,6 +948,10 @@ export async function heal(options) {
                     result.status = 'FLAKY';
                     result.summary = 'Flaky: passes and fails on the same code. Comment mode, so it was not quarantined.';
                 }
+                else if (policy && !policy.quarantine.enabled) {
+                    result.status = 'FLAKY';
+                    result.summary = `Flaky: passes and fails on the same code. ${POLICY_FILE} turns quarantine off, so it was not quarantined.`;
+                }
                 else {
                     const before = (await exists(path.join(root, 'playwright-quarantine.json'))) ? await readFile(path.join(root, 'playwright-quarantine.json'), 'utf8') : null;
                     const q = await mcp.call('quarantine', {
@@ -930,7 +993,7 @@ export async function heal(options) {
         }
         // One UI change, one fix: failures past max-failures that the same broken
         // locator caused get the kept fix too (no AI tokens, still proven by reruns).
-        for (const failure of failures.slice(work.length)) {
+        for (const failure of eligible.slice(work.length)) {
             const broken = doms.get(failure.index)?.failedCall?.selector;
             const move = broken ? moves.get(broken) : undefined;
             if (!move)
