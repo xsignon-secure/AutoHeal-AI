@@ -8,6 +8,7 @@
 import type { FailureResult, HealSummary } from './types.js';
 import type { Cause } from './cause.js';
 import { fixesMarker } from './reviews.js';
+import { runMarker } from './metrics.js';
 
 /** One line naming the commit, e.g. `abc1234` "Rename login" (Ada, 2026-11-03): "Log in" → "Sign in" in `app/login.tsx`. */
 export function causeText(c: Cause, repoUrl?: string): string {
@@ -153,6 +154,7 @@ export function prBody(summary: HealSummary): string {
   const lines = [
     // Read by the next heal run to learn what reviewers kept, edited or closed.
     fixesMarker(marked),
+    runMarker(summary),
     `## AutoHeal AI: ${fixed} test fix${fixed === 1 ? '' : 'es'}${quarantined ? `, ${quarantined} quarantined` : ''}`,
     '',
     summary.run?.url ? `Failed run: ${summary.run.url}` : '',

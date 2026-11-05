@@ -2,6 +2,13 @@
 
 All notable changes to AutoHeal AI. Versions follow [semantic versioning](https://semver.org/).
 
+## 0.9.0 (2026-11-05)
+
+### Added
+- **`autoheal metrics`.** A Markdown report of how AutoHeal is doing in a repository, read from GitHub and the checkout with no server and no AI. It covers fix PRs opened, merged as written, merged after edits, closed and still open; the acceptance rate and median time to merge; fixes by kind and the share made without AI; AI spend and estimated time saved; the test files fixed most often; app-bug issues opened and closed; and quarantined tests (active, expiring within 7 days, expired). `--json` saves the numbers, and in GitHub Actions the report also goes to the job summary.
+- **Weekly metrics workflow:** `templates/autoheal-metrics.yml`. Read-only permissions, no AI key.
+- Fix PR descriptions now carry a hidden `autoheal-run` line with the run's spend, tokens, time saved and counts, so metrics can add them up.
+
 ## 0.8.0 (2026-11-04)
 
 ### Added
