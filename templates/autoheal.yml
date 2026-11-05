@@ -130,6 +130,13 @@ jobs:
           npm ci
           npx playwright install --with-deps chromium
 
+      # Cypress projects: install with `npm ci` (it also downloads the Cypress
+      # binary) instead of the Playwright browsers. In your test workflow, use
+      # the built-in junit reporter and upload the reports and screenshots:
+      #   npx cypress run --reporter junit --reporter-options "mochaFile=cypress/results/results-[hash].xml"
+      #   path: "cypress/results/\ncypress/screenshots/"
+      # AutoHeal finds the Cypress config and reruns specs through Cypress itself.
+
       # pytest-playwright projects: uncomment instead of the Node install above.
       # - uses: actions/setup-python@v5
       #   with: { python-version: '3.12' }
@@ -147,7 +154,7 @@ jobs:
       - name: AutoHeal
         id: autoheal
         # Pin this (and publish below) to a commit SHA if your policy requires it.
-        uses: xsignon-secure/AutoHeal-AI@v0.9.0
+        uses: xsignon-secure/AutoHeal-AI@v0.10.0
         with:
           report: autoheal-artifacts
           mode: ${{ github.event.inputs.mode || 'draft-pr' }}
@@ -187,7 +194,7 @@ jobs:
           path: autoheal-result
 
       - name: Publish
-        uses: xsignon-secure/AutoHeal-AI/publish@v0.9.0
+        uses: xsignon-secure/AutoHeal-AI/publish@v0.10.0
         with:
           # Folders a fix may change. Add yours if page objects live outside tests/ or e2e/.
           # allowed-paths: 'tests/**, e2e/**, pages/**'

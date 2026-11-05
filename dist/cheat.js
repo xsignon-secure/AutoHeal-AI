@@ -66,11 +66,21 @@ function addedLines(before, after) {
     return added;
 }
 const ASSERTION = /\bexpect(?:\.soft|\.poll)?\s*\(|\bassert\b|\bexpect_that\b|\bto_have_|\bto_be_/;
-const TEST_DECL = /\b(?:test|it)(?:\.describe)?\s*\(\s*['"`]|\bdef\s+test_\w+\s*\(/;
-const SKIP = /\b(?:test|it|describe)\.(?:skip|fixme|only|fail)\s*\(|\btest\.describe\.(?:skip|only|fixme)\s*\(|@pytest\.mark\.(?:skip|skipif|xfail)|\bpytest\.skip\s*\(/;
+const TEST_DECL = /\b(?:test|it|specify)(?:\.describe)?\s*\(\s*['"`]|\bdef\s+test_\w+\s*\(/;
+const SKIP = /\b(?:test|it|describe|context|specify)\.(?:skip|fixme|only|fail)\s*\(|\btest\.describe\.(?:skip|only|fixme)\s*\(|@pytest\.mark\.(?:skip|skipif|xfail)|\bpytest\.skip\s*\(|\bx(?:it|describe|context|specify)\s*\(|\bthis\s*\.\s*skip\s*\(/;
+/** Cypress: a spec that drives the app through cy.* commands. */
+const CYPRESS = /\bcy\s*\.\s*(?:get|contains|visit|find|request|intercept)\s*\(/;
+/** Cypress assertions: .should(...) and .and(...). */
+const CY_ASSERTION = /\.\s*(?:should|and)\s*\(/;
+/** Cypress commands that fake the app or its time, or change the page instead of testing it. */
+const CY_TAMPER = /\bcy\s*\.\s*(?:intercept|stub|clock|tick|window|document|server|route)\s*\(|\.\s*invoke\s*\(/;
+/** Hiding failures: an uncaught-exception or fail handler that swallows errors. */
+const CY_SWALLOW = /\b(?:cy|Cypress)\s*\.\s*on\s*\(\s*['"`](?:uncaught:exception|fail)['"`]/;
 /** Things a test fix never needs, and an exfiltration attempt does. */
 const ESCAPE = [
-    [/\bprocess\s*\.\s*(?:env|binding|dlopen)\b|\bos\.environ\b|\bos\.getenv\s*\(|\bgetenv\s*\(/, 'reads environment variables'],
+    [/\bprocess\s*\.\s*(?:env|binding|dlopen)\b|\bos\.environ\b|\bos\.getenv\s*\(|\bgetenv\s*\(|\bCypress\s*\.\s*env\s*\(/, 'reads environment variables'],
+    [/\bcy\s*\.\s*(?:exec|task|readFile|writeFile)\s*\(/, 'runs a command or touches files through Cypress'],
+    [/\bcy\s*\.\s*request\s*\(/, 'makes a raw network call (cy.request)'],
     [/\bchild_process\b|\bexecSync\s*\(|\bspawnSync\s*\(|\bsubprocess\b|\bos\.system\s*\(|\bos\.popen\s*\(/, 'starts a process'],
     [/\brequire\s*\(|\bimport\s*\(|^\s*import\s[^\n]*\bfrom\s*['"](?:node:)?(?:fs|os|net|http|https|dgram|dns|tls|child_process|worker_threads|vm)(?:\/promises)?['"]|^\s*import\s+['"]/m, 'loads a new module'],
     [/^\s*(?:import|from)\s+(?:os|sys|subprocess|socket|requests|urllib|httpx|shutil|pathlib)\b/m, 'imports a system or network module'],
@@ -89,11 +99,11 @@ const COMPUTED_TEST = /\b(?:test|it|describe)(?:\s*\.\s*describe)?\s*\[/;
  * test at another page (a data: URL that just shows the expected text, or an
  * attacker's site). The arguments of these calls must stay exactly the same.
  */
-const NAVIGATION = /\.(?:goto|waitForURL|wait_for_url|route|routeFromHAR|route_from_har|newPage|new_page|setContent|set_content|expect_navigation|waitForNavigation)\s*\(([^()]*(?:\([^()]*\)[^()]*)*)\)/g;
+const NAVIGATION = /\.(?:goto|visit|origin|waitForURL|wait_for_url|route|routeFromHAR|route_from_har|newPage|new_page|setContent|set_content|expect_navigation|waitForNavigation)\s*\(([^()]*(?:\([^()]*\)[^()]*)*)\)/g;
 /** A URL written into the test. Locators never need one. */
 const URL_LITERAL = /['"`]\s*(?:(?:data|javascript|blob|file|about|https?|wss?|ftp):|\/\/|\\\\)[^'"`]*['"`]/gi;
 /** User actions. Deleting one removes a step of what the test checks. */
-const ACTION = /\.(?:click|dblclick|fill|press|pressSequentially|press_sequentially|type|check|uncheck|setChecked|set_checked|hover|tap|selectOption|select_option|setInputFiles|set_input_files|dragTo|drag_to|dispatchEvent|dispatch_event|focus|blur|clear|goto|selectText|select_text|down|up|insertText|insert_text)\s*\(/;
+const ACTION = /\.(?:click|dblclick|fill|press|pressSequentially|press_sequentially|type|check|uncheck|setChecked|set_checked|hover|tap|selectOption|select_option|setInputFiles|set_input_files|dragTo|drag_to|dispatchEvent|dispatch_event|focus|blur|clear|goto|selectText|select_text|down|up|insertText|insert_text|select|rightclick|trigger|selectFile|submit|scrollTo)\s*\(/;
 /** Ways to make a locator match more than it did: .or(), or a whole-page selector. */
 const WIDENING = /\.or_?\s*\(|\b(?:locator|\$\$?|querySelector(?:All)?|query_selector(?:_all)?)\s*\(\s*['"`]\s*(?:body|html|\*|:root|:scope|div|span)\s*['"`]/;
 /**
@@ -109,6 +119,8 @@ const TRIVIAL = /\bexpect(?:\.soft)?\s*\(\s*(?:true|false|null|undefined|-?\d+(?
  * test expects to see; a changed expectation is how an app bug gets hidden.
  */
 const EXPECTATION = /\.(?:not\.)?(?:to[A-Z]\w*|to_[a-z_]+)\s*\(([^()]*(?:\([^()]*\)[^()]*)*)\)|^\s*assert\s+(.+)$/gm;
+/** Cypress and chai: .should('have.text', 'A'), .and(...), expect(x).to.equal('A'). */
+const CY_EXPECTATION = /\.\s*(?:should|and|to(?:\s*\.\s*\w+)+)\s*\(([^()]*(?:\([^()]*\)[^()]*)*)\)/g;
 /** What an assertion looks at: the argument of expect(...). Changing it retargets the check. */
 const EXPECT_SUBJECT = /\bexpect(?:\.soft|\.poll)?\s*\(((?:[^()]|\((?:[^()]|\([^()]*\))*\))*)\)/g;
 const LITERAL = /'(?:[^'\\\n]|\\.)*'|"(?:[^"\\\n]|\\.)*"|`[^`]*`|\b(?:true|false|True|False)\b|-?\b\d+(?:\.\d+)?\b/g;
@@ -122,7 +134,14 @@ function declaration(source, name) {
 }
 export function expectations(source) {
     const out = [];
-    for (const m of source.matchAll(EXPECTATION)) {
+    const cypress = CYPRESS.test(source);
+    const found = [...source.matchAll(EXPECTATION)];
+    // chai chains count everywhere; .should/.and only in Cypress specs (Playwright has its own .and()).
+    for (const m of source.matchAll(CY_EXPECTATION)) {
+        if (cypress || /^\.\s*to\b/.test(m[0]))
+            found.push(m);
+    }
+    for (const m of found) {
         let value = m[1] ?? m[2] ?? '';
         if (m[2] !== undefined) {
             // Python: keep only what is compared against, so a locator change on the left is fine.
@@ -152,8 +171,22 @@ export function expectations(source) {
  * may change.
  */
 const SUBJECT_CONTENT = /\b(?:getBy(?:Text|Label|Placeholder|AltText|Title)|get_by_(?:text|label|placeholder|alt_text|title))\s*\(\s*('(?:[^'\\\n]|\\.)*'|"(?:[^"\\\n]|\\.)*"|`[^`]*`|\/(?:[^/\\\n]|\\.)+\/[a-z]*|[A-Za-z_$][\w$]*)|\b(?:hasText|has_text|hasNotText|has_not_text|name)\s*[:=]\s*('(?:[^'\\\n]|\\.)*'|"(?:[^"\\\n]|\\.)*"|`[^`]*`|\/(?:[^/\\\n]|\\.)+\/[a-z]*|[A-Za-z_$][\w$]*)|\b(checked|pressed|selected|expanded|disabled|visible|includeHidden|include_hidden|exact)\s*[:=]\s*(true|false|True|False)|(['"`]\s*text\s*=[^'"`]*['"`])/g;
-export function assertionSubjects(source) {
+/** Cypress: the text in cy.contains(...) when the same command chain asserts something. */
+function cypressSubjects(source) {
+    if (!CYPRESS.test(source))
+        return [];
     const out = [];
+    // One chain runs from a cy. to the next statement that starts with cy. (or a semicolon).
+    for (const chain of source.split(/;|\n(?=\s*cy\s*\.)/)) {
+        if (!CY_ASSERTION.test(chain))
+            continue;
+        for (const m of chain.matchAll(/\bcontains\s*\(([^()]*)\)/g))
+            out.push(`contains(${(m[1] ?? '').replace(/\s+/g, ' ').trim()})`);
+    }
+    return out;
+}
+export function assertionSubjects(source) {
+    const out = cypressSubjects(source);
     for (const m of source.matchAll(EXPECT_SUBJECT)) {
         for (const c of (m[1] ?? '').matchAll(SUBJECT_CONTENT)) {
             const value = c[1] ?? c[2] ?? (c[3] ? `${c[3]}=${c[4]}` : c[5]) ?? '';
@@ -208,8 +241,9 @@ export function scanChange(before, after, file) {
     const findings = [];
     const block = (rule, message) => findings.push({ severity: 'BLOCK', rule, message });
     const warn = (rule, message) => findings.push({ severity: 'WARN', rule, message });
-    const assertionsBefore = count(a, ASSERTION);
-    const assertionsAfter = count(b, ASSERTION);
+    const cypress = CYPRESS.test(a) || CYPRESS.test(b);
+    const assertionsBefore = count(a, ASSERTION) + (cypress ? count(a, CY_ASSERTION) : 0);
+    const assertionsAfter = count(b, ASSERTION) + (cypress ? count(b, CY_ASSERTION) : 0);
     if (assertionsAfter < assertionsBefore)
         block('assertion-removed', `assertions went from ${assertionsBefore} to ${assertionsAfter}`);
     const testsBefore = count(a, TEST_DECL);
@@ -268,6 +302,13 @@ export function scanChange(before, after, file) {
         block('trivial-assertion', 'an assertion that cannot fail was added');
     if (count(b, TAMPER) > count(a, TAMPER) || count(after, TAMPER) > count(before, TAMPER))
         block('app-tampered', 'the change fakes network answers, injects scripts or edits the page instead of testing it');
+    if (count(b, CY_TAMPER) > count(a, CY_TAMPER) || count(after, CY_TAMPER) > count(before, CY_TAMPER)) {
+        block('app-tampered', 'the change adds cy.intercept, cy.stub, cy.clock, cy.window or .invoke, which fake or edit the app instead of testing it');
+    }
+    if (count(b, CY_SWALLOW) > count(a, CY_SWALLOW) || count(after, CY_SWALLOW) > count(before, CY_SWALLOW))
+        block('swallowed-error', "an uncaught:exception or fail handler was added, which hides the app's errors");
+    if (count(b, /\bCypress\s*\.\s*config\s*\(/) > count(a, /\bCypress\s*\.\s*config\s*\(/))
+        block('config-changed', 'Cypress.config(...) was added, which changes timeouts or settings for the run');
     for (const [pattern, what] of ESCAPE) {
         if (count(b, pattern) > count(a, pattern) || count(after, pattern) > count(before, pattern))
             block('unsafe-code', `the change ${what}, which a test fix never needs`);
@@ -279,8 +320,9 @@ export function scanChange(before, after, file) {
         warn('timeout-raised', `a timeout was raised to ${timeoutAfter} ms`);
     if (count(b, /setTimeout\s*\(|\.slow\s*\(/) > count(a, /setTimeout\s*\(|\.slow\s*\(/))
         warn('timeout-raised', 'test.setTimeout or test.slow was added');
-    if (count(b, /waitForTimeout\s*\(|time\.sleep\s*\(|wait_for_timeout\s*\(/) > count(a, /waitForTimeout\s*\(|time\.sleep\s*\(|wait_for_timeout\s*\(/)) {
-        warn('fixed-wait', 'a fixed wait (waitForTimeout / sleep) was added');
+    const FIXED_WAIT = /waitForTimeout\s*\(|time\.sleep\s*\(|wait_for_timeout\s*\(|\bcy\s*\.\s*wait\s*\(\s*[\d_]/;
+    if (count(b, FIXED_WAIT) > count(a, FIXED_WAIT)) {
+        warn('fixed-wait', 'a fixed wait (waitForTimeout / sleep / cy.wait(ms)) was added');
     }
     if (count(b, /force\s*[:=]\s*(true|True)/) > count(a, /force\s*[:=]\s*(true|True)/))
         warn('force-action', 'force: true was added, which skips actionability checks');

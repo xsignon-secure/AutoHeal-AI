@@ -22,13 +22,14 @@ import { scanChange, type Verdict } from './cheat.js';
 import { redact } from './redact.js';
 import { shortDiff } from './evidence.js';
 import { McpTools, type ToolCaller } from './mcp.js';
+import { CypressTools, isCypressProject, type Framework } from './cypress.js';
 import { findReport } from './report-files.js';
 import { loadMemory, memoryEntryPath, memoryText, relevantMemory, remember } from './memory.js';
 import type { Provider } from './providers/types.js';
 import { triage as triageFailure, type Triage } from './triage.js';
 import { MINUTES_SAVED, type FailureInfo, type FailureResult, type FixInfo, type GuardInfo, type HealSummary, type Mode, type Outcome, type RuntimeInfo, type Status } from './types.js';
 import { VERSION } from './version.js';
-import { failureScreenshot, frameFromFile, visionEnabled, type Screenshot } from './vision.js';
+import { failureScreenshot, frameFromFile, screenshotFile, visionEnabled, type Screenshot } from './vision.js';
 import type { Sandbox } from './sandbox.js';
 import { compareRuns, findTrace, readTrace, recordFromFile, type RuntimeFinding } from './runtime.js';
 import { domFromZip, fingerprintPath, learn, loadFingerprints, lookup, saveFingerprints, type FingerprintEntry, type TraceDom } from './fingerprints.js';
@@ -59,8 +60,10 @@ export interface HealOptions {
   budget: BudgetLimits;
   provider: Provider | null;
   run?: HealSummary['run'];
-  /** Injected engine (tests); default: start playwright-e2e-mcp. */
+  /** Injected engine (tests); default: start playwright-e2e-mcp (or the Cypress tools for a Cypress project). */
   mcp?: ToolCaller;
+  /** playwright, pytest or cypress; detected from the project when left out or 'auto'. */
+  framework?: Framework | 'auto';
   log?: (line: string) => void;
   /** Run the engine (tests and every proposed fix) as this user; see sandbox.ts. */
   sandbox?: Sandbox | null;
@@ -257,6 +260,7 @@ function failureFrom(index: number, data: Record<string, unknown>, text: string)
   }
   if (typeof f.project === 'string') info.project = f.project;
   if (typeof f.tracePath === 'string') info.tracePath = f.tracePath;
+  if (typeof f.screenshotPath === 'string') info.screenshotPath = f.screenshotPath;
   return info;
 }
 
@@ -315,7 +319,17 @@ export async function heal(options: HealOptions): Promise<HealSummary> {
   // never sees a GitHub token.
   let reportRef = options.report;
   let traceDirs = options.traceDirs;
-  if (!options.mcp && /^https?:\/\//.test(options.report)) {
+  const framework: Framework =
+    options.framework && options.framework !== 'auto'
+      ? options.framework
+      : (await isCypressProject(root))
+        ? 'cypress'
+        : (await isPytestProject(root))
+          ? 'pytest'
+          : 'playwright';
+  summary.framework = framework;
+  if (framework !== 'playwright') log(`Framework: ${framework}`);
+  if (!options.mcp && framework !== 'cypress' && /^https?:\/\//.test(options.report)) {
     const local = await downloadRun(root, options.report, log);
     if ('error' in local) {
       summary.outcome = 'error';
@@ -326,10 +340,13 @@ export async function heal(options: HealOptions): Promise<HealSummary> {
     reportRef = local.report;
     traceDirs = local.traceDirs;
   }
-  const mcp = options.mcp ?? (await McpTools.start(root, { sandbox: options.sandbox ?? null }));
+  const mcp =
+    options.mcp ??
+    (framework === 'cypress' ? new CypressTools(root, { sandbox: options.sandbox ?? null, log }) : await McpTools.start(root, { sandbox: options.sandbox ?? null }));
   /** Original content of every file this job wrote, to revert on demand. */
   const originals = new Map<string, string>();
-  const pytest = await isPytestProject(root);
+  /** pytest and Cypress: no Playwright traces and no --repeat-each, so stability is separate runs and the runtime guard is off. */
+  const traceless = framework !== 'playwright';
 
   async function writeTracked(rel: string, content: string): Promise<void> {
     const abs = path.join(root, rel);
@@ -562,8 +579,8 @@ export async function heal(options: HealOptions): Promise<HealSummary> {
     async function stableRuns(failure: FailureInfo, grep: string): Promise<{ runs: number; passed: boolean; detail: string }> {
       let passed = false;
       let detail = '';
-      const runs = pytest ? Math.min(3, options.repeatEach) : options.repeatEach;
-      if (pytest) {
+      const runs = traceless ? Math.min(3, options.repeatEach) : options.repeatEach;
+      if (traceless) {
         passed = true;
         for (let i = 0; i < runs && passed; i++) {
           const r = await mcp.call('run-test', { testFiles: [failure.file], grep, retries: 0, retryOnFailure: false, timeoutMs: 600_000 }, 660_000);
@@ -588,8 +605,8 @@ export async function heal(options: HealOptions): Promise<HealSummary> {
     async function afterStable(failure: FailureInfo, rel: string, abs: string, before: string, guard: GuardInfo, runs: number, grep: string): Promise<VerifyOutcome> {
 
       // Guard v2: one traced run of the fixed test, compared with the failed run's trace.
-      const runtime: { findings?: RuntimeFinding[]; info: RuntimeInfo } = pytest
-        ? { info: { checked: false, note: 'the runtime check reads Playwright Test traces; pytest fixes are checked by code and reruns' } }
+      const runtime: { findings?: RuntimeFinding[]; info: RuntimeInfo } = traceless
+        ? { info: { checked: false, note: `the runtime check reads Playwright Test traces; ${framework} fixes are checked by code and reruns` } }
         : await runtimeCheck(failure, grep);
       if (runtime.findings?.length) {
         await writeFile(abs, before);
@@ -820,7 +837,7 @@ export async function heal(options: HealOptions): Promise<HealSummary> {
       const st = await stableRuns(failure, grep);
       result.stability = st;
       if (!st.passed) return false;
-      const runtime = pytest ? null : await runtimeCheck(failure, grep);
+      const runtime = traceless ? null : await runtimeCheck(failure, grep);
       if (runtime?.info) result.runtime = runtime.info;
       if (runtime?.findings?.length) return false;
       log(`  fixed by the change for "${move.title}" (${move.file})`);
@@ -862,7 +879,12 @@ export async function heal(options: HealOptions): Promise<HealSummary> {
       if (flakyVerdict !== undefined) triageInput.flakyVerdict = flakyVerdict;
       let t: Triage = triageFailure(triageInput);
       // Visual grounding: the page as it was when the test failed, read from the run's own artifacts.
-      const screenshot = provider && visionEnabled(provider.name) ? await failureScreenshot(root, failure.tracePath) : null;
+      const screenshot =
+        provider && visionEnabled(provider.name)
+          ? failure.tracePath
+            ? await failureScreenshot(root, failure.tracePath)
+            : await screenshotFile(root, failure.screenshotPath)
+          : null;
       if (screenshot) {
         failure.screenshot = screenshot.source;
         log(`  screenshot: ${screenshot.source} (${screenshot.width ?? '?'}×${screenshot.height ?? '?'})`);
@@ -925,6 +947,7 @@ export async function heal(options: HealOptions): Promise<HealSummary> {
             budget,
             ...(options.appUrl ? { appUrl: options.appUrl } : {}),
             screenshot,
+            framework,
             verify: (file, content) => verify(failure, file, content),
           });
           if (agent.guard) result.guard = agent.guard;
@@ -1040,7 +1063,7 @@ export async function heal(options: HealOptions): Promise<HealSummary> {
     // 6. Whole-tree heal guard over everything this job changed.
     const specFiles = [...originals.keys()].filter((f) => f !== 'playwright-quarantine.json');
     if (specFiles.length && (await isGitRepo(root))) {
-      const final = await mcp.call('check-test-change', { base: 'HEAD', files: specFiles, runtime: !pytest }, 900_000);
+      const final = await mcp.call('check-test-change', { base: 'HEAD', files: specFiles, runtime: !traceless }, 900_000);
       const verdict = engineVerdict(final.data, final.ok);
       if (verdict === 'BLOCK' || (!options.allowWarn && verdict === 'WARN')) {
         log(`Final heal guard: ${verdict}; reverting every test change.`);

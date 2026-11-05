@@ -3,3 +3,4 @@ node_modules/
 .autoheal-out/
 simulation/work/
 coverage/
+bench/results/

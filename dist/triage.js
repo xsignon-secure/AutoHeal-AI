@@ -8,9 +8,9 @@
  * when the signals say APP_BUG with high confidence.
  */
 const ENV_KINDS = new Set(['browser-crash', 'server-unreachable', 'config']);
-const HYDRATION = /hydrat|not attached to the dom|element is detached|detached from (the )?dom|element is not stable|intercepts pointer events|element is not enabled/i;
-const LOCATOR = /strict mode violation|resolved to 0 elements|element\(s\) not found|no element matches|waiting for (locator|getBy\w+)\(|locator\.\w+: (timeout|error)|unable to find (an )?element|getBy\w+\(.*\) (did not|resolved)/i;
-const INFRA = /ECONNREFUSED|ERR_CONNECTION_REFUSED|net::ERR_|ENOTFOUND|EADDRINUSE|executable doesn't exist|browserType\.launch|out of memory|ENOSPC/i;
+const HYDRATION = /hydrat|not attached to the dom|element is detached|detached from (the )?dom|element is not stable|intercepts pointer events|element is not enabled|is being covered by another element|has css 'pointer-events: none'|is currently animating|element is disabled/i;
+const LOCATOR = /strict mode violation|resolved to 0 elements|element\(s\) not found|no element matches|waiting for (locator|getBy\w+)\(|locator\.\w+: (timeout|error)|unable to find (an )?element|getBy\w+\(.*\) (did not|resolved)|expected to find (element|content)\b|but never found it|can only be called on a single element|subject contained \d+ elements/i;
+const INFRA = /ECONNREFUSED|ERR_CONNECTION_REFUSED|net::ERR_|ENOTFOUND|EADDRINUSE|executable doesn't exist|browserType\.launch|out of memory|ENOSPC|cypress could not verify that this server is running|cy\.visit\(\) failed trying to load|cypress (failed to start|could not find|verification timed out)|no version of cypress is installed/i;
 export function triage(input) {
     const reasons = [];
     const message = `${input.message}\n${input.actual ?? ''}`;

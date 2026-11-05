@@ -34,7 +34,7 @@ inputs:
     description: Token for pushing the fix branch and opening PRs and issues. A PAT or GitHub App token also lets your CI run on the fix PR.
     default: ${{ github.token }}
   allowed-paths:
-    description: "Globs (comma or newline separated) of files a fix may change. Default: **/tests/**, **/test/**, **/e2e/**, **/playwright/**, **/*.spec.*, **/*.test.*, **/test_*.py, **/*_test.py. Set it if your page objects live elsewhere."
+    description: "Globs (comma or newline separated) of files a fix may change. Default: **/tests/**, **/test/**, **/e2e/**, **/playwright/**, **/*.spec.*, **/*.test.*, **/*.cy.*, **/test_*.py, **/*_test.py. Set it if your page objects live elsewhere."
     default: ''
   allow-warn:
     description: Accept fixes with WARN findings (raised timeouts). Keep it the same as the heal action's allow-warn.
