@@ -18,7 +18,8 @@
  * quarantine) are Playwright features and are reported as unavailable.
  */
 import { execFile, spawn } from 'node:child_process';
-import { chmod, mkdtemp, readdir, readFile, rm, stat } from 'node:fs/promises';
+import { constants } from 'node:fs';
+import { chmod, mkdtemp, open, readdir, readFile, rm, stat } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -277,7 +278,7 @@ export function cypressValues(message) {
             if (at < 0)
                 continue;
             const actual = unquote(line.slice(start + 9, at));
-            const expected = unquote(line.slice(at + verb.length).replace(/\s*$/, ''));
+            const expected = unquote(line.slice(at + verb.length).trimEnd());
             if (actual.startsWith('<') || actual.startsWith('['))
                 return {};
             return { expected, actual };
@@ -372,6 +373,23 @@ async function listFiles(dir, depth, out) {
             out.push(p);
     }
 }
+/** A file's text when it is a regular file of at most `max` bytes (size checked on the open descriptor). */
+async function readSmall(file, max) {
+    let handle;
+    try {
+        handle = await open(file, constants.O_RDONLY | constants.O_NOFOLLOW);
+        const info = await handle.stat();
+        if (!info.isFile() || info.size > max)
+            return null;
+        return await handle.readFile('utf8');
+    }
+    catch {
+        return null;
+    }
+    finally {
+        await handle?.close();
+    }
+}
 function insideRoot(root, abs) {
     const rel = path.relative(root, abs);
     return rel !== '' && !rel.startsWith('..') && !path.isAbsolute(rel);
@@ -396,8 +414,13 @@ export function matchScreenshot(pngs, test) {
     if (!want)
         return undefined;
     const spec = path.posix.basename(test.file);
-    const candidates = pngs.filter((p) => /\(failed\)(?: \(\d+\))?\.png$/.test(p));
-    const named = candidates.filter((p) => loose(path.basename(p).replace(/\(failed\).*$/, '').replace(/ -- /g, ' ')) === want);
+    const named = pngs.filter((p) => {
+        const name = path.basename(p);
+        const at = name.indexOf('(failed)');
+        if (at < 0 || !name.endsWith('.png'))
+            return false;
+        return loose(name.slice(0, at).split(' -- ').join(' ')) === want;
+    });
     return named.find((p) => p.includes(spec)) ?? named[0];
 }
 function ok(text, data) {
@@ -484,10 +507,10 @@ export class CypressTools {
         for (const file of files) {
             if (!/\.(?:xml|json)$/i.test(file))
                 continue;
-            const size = (await stat(file)).size;
-            if (size > MAX_REPORT_BYTES)
+            const text = await readSmall(file, MAX_REPORT_BYTES);
+            if (text === null)
                 continue;
-            const parsed = parseCypressReport(await readFile(file, 'utf8'));
+            const parsed = parseCypressReport(text);
             if (!parsed)
                 continue;
             read++;
