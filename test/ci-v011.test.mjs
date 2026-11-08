@@ -373,7 +373,8 @@ test('init for GitHub: fills in the test workflow and install steps, and lists w
   assert.match(wf, /learn --out \.autoheal-learned/);
   const dispatch = r.checks.find((c) => /workflow_dispatch/.test(c.what));
   assert.equal(dispatch.level, 'warn');
-  assert.ok(r.steps.join('\n').includes('https://github.com/acme/shop/settings/secrets/actions/new'));
+  const links = r.steps.join('\n').match(/https:\/\/\S+?(?=[.)]?(?:\s|$))/g) ?? [];
+  assert.equal(links[0], 'https://github.com/acme/shop/settings/secrets/actions/new');
   assert.match(readFileSync(path.join(dir, '.gitignore'), 'utf8'), /\.autoheal-local\//);
   // A second run keeps the file.
   assert.deepEqual((await init(dir)).skipped, ['.github/workflows/autoheal.yml']);
