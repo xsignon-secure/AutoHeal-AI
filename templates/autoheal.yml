@@ -28,7 +28,7 @@
 #      (or OPENAI_API_KEY; see the README for local models).
 #   4. Settings > Actions > General > Workflow permissions: tick
 #      "Allow GitHub Actions to create and approve pull requests",
-#      or `gh pr create` fails with "not permitted to create pull requests".
+#      or opening the PR fails with "not permitted to create pull requests".
 #   5. Optional: add a .autoheal.yml at the repo root with your team's rules
 #      (protected folders, tests to skip, allowed fix kinds, tighter limits).
 #      See templates/autoheal-policy.yml.

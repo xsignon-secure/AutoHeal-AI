@@ -1,12 +1,12 @@
 /**
  * Runs the steps of action.yml locally, the way GitHub would, against a
  * prepared simulation project: real bash, real git with a local bare
- * "origin", and a fake `gh` that records every call. Used by the `action`
+ * "origin", and a fake GitHub API that records every call. Used by the `action`
  * scenario in run.mjs. Needs python3 with PyYAML to read action.yml.
  */
 
-import { execFileSync, spawnSync } from 'node:child_process';
-import { chmodSync, existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { execFileSync, spawn, spawnSync } from 'node:child_process';
+import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
 
 export function loadAction(file) {
@@ -55,22 +55,47 @@ export function condition(ctx, expr) {
   });
 }
 
-export function fakeGh(binDir, logFile) {
-  mkdirSync(binDir, { recursive: true });
-  const script = `#!/usr/bin/env node
-const fs = process.getBuiltinModule('fs');
-const args = process.argv.slice(2);
-fs.appendFileSync(${JSON.stringify(logFile)}, JSON.stringify(args) + '\\n');
-const has = (...words) => words.every((w, i) => args[i] === w);
-const log = fs.readFileSync(${JSON.stringify(logFile)}, 'utf8');
-if (has('pr', 'list')) process.stdout.write(log.includes('"pr","create"') ? 'https://github.com/acme/shop/pull/101\\n' : '');
-else if (has('pr', 'create')) process.stdout.write('https://github.com/acme/shop/pull/101\\n');
-else if (has('issue', 'list')) process.stdout.write('[]\\n');
-else if (has('issue', 'create')) process.stdout.write('https://github.com/acme/shop/issues/' + (200 + fs.readFileSync(${JSON.stringify(logFile)}, 'utf8').split('\\n').length) + '\\n');
+/**
+ * A fake GitHub REST API in its own process (the harness runs steps
+ * synchronously). Every request is appended to `logFile` as one JSON line:
+ * { method, path, body }. Returns { url, stop }.
+ */
+export function fakeGithubApi(logFile) {
+  const portFile = `${logFile}.port`;
+  rmSync(portFile, { force: true });
+  const script = `
+const http = require('node:http');
+const fs = require('node:fs');
+let pr = null;
+let issues = 0;
+const server = http.createServer((req, res) => {
+  let body = '';
+  req.on('data', (c) => (body += c));
+  req.on('end', () => {
+    let json = null;
+    try { json = body ? JSON.parse(body) : null; } catch {}
+    fs.appendFileSync(${JSON.stringify(logFile)}, JSON.stringify({ method: req.method, path: req.url, body: json }) + '\\n');
+    const send = (status, data) => { res.writeHead(status, { 'content-type': 'application/json' }); res.end(JSON.stringify(data)); };
+    const p = req.url.split('?')[0];
+    if (req.method === 'GET' && p === '/repos/acme/shop/pulls') return send(200, pr ? [pr] : []);
+    if (req.method === 'POST' && p === '/repos/acme/shop/pulls') { pr = { html_url: 'https://github.com/acme/shop/pull/101', number: 101 }; return send(201, pr); }
+    if (req.method === 'GET' && p === '/repos/acme/shop/issues') return send(200, []);
+    if (req.method === 'POST' && p === '/repos/acme/shop/issues') { issues++; return send(201, { html_url: 'https://github.com/acme/shop/issues/' + (200 + issues), number: 200 + issues }); }
+    if (req.method === 'POST' && /dispatches$/.test(p)) { res.writeHead(204); return res.end(); }
+    return send(req.method === 'GET' ? 200 : 201, req.method === 'GET' ? [] : {});
+  });
+});
+server.listen(0, '127.0.0.1', () => fs.writeFileSync(${JSON.stringify(portFile)}, String(server.address().port)));
 `;
-  const file = path.join(binDir, 'gh');
-  writeFileSync(file, script);
-  chmodSync(file, 0o755);
+  const child = spawn(process.execPath, ['-e', script], { stdio: 'ignore' });
+  for (let i = 0; i < 200 && !existsSync(portFile); i++) spawnSync('sleep', ['0.05']);
+  const port = readFileSync(portFile, 'utf8').trim();
+  return { url: `http://127.0.0.1:${port}`, stop: () => child.kill() };
+}
+
+/** The fake API's log, one object per request. */
+export function apiCalls(logFile) {
+  return readFileSync(logFile, 'utf8').trim().split('\n').filter(Boolean).map((l) => JSON.parse(l));
 }
 
 /**
@@ -113,7 +138,7 @@ export function runAction({ actionDir, projectDir, inputs, github, env, skip = [
         RUNNER_TEMP: temp,
         GITHUB_REPOSITORY: github.repository,
         // No real GitHub in the simulation: API calls fail fast unless a scenario sets a stub.
-        GITHUB_API_URL: process.env.SIM_GITHUB_API_URL ?? 'http://127.0.0.1:9',
+        GITHUB_API_URL: env?.GITHUB_API_URL ?? process.env.SIM_GITHUB_API_URL ?? 'http://127.0.0.1:9',
       },
     });
     const outputs = {};

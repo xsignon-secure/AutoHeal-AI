@@ -1,0 +1,9 @@
+node_modules/
+playwright-report/
+test-results/
+# AutoHeal AI
+.autoheal-out/
+.autoheal-local/
+.autoheal-learned/
+autoheal-result/
+autoheal-artifacts/

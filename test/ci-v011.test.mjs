@@ -409,3 +409,13 @@ test('local runs use a JSON report and traces for fix, traces on for learn', () 
   assert.equal(testRun('cypress', 'learn', 'x').env.AUTOHEAL_DOM_DIR, path.join('x', 'autoheal'));
   assert.ok(testRun('pytest', 'fix', 'x').args.includes('--junitxml=x/junit.xml'));
 });
+
+test('demo project: workflow equals the template, test workflow can be dispatched', () => {
+  const root = path.join(path.dirname(fileURLToPath(import.meta.url)), '..');
+  const demo = path.join(root, 'examples', 'demo');
+  assert.equal(readFileSync(path.join(demo, '.github/workflows/autoheal.yml'), 'utf8'), readFileSync(path.join(root, 'templates/autoheal.yml'), 'utf8'));
+  const e2e = readFileSync(path.join(demo, '.github/workflows/e2e.yml'), 'utf8');
+  assert.match(e2e, /^name: Playwright Tests$/m);
+  assert.match(e2e, /workflow_dispatch:/);
+  assert.ok(existsSync(path.join(demo, 'package-lock.json')));
+});

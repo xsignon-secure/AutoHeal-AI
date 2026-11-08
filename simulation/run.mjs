@@ -40,7 +40,7 @@ import { execFileSync, spawn, spawnSync } from 'node:child_process';
 import { cpSync, existsSync, mkdirSync, readdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { fakeGh, runAction } from './action-harness.mjs';
+import { apiCalls, fakeGithubApi, runAction } from './action-harness.mjs';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const repo = path.dirname(here);
@@ -419,18 +419,18 @@ const scenarios = {
     execFileSync('git', ['init', '-q', '--bare', remote]);
     execFileSync('git', ['remote', 'add', 'origin', remote], { cwd: dir });
     execFileSync('git', ['push', '-q', 'origin', 'main'], { cwd: dir, stdio: 'pipe' });
-    const bin = path.join(workRoot, 'action-bin');
-    const ghLog = path.join(workRoot, 'action-gh.log');
+    const ghLog = path.join(workRoot, 'action-api.log');
     rmSync(ghLog, { force: true });
     writeFileSync(ghLog, '');
-    fakeGh(bin, ghLog);
+    const api = fakeGithubApi(ghLog);
+    try {
     writeFileSync(path.join(dir, 'script.json'), JSON.stringify(fixScript(file(dir, 'tests/login.spec.ts'), file(dir, 'pages/profile.ts'))));
     writeFileSync(path.join(dir, '.git', 'info', 'exclude'), 'autoheal-artifacts/\n.autoheal-out/\nscript.json\n.runner-temp/\n');
     const github = {
       repository: 'acme/shop', run_id: '9', ref_name: 'main', sha: 'f'.repeat(40), actor: 'ada',
       event: { workflow_run: { id: 4242, html_url: 'https://github.com/acme/shop/actions/runs/4242', head_sha: 'a'.repeat(40), head_branch: 'main', actor: { login: 'ada' }, pull_requests: [] } },
     };
-    const env = { PATH: `${bin}${path.delimiter}${process.env.PATH}`, AUTOHEAL_PROVIDER: 'scripted', AUTOHEAL_SCRIPT: path.join(dir, 'script.json'), ANTHROPIC_API_KEY: '', OPENAI_API_KEY: '' };
+    const env = { AUTOHEAL_PROVIDER: 'scripted', AUTOHEAL_SCRIPT: path.join(dir, 'script.json'), ANTHROPIC_API_KEY: '', OPENAI_API_KEY: '' };
     const run = runAction({ actionDir: repo, projectDir: dir, inputs: { 'max-failures': '4' }, github, env, skip: ['Install AutoHeal AI'] });
     const steps = Object.fromEntries(run.log.map((s) => [s.step, s]));
     if (!run.ok || process.env.SIM_VERBOSE) for (const s of run.log) console.log(`    [${s.step}] ${s.skipped ? 'skipped' : `exit ${s.code}`}\n${s.stderr ?? ''}${s.stdout ?? ''}`);
@@ -449,7 +449,7 @@ const scenarios = {
     holder.kill();
     check(peek.status !== 0 && !peek.stdout.includes('sk-ant-sim'), `the sandbox user cannot read the key from the heal process (${peek.stderr.trim()})`);
     check(run.ctx.steps.heal?.outcome === 'fixed' && run.ctx.steps.heal?.fixed === '2', `heal outputs: outcome=${run.ctx.steps.heal?.outcome} fixed=${run.ctx.steps.heal?.fixed}`);
-    check(readFileSync(ghLog, 'utf8') === '', 'heal job made no GitHub calls (read-only)');
+    check(apiCalls(ghLog).every((c) => c.method === 'GET'), 'heal job made no GitHub writes (read-only)');
     const result = run.ctx.steps.package?.['result-dir'];
     check(result && existsSync(path.join(result, 'patch.diff')) && existsSync(path.join(result, 'meta.json')), 'heal job packed a patch for the publish job');
     check(steps['Upload the result for the publish job']?.uses?.startsWith('actions/upload-artifact@'), 'result handed over as an artifact');
@@ -465,17 +465,25 @@ const scenarios = {
     };
     const publish = (inputs, resultDir = result) => {
       freshClone();
-      return runAction({ actionDir: path.join(repo, 'publish'), projectDir: publishDir, inputs: { 'result-dir': resultDir, 'allowed-paths': 'tests/**, pages/**', 'base-branch': 'main', 'run-id': '4242', commit: 'a'.repeat(40), blocked: run.ctx.steps.heal.blocked, ...inputs }, github, env });
+      const pubEnv = { ...env, GITHUB_ACTIONS: 'true', GITHUB_SERVER_URL: 'https://github.com', GITHUB_API_URL: api.url, AUTOHEAL_PUSH_URL: remote };
+      return runAction({ actionDir: path.join(repo, 'publish'), projectDir: publishDir, inputs: { 'result-dir': resultDir, 'allowed-paths': 'tests/**, pages/**', 'base-branch': 'main', 'run-id': '4242', commit: 'a'.repeat(40), blocked: run.ctx.steps.heal.blocked, ...inputs }, github, env: pubEnv });
     };
-    const pub = publish({});
+    const pub = publish({ 'rerun-workflow': 'e2e.yml' });
     if (!pub.ok || process.env.SIM_VERBOSE) for (const s of pub.log) console.log(`    [publish ${s.step}] exit ${s.code}\n${s.stderr ?? ''}${s.stdout ?? ''}`);
     check(pub.ok, 'publish job succeeded');
     check(pub.ctx.steps.publish?.['pr-url'] === 'https://github.com/acme/shop/pull/101', 'fix PR opened');
-    const calls = readFileSync(ghLog, 'utf8').trim().split('\n').filter(Boolean).map((l) => JSON.parse(l));
-    const create = calls.find((c) => c[0] === 'pr' && c[1] === 'create');
-    check(create?.includes('--draft') && create[create.indexOf('--base') + 1] === 'main' && create[create.indexOf('--head') + 1] === 'autoheal/4242', 'draft PR from autoheal/4242 into main');
-    const issue = calls.find((c) => c[0] === 'issue' && c[1] === 'create');
-    check(issue && /AutoHeal/.test(issue[issue.indexOf('--title') + 1]) && /price/i.test(issue[issue.indexOf('--title') + 1]), `app bug issue opened (${issue?.[issue.indexOf('--title') + 1]})`);
+    const calls = apiCalls(ghLog);
+    const create = calls.find((c) => c.method === 'POST' && c.path === '/repos/acme/shop/pulls')?.body;
+    check(create?.draft === true && create.base === 'main' && create.head === 'autoheal/4242', 'draft PR from autoheal/4242 into main');
+    const issue = calls.find((c) => c.method === 'POST' && c.path === '/repos/acme/shop/issues')?.body;
+    check(issue && /AutoHeal/.test(issue.title) && /price/i.test(issue.title), `app bug issue opened (${issue?.title})`);
+    const dispatch = calls.find((c) => c.method === 'POST' && c.path === '/repos/acme/shop/actions/workflows/e2e.yml/dispatches');
+    check(dispatch?.body?.ref === 'autoheal/4242', 'CI started on the fix branch (workflow_dispatch)');
+    if (existsSync(path.join(result, 'evidence')) && readdirSync(path.join(result, 'evidence')).length) {
+      const shots = execFileSync('git', ['--git-dir', remote, 'ls-tree', '-r', '--name-only', 'autoheal-evidence'], { encoding: 'utf8' });
+      check(/^4242\/\d+-(?:before|after)\.(?:png|jpeg)$/m.test(shots), 'screenshots pushed to the autoheal-evidence branch');
+      check(/!\[before\]\(https:\/\/github\.com\/acme\/shop\/blob\/[0-9a-f]{40}\/4242\//.test(create.body), 'screenshots shown inside the PR');
+    }
     const pushed = execFileSync('git', ['--git-dir', remote, 'show', '--name-only', '--format=%s', 'autoheal/4242'], { encoding: 'utf8' });
     check(/AutoHeal fixes for failed run 4242/.test(pushed), 'fix commit pushed to the bot branch');
     const pushedFiles = pushed.trim().split('\n').slice(1).filter(Boolean).sort();
@@ -492,18 +500,18 @@ const scenarios = {
 
     // Same run published again (a re-run): the PR is updated, not duplicated.
     const again = publish({});
-    const calls2 = readFileSync(ghLog, 'utf8').trim().split('\n').filter(Boolean).map((l) => JSON.parse(l));
-    check(again.ok && calls2.filter((c) => c[0] === 'pr' && c[1] === 'create').length === 1 && calls2.some((c) => c[0] === 'pr' && c[1] === 'edit'), 're-run updates the existing PR');
+    const calls2 = apiCalls(ghLog);
+    check(again.ok && calls2.filter((c) => c.method === 'POST' && c.path === '/repos/acme/shop/pulls').length === 1 && calls2.some((c) => c.method === 'PATCH' && c.path === '/repos/acme/shop/pulls/101'), 're-run updates the existing PR');
 
     // A base that is itself an AutoHeal branch is refused (loop guard).
     const loop = publish({ 'base-branch': 'autoheal/1' });
-    check(loop.ok && /Refusing/.test(loop.log[0]?.stdout ?? ''), 'PR against an autoheal/ branch refused');
+    check(loop.ok && /Refusing|on an AutoHeal branch; nothing to publish/.test(loop.log.map((l) => l.stdout ?? '').join('')), 'PR against an autoheal/ branch refused');
 
     // Comment mode pushes nothing and comments on the commit.
-    const before = readFileSync(ghLog, 'utf8').trim().split('\n').filter(Boolean).length;
+    const before = apiCalls(ghLog).length;
     const comment = publish({ mode: 'comment' });
-    const calls3 = readFileSync(ghLog, 'utf8').trim().split('\n').filter(Boolean).map((l) => JSON.parse(l)).slice(before);
-    check(comment.ok && calls3.length === 1 && calls3[0][0] === 'api' && /commits\/a{40}\/comments/.test(calls3[0][1]), 'comment mode only posts a comment');
+    const calls3 = apiCalls(ghLog).slice(before);
+    check(comment.ok && calls3.length === 1 && calls3[0].method === 'POST' && /commits\/a{40}\/comments$/.test(calls3[0].path), 'comment mode only posts a comment');
 
     // A tampered result is refused before anything is applied or pushed.
     const evil = (name, patch) => {
@@ -532,6 +540,9 @@ const scenarios = {
     for (const [name, patch] of Object.entries(cases)) {
       const r = evil(name, patch);
       check(!r.ok && !r.pushed && /publish refused/.test(r.out), `tampered patch refused: ${name}`);
+    }
+    } finally {
+      api.stop();
     }
   },
 
