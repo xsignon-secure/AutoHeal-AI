@@ -11,6 +11,10 @@
  */
 
 import { execFileSync } from 'node:child_process';
+import { mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 
 export type SandboxMode = 'auto' | 'user' | 'off';
 
@@ -81,4 +85,39 @@ export function wrapCommand(sandbox: Sandbox, command: string, args: string[], e
     .filter(([k]) => /^[A-Za-z_][A-Za-z0-9_]*$/.test(k))
     .map(([k, v]) => `${k}=${v}`);
   return { command: 'sudo', args: ['-n', '-u', sandbox.user, '--', '/usr/bin/env', '-i', ...assignments, command, ...args] };
+}
+
+/**
+ * Runs scripts/sandbox-setup.sh, the step GitHub Actions runs before AutoHeal,
+ * for CIs that have no such step (GitLab, CircleCI). Returns the variables
+ * chooseSandbox() reads; empty when the sandbox could not be prepared (the
+ * script says why, and `user` mode fails instead).
+ */
+export function prepareSandbox(projectRoot: string, mode: SandboxMode, log: (line: string) => void = () => undefined, run: typeof execFileSync = execFileSync): Record<string, string> {
+  if (mode === 'off' || process.platform !== 'linux') return {};
+  const packageRoot = fileURLToPath(new URL('..', import.meta.url));
+  const out = path.join(mkdtempSync(path.join(os.tmpdir(), 'autoheal-sb-')), 'out');
+  writeFileSync(out, '');
+  try {
+    run('bash', [path.join(packageRoot, 'scripts', 'sandbox-setup.sh')], {
+      stdio: ['ignore', 'inherit', 'inherit'],
+      timeout: 300_000,
+      env: { ...process.env, MODE: mode, PROJECT: projectRoot, ACTION_PATH: packageRoot, GITHUB_OUTPUT: out },
+    });
+  } catch (error) {
+    if (mode === 'user') throw new Error(`sandbox: user was requested but the setup failed (${error instanceof Error ? error.message.split('\n')[0] : String(error)})`);
+    log('Sandbox setup failed; running without it (the PR says so).');
+    return {};
+  }
+  const vars: Record<string, string> = {};
+  for (const line of readFileSync(out, 'utf8').split('\n')) {
+    const at = line.indexOf('=');
+    if (at < 1) continue;
+    const key = line.slice(0, at);
+    const value = line.slice(at + 1);
+    if (key === 'user') vars.AUTOHEAL_SANDBOX_USER = value;
+    else if (key === 'home') vars.AUTOHEAL_SANDBOX_HOME = value;
+    else if (key === 'browsers') vars.AUTOHEAL_SANDBOX_BROWSERS = value;
+  }
+  return vars;
 }

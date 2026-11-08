@@ -21,6 +21,8 @@ import { scanChange } from './cheat.js';
 import { redact } from './redact.js';
 import { shortDiff } from './evidence.js';
 import { McpTools } from './mcp.js';
+import { ciInfo } from './ci.js';
+import { loadLearned } from './learned.js';
 import { CypressTools, isCypressProject } from './cypress.js';
 import { findReport } from './report-files.js';
 import { loadMemory, memoryEntryPath, memoryText, relevantMemory, remember } from './memory.js';
@@ -355,6 +357,8 @@ export async function heal(options) {
         }
         // Element fingerprints: what each locator pointed at, from the repo and from this run's traces.
         const savedFingerprints = await loadFingerprints(root);
+        for (const dir of options.learnedDirs ?? [])
+            savedFingerprints.push(...(await loadLearned(dir)));
         const learned = new Map();
         const addLearned = (entries) => {
             for (const e of entries)
@@ -463,8 +467,9 @@ export async function heal(options) {
             const env = process.env;
             if (env.AUTOHEAL_EVIDENCE_ARTIFACT && /^[\w.-]{1,100}$/.test(env.AUTOHEAL_EVIDENCE_ARTIFACT))
                 out.artifact = env.AUTOHEAL_EVIDENCE_ARTIFACT;
-            if (env.GITHUB_SERVER_URL && env.GITHUB_REPOSITORY && env.GITHUB_RUN_ID)
-                out.url = `${env.GITHUB_SERVER_URL}/${env.GITHUB_REPOSITORY}/actions/runs/${env.GITHUB_RUN_ID}`;
+            const own = ciInfo(env).selfUrl;
+            if (own)
+                out.url = own;
             return out;
         }
         async function verify(failure, rel, content) {

@@ -40,6 +40,8 @@ export interface HealOptions {
     run?: HealSummary['run'];
     /** Injected engine (tests); default: start playwright-e2e-mcp (or the Cypress tools for a Cypress project). */
     mcp?: ToolCaller;
+    /** Folders of fingerprints learned from green runs (`autoheal learn`), read as hints. */
+    learnedDirs?: string[];
     /** playwright, pytest or cypress; detected from the project when left out or 'auto'. */
     framework?: Framework | 'auto';
     log?: (line: string) => void;

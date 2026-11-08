@@ -1,0 +1,107 @@
+# AutoHeal AI for CircleCI. CircleCI reads one config file, so copy the jobs and
+# the workflow lines below into .circleci/config.yml
+# (`npx xsignon-autoheal init --ci circleci` writes this file to
+# .circleci/autoheal.yml and prints what to copy).
+#
+# Works for repositories on GitHub and GitLab. It runs after your test job
+# fails, with your own AI key, and opens a pull request (or merge request).
+#
+#   autoheal-heal     reruns your tests and the AI's proposed fixes as a separate
+#                     user that cannot read the AI key, and saves a patch.
+#   autoheal-publish  never runs your project's code: it checks the patch in a
+#                     fresh checkout and opens the PR and issues.
+#   autoheal-learn    (scheduled) records what each locator points at, so the
+#                     next broken locator is fixed without AI.
+#
+# Organization Settings > Contexts:
+#   autoheal-ai       ANTHROPIC_API_KEY (or OPENAI_API_KEY + AUTOHEAL_MODEL)
+#   autoheal-publish  AUTOHEAL_GITHUB_TOKEN: a fine-grained token with Contents,
+#                     Pull requests and Issues read and write on this repository
+#                     (GitLab: AUTOHEAL_GITLAB_TOKEN, a project access token with
+#                     api and write_repository). Only the publish job uses it.
+#
+# Needs CircleCI's job status conditions (requires: - e2e: failed).
+
+version: 2.1
+
+jobs:
+  # Your test job: keep its results in the workspace even when it fails.
+  e2e:
+    docker:
+      - image: mcr.microsoft.com/playwright:v1.56.1-noble
+    steps:
+      - checkout
+      - run: npm ci
+      - run: npx playwright test
+      - persist_to_workspace:
+          when: always
+          root: .
+          paths: [playwright-report, test-results]
+
+  autoheal-heal:
+    docker:
+      # Use the image your tests run in.
+      - image: mcr.microsoft.com/playwright:v1.56.1-noble
+    environment:
+      AUTOHEAL_VERSION: "0.11.0"
+      AUTOHEAL_MODE: draft-pr
+      AUTOHEAL_MAX_USD: "1.00"
+    steps:
+      - run:
+          name: Skip AutoHeal's own branches
+          command: |
+            case "$CIRCLE_BRANCH" in autoheal/*) circleci-agent step halt ;; esac
+      - checkout
+      - attach_workspace: { at: autoheal-artifacts }
+      - restore_cache:
+          keys: [autoheal-learned-]
+      - run: npm ci
+      - run: npx -y "xsignon-autoheal@${AUTOHEAL_VERSION}" heal --report autoheal-artifacts --out .autoheal-out
+      - run:
+          when: always
+          command: npx -y "xsignon-autoheal@${AUTOHEAL_VERSION}" package .autoheal-out autoheal-result
+      - store_artifacts: { path: .autoheal-out/evidence, destination: evidence }
+      - persist_to_workspace:
+          when: always
+          root: .
+          paths: [autoheal-result]
+
+  autoheal-publish:
+    docker:
+      - image: cimg/node:22.13
+    steps:
+      - checkout
+      - attach_workspace: { at: . }
+      - run: npx -y xsignon-autoheal@0.11.0 publish --result autoheal-result
+
+  autoheal-learn:
+    docker:
+      - image: mcr.microsoft.com/playwright:v1.56.1-noble
+    steps:
+      - checkout
+      - run: npm ci
+      - run: npx -y xsignon-autoheal@0.11.0 learn --out .autoheal-learned
+      - save_cache:
+          key: autoheal-learned-{{ epoch }}
+          paths: [.autoheal-learned]
+
+workflows:
+  e2e:
+    jobs:
+      - e2e
+      - autoheal-heal:
+          context: autoheal-ai
+          requires:
+            - e2e: failed
+      - autoheal-publish:
+          context: autoheal-publish
+          requires: [autoheal-heal]
+  # Daily: learn fingerprints on the default branch (CircleCI also offers
+  # scheduled pipelines in Project Settings > Triggers).
+  autoheal-learn:
+    triggers:
+      - schedule:
+          cron: "0 3 * * *"
+          filters: { branches: { only: [main] } }
+    jobs:
+      - autoheal-learn

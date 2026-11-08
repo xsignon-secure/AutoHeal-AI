@@ -4,7 +4,8 @@
  * self-hosted dashboard.
  */
 import { realpathSync } from 'node:fs';
-import { appendFile, mkdir, readFile, rm, stat, writeFile } from 'node:fs/promises';
+import { appendFile, mkdir, mkdtemp, readFile, rm, stat, writeFile } from 'node:fs/promises';
+import os from 'node:os';
 import path from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { parseArgs } from 'node:util';
@@ -25,6 +26,9 @@ import { execFileSync } from 'node:child_process';
 import { VERSION } from './version.js';
 import { collectMetrics, metricsMarkdown } from './metrics.js';
 import { frameworkSetting, isCypressProject } from './cypress.js';
+import { ciInfo, ciLabel, isAutohealBranch } from './ci.js';
+import { prepareSandbox } from './sandbox.js';
+import { fetchLearned, LEARNED_DIR } from './learned.js';
 export const USAGE = `autoheal ${VERSION}: free, self-hosted AI agent that fixes failing Playwright tests
 
 Usage:
@@ -109,18 +113,18 @@ async function writeGithubOutputs(values) {
     await appendFile(file, text);
 }
 function runInfo() {
-    const env = process.env;
+    const ci = ciInfo(process.env);
     const info = {};
-    if (env.AUTOHEAL_RUN_URL)
-        info.url = env.AUTOHEAL_RUN_URL;
-    if (env.AUTOHEAL_RUN_ID)
-        info.id = env.AUTOHEAL_RUN_ID;
-    if (env.AUTOHEAL_COMMIT)
-        info.commit = env.AUTOHEAL_COMMIT;
-    if (env.AUTOHEAL_BRANCH)
-        info.branch = env.AUTOHEAL_BRANCH;
-    if (env.GITHUB_REPOSITORY)
-        info.repo = env.GITHUB_REPOSITORY;
+    if (ci.runUrl)
+        info.url = ci.runUrl;
+    if (ci.runId)
+        info.id = ci.runId;
+    if (ci.commit)
+        info.commit = ci.commit;
+    if (ci.branch)
+        info.branch = ci.branch;
+    if (ci.repo)
+        info.repo = ci.repo;
     return info;
 }
 /** The repository root, or null outside a git repository. */
@@ -155,12 +159,20 @@ async function cmdHeal(argv) {
             'mocks-base-url': { type: 'string' },
             'no-flaky-check': { type: 'boolean' },
             'allow-warn': { type: 'boolean' },
+            'setup-sandbox': { type: 'boolean' },
         },
         strict: true,
     });
     const env = process.env;
     const projectRoot = path.resolve(values.project ?? '.');
     const log = (line) => process.stderr.write(`[autoheal] ${line}\n`);
+    const ci = ciInfo(env);
+    if (isAutohealBranch(ci.branch)) {
+        log(`The failed run is on ${ci.branch}, an AutoHeal branch: nothing to do (no loops).`);
+        return 0;
+    }
+    if (ci.ci !== 'github' && ci.ci !== 'local')
+        log(`CI: ${ciLabel(ci.ci)}${ci.repo ? ` · ${ci.repo}` : ''}${ci.runId ? ` · run ${ci.runId}` : ''}`);
     // The policy file is read first, before any project code (tests, the app) runs.
     const repoRoot = gitTop(projectRoot) ?? projectRoot;
     let policy;
@@ -239,6 +251,12 @@ async function cmdHeal(argv) {
     const mocksBaseUrl = values['mocks-base-url'] ?? env.AUTOHEAL_MOCKS_BASE_URL;
     // Screenshots from an earlier run in the same folder would be mixed up with this run's.
     await rm(path.join(outDir, 'evidence'), { recursive: true, force: true });
+    // Outside GitHub Actions there is no "Prepare the sandbox" step: do it here.
+    if (values['setup-sandbox'] === true || (ci.ci !== 'github' && ci.ci !== 'local' && !env.AUTOHEAL_SANDBOX_USER && sandboxMode(env.AUTOHEAL_SANDBOX) !== 'off')) {
+        const prepared = prepareSandbox(projectRoot, sandboxMode(env.AUTOHEAL_SANDBOX), log);
+        for (const [k, v] of Object.entries(prepared))
+            env[k] = v;
+    }
     let sandboxChoice;
     try {
         sandboxChoice = chooseSandbox(sandboxMode(env.AUTOHEAL_SANDBOX));
@@ -302,11 +320,21 @@ async function cmdHeal(argv) {
     const policyNote = policy ? policyText(policy, limits.changed) : undefined;
     if (policyNote)
         log(policyNote);
+    // Fingerprints the daily learn job saved (an artifact or a CI cache), as hints.
+    const learnedDirs = [path.join(projectRoot, LEARNED_DIR)];
+    if (env.AUTOHEAL_LEARNED !== 'false') {
+        const fetched = await mkdtemp(path.join(os.tmpdir(), 'autoheal-learned-'));
+        const note = await fetchLearned(ci, env, fetched);
+        if (note)
+            log(`Learned fingerprints: ${note}`);
+        learnedDirs.push(fetched);
+    }
     const rawSummary = await heal({
         projectRoot,
         report,
         ...(traceDirs ? { traceDirs } : {}),
         framework: cypress ? 'cypress' : setting,
+        learnedDirs,
         mode,
         maxFailures: limits.maxFailures,
         repeatEach: limits.repeatEach,
@@ -316,7 +344,7 @@ async function cmdHeal(argv) {
         flakyRuns: 3,
         ...(liveUrl ? { appUrl: liveUrl } : {}),
         ...(mocksBaseUrl ? { mocksBaseUrl } : {}),
-        ...(env.AUTOHEAL_OWNER ? { owner: env.AUTOHEAL_OWNER } : {}),
+        ...(ci.owner ? { owner: ci.owner } : {}),
         budget: {
             maxUsd: limits.maxUsd,
             maxSteps: intOption(values['max-steps'], env.AUTOHEAL_MAX_STEPS, 30, '--max-steps', 1, 500),

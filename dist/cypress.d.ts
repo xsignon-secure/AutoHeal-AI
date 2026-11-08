@@ -125,6 +125,12 @@ export declare class CypressTools implements ToolCaller {
     private readonly env;
     constructor(root: string, options?: CypressToolsOptions);
     call(name: string, args: Record<string, unknown>, timeoutMs?: number): Promise<ToolResult>;
+    /**
+     * Adds a quarantine entry to playwright-quarantine.json (the same file and
+     * format as Playwright projects). The xsignon-autoheal/cypress plugin reads it:
+     * the test still runs, but its failures do not fail the build until `until`.
+     */
+    private quarantine;
     close(): Promise<void>;
     private loadReport;
     private getFailure;

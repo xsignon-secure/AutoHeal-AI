@@ -22,6 +22,8 @@ import { scanChange, type Verdict } from './cheat.js';
 import { redact } from './redact.js';
 import { shortDiff } from './evidence.js';
 import { McpTools, type ToolCaller } from './mcp.js';
+import { ciInfo } from './ci.js';
+import { loadLearned } from './learned.js';
 import { CypressTools, isCypressProject, type Framework } from './cypress.js';
 import { findReport } from './report-files.js';
 import { loadMemory, memoryEntryPath, memoryText, relevantMemory, remember } from './memory.js';
@@ -62,6 +64,8 @@ export interface HealOptions {
   run?: HealSummary['run'];
   /** Injected engine (tests); default: start playwright-e2e-mcp (or the Cypress tools for a Cypress project). */
   mcp?: ToolCaller;
+  /** Folders of fingerprints learned from green runs (`autoheal learn`), read as hints. */
+  learnedDirs?: string[];
   /** playwright, pytest or cypress; detected from the project when left out or 'auto'. */
   framework?: Framework | 'auto';
   log?: (line: string) => void;
@@ -429,6 +433,7 @@ export async function heal(options: HealOptions): Promise<HealSummary> {
 
     // Element fingerprints: what each locator pointed at, from the repo and from this run's traces.
     const savedFingerprints = await loadFingerprints(root);
+    for (const dir of options.learnedDirs ?? []) savedFingerprints.push(...(await loadLearned(dir)));
     const learned = new Map<string, FingerprintEntry>();
     const addLearned = (entries: FingerprintEntry[]) => {
       for (const e of entries) if (learned.size < MAX_FINGERPRINTS_PER_RUN || learned.has(fingerprintPath(e.selector, e.page))) learned.set(fingerprintPath(e.selector, e.page), e);
@@ -529,7 +534,8 @@ export async function heal(options: HealOptions): Promise<HealSummary> {
       if (a) out.after = a;
       const env = process.env;
       if (env.AUTOHEAL_EVIDENCE_ARTIFACT && /^[\w.-]{1,100}$/.test(env.AUTOHEAL_EVIDENCE_ARTIFACT)) out.artifact = env.AUTOHEAL_EVIDENCE_ARTIFACT;
-      if (env.GITHUB_SERVER_URL && env.GITHUB_REPOSITORY && env.GITHUB_RUN_ID) out.url = `${env.GITHUB_SERVER_URL}/${env.GITHUB_REPOSITORY}/actions/runs/${env.GITHUB_RUN_ID}`;
+      const own = ciInfo(env).selfUrl;
+      if (own) out.url = own;
       return out;
     }
 

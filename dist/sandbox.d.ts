@@ -35,3 +35,10 @@ export declare function wrapCommand(sandbox: Sandbox, command: string, args: str
     command: string;
     args: string[];
 };
+/**
+ * Runs scripts/sandbox-setup.sh, the step GitHub Actions runs before AutoHeal,
+ * for CIs that have no such step (GitLab, CircleCI). Returns the variables
+ * chooseSandbox() reads; empty when the sandbox could not be prepared (the
+ * script says why, and `user` mode fails instead).
+ */
+export declare function prepareSandbox(projectRoot: string, mode: SandboxMode, log?: (line: string) => void, run?: typeof execFileSync): Record<string, string>;
