@@ -209,7 +209,7 @@ test('publish on GitLab CI: checks the patch, pushes the branch, uploads screens
   assert.equal(mr.target_branch, 'main');
   assert.equal(mr.source_branch, 'autoheal/555');
   assert.match(mr.title, /^Draft: AutoHeal: 1 test fix/);
-  assert.match(mr.description, new RegExp(`!\\[before\\]\\(${url.replace(/[.:/]/g, '\\$&')}/acme/shop/uploads/u1/1-before\\.png\\)`));
+  assert.ok(mr.description.includes(`![before](${url}/acme/shop/uploads/u1/1-before.png)`));
   assert.match(mr.description, /@\u200bsomeone/, 'mentions are neutralized');
 });
 
@@ -373,7 +373,7 @@ test('init for GitHub: fills in the test workflow and install steps, and lists w
   assert.match(wf, /learn --out \.autoheal-learned/);
   const dispatch = r.checks.find((c) => /workflow_dispatch/.test(c.what));
   assert.equal(dispatch.level, 'warn');
-  assert.match(r.steps.join('\n'), /github\.com\/acme\/shop\/settings\/secrets\/actions\/new/);
+  assert.ok(r.steps.join('\n').includes('https://github.com/acme/shop/settings/secrets/actions/new'));
   assert.match(readFileSync(path.join(dir, '.gitignore'), 'utf8'), /\.autoheal-local\//);
   // A second run keeps the file.
   assert.deepEqual((await init(dir)).skipped, ['.github/workflows/autoheal.yml']);

@@ -250,13 +250,20 @@ export async function init(root: string, options: { ci?: SetupCi; force?: boolea
   const skipped: string[] = [];
   const write = async (rel: string, text: string) => {
     const abs = path.join(root, rel);
-    if (existsSync(abs) && !options.force) {
-      skipped.push(rel);
+    if (options.dryRun) {
+      (existsSync(abs) && !options.force ? skipped : written).push(rel);
       return;
     }
-    if (!options.dryRun) {
-      await mkdir(path.dirname(abs), { recursive: true });
-      await writeFile(abs, text);
+    await mkdir(path.dirname(abs), { recursive: true });
+    try {
+      // 'wx' fails if the file exists, so an existing workflow is never overwritten by accident.
+      await writeFile(abs, text, { flag: options.force ? 'w' : 'wx' });
+    } catch (err) {
+      if ((err as NodeJS.ErrnoException).code === 'EEXIST') {
+        skipped.push(rel);
+        return;
+      }
+      throw err;
     }
     written.push(rel);
   };

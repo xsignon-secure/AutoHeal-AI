@@ -5,7 +5,8 @@
  * these the way it reads Playwright traces, so Cypress gets fingerprint fixes
  * with no AI tokens too.
  */
-import { lstat, readdir, readFile } from 'node:fs/promises';
+import { constants } from 'node:fs';
+import { lstat, open, readdir } from 'node:fs/promises';
 import path from 'node:path';
 import { elements } from './snapshot.js';
 export const CYPRESS_DOM_DIR = 'cypress/autoheal';
@@ -69,6 +70,22 @@ export function parseCypressDom(text) {
     }
     return { spec: data.spec.replace(/\\/g, '/'), title: data.title, dom };
 }
+/** A regular file of at most MAX_BYTES, checked on the open handle (no symlinks); '' otherwise. */
+async function readSmall(file) {
+    const fh = await open(file, constants.O_RDONLY | constants.O_NOFOLLOW).catch(() => null);
+    if (!fh)
+        return '';
+    try {
+        const st = await fh.stat();
+        return st.isFile() && st.size <= MAX_BYTES ? await fh.readFile('utf8') : '';
+    }
+    catch {
+        return '';
+    }
+    finally {
+        await fh.close();
+    }
+}
 /** Every saved file under the given folders (inside the project only). */
 export async function loadCypressDoms(root, dirs) {
     const out = [];
@@ -88,9 +105,9 @@ export async function loadCypressDoms(root, dirs) {
                 continue;
             if (st.isDirectory())
                 await walk(p, depth + 1);
-            else if (/^[0-9a-f]{16}\.json$/.test(name) && st.size <= MAX_BYTES && files < MAX_FILES) {
+            else if (/^[0-9a-f]{16}\.json$/.test(name) && files < MAX_FILES) {
                 files++;
-                const parsed = parseCypressDom(await readFile(p, 'utf8').catch(() => ''));
+                const parsed = parseCypressDom(await readSmall(p));
                 if (parsed)
                     out.push(parsed);
             }
