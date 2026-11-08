@@ -155,11 +155,14 @@ export function gitlabForge({ api, server, repo, projectId, token }) {
 
 /** The forge for this run, from the CI info (src/ci.ts) and the environment's tokens. */
 export function forgeFor(info, env = process.env) {
+  let forge;
   if (info.forge === 'github') {
-    return githubForge({ api: info.api, server: info.server, repo: info.repo, token: env.AUTOHEAL_GITHUB_TOKEN || env.GH_TOKEN || env.GITHUB_TOKEN });
+    forge = githubForge({ api: info.api, server: info.server, repo: info.repo, token: env.AUTOHEAL_GITHUB_TOKEN || env.GH_TOKEN || env.GITHUB_TOKEN });
+  } else if (info.forge === 'gitlab') {
+    forge = gitlabForge({ api: info.api, server: info.server, repo: info.repo, projectId: info.projectId, token: env.AUTOHEAL_GITLAB_TOKEN || env.GITLAB_TOKEN });
   }
-  if (info.forge === 'gitlab') {
-    return gitlabForge({ api: info.api, server: info.server, repo: info.repo, projectId: info.projectId, token: env.AUTOHEAL_GITLAB_TOKEN || env.GITLAB_TOKEN });
-  }
+  // A different git URL to push to (a mirror, or a local bare repository in tests).
+  if (forge && env.AUTOHEAL_PUSH_URL) forge.pushUrl = env.AUTOHEAL_PUSH_URL;
+  if (forge) return forge;
   throw new ForgeError('AutoHeal can open fixes on GitHub and GitLab. This repository\'s host is unknown: set AUTOHEAL_FORGE=github or gitlab, and AUTOHEAL_SERVER_URL if it is self-hosted');
 }

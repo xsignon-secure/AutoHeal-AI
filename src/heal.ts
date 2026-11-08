@@ -24,6 +24,7 @@ import { shortDiff } from './evidence.js';
 import { McpTools, type ToolCaller } from './mcp.js';
 import { ciInfo } from './ci.js';
 import { loadLearned } from './learned.js';
+import { CYPRESS_DOM_DIR, cypressPattern, cypressSelectorFor, domFor, loadCypressDoms, replaceCypressSelector } from './cypress-dom.js';
 import { CypressTools, isCypressProject, type Framework } from './cypress.js';
 import { findReport } from './report-files.js';
 import { loadMemory, memoryEntryPath, memoryText, relevantMemory, remember } from './memory.js';
@@ -111,6 +112,8 @@ interface Proposal {
   sameAs?: string;
   /** The new locator, so the same change can be applied to other files. */
   locator?: ParsedLocator;
+  /** Cypress: the new CSS selector. */
+  cySelector?: string;
 }
 
 /** A kept fix for a broken locator, reused for every other test it broke. */
@@ -121,6 +124,8 @@ interface Move {
   diff: string;
   /** Set when the replacement is known as a locator (fingerprint fixes). */
   locator?: ParsedLocator;
+  /** Cypress: the new CSS selector. */
+  cySelector?: string;
 }
 
 /** The publish job accepts up to 60 fingerprint files per PR. */
@@ -445,6 +450,16 @@ export async function heal(options: HealOptions): Promise<HealSummary> {
       doms.set(f.index, dom);
       addLearned(learn(dom, f.file));
     }
+    // Cypress: what the xsignon-autoheal/cypress plugin saw (from the artifacts or the project).
+    if (framework === 'cypress') {
+      const cyDoms = await loadCypressDoms(root, [options.report, CYPRESS_DOM_DIR]);
+      for (const d of cyDoms) addLearned(learn(d.dom, d.spec));
+      for (const f of failures) {
+        const dom = domFor(cyDoms, f.file, f.title);
+        if (dom) doms.set(f.index, dom);
+      }
+      log(cyDoms.length ? `Cypress page snapshots: ${cyDoms.length} test(s)` : 'Cypress page snapshots: none (add the xsignon-autoheal/cypress plugin for fixes without AI)');
+    }
     const moves = new Map<string, Move>();
 
     // 2. Deterministic fixes, read before any rerun changes the engine's "last run".
@@ -699,8 +714,52 @@ export async function heal(options: HealOptions): Promise<HealSummary> {
       return match ? { saved, match } : null;
     }
 
+    /** The one file (spec or a page object it imports) that uses this Cypress selector. */
+    async function cypressFind(failure: FailureInfo, selector: string): Promise<{ file: string; source: string } | null> {
+      const spec = safePath(root, failure.file);
+      if (!spec) return null;
+      const specSource = await readFile(spec, 'utf8').catch(() => null);
+      if (specSource === null) return null;
+      const found: Array<{ file: string; source: string }> = [];
+      for (const file of [...new Set([failure.file, ...relativeImports(failure.file, specSource)])]) {
+        const abs = safePath(root, file);
+        if (!abs) continue;
+        const source = file === failure.file ? specSource : await readFile(abs, 'utf8').catch(() => null);
+        if (source !== null && cypressPattern(selector).test(source)) found.push({ file, source });
+      }
+      return found.length === 1 ? (found[0] as { file: string; source: string }) : null;
+    }
+
+    /** Cypress: the element found again from its fingerprint, as a cy.get selector. */
+    async function cypressProposal(failure: FailureInfo, dom: TraceDom | undefined): Promise<Proposal | null> {
+      const found = matchFor(failure, dom);
+      const old = dom?.failedCall?.selector;
+      if (!found || !dom?.failedPage || !old) return null;
+      const sel = cypressSelectorFor(found.match.element, dom.failedPage.root);
+      if (!sel || sel === old) return null;
+      const at = await cypressFind(failure, old);
+      const change = at ? replaceCypressSelector(at.source, old, sel) : null;
+      if (!at || !change) return null;
+      const signals = found.match.signals.join(', ') || 'role and position';
+      log(`  fingerprint: ${change.before} → ${change.after} (match ${Math.round(found.match.score * 100)}%: ${signals})`);
+      const p: Proposal = {
+        by: 'fingerprint',
+        file: at.file,
+        current: at.source,
+        next: change.next,
+        before: change.before,
+        after: change.after,
+        why: `The element this selector found before (saved ${found.saved.at.slice(0, 10)}) is still on the page with the same ${signals}; the new selector finds it again.`,
+        match: { score: found.match.score, signals: found.match.signals },
+        cySelector: sel,
+      };
+      proposals.set(failure.index, p);
+      return p;
+    }
+
     /** A fix from the element's saved fingerprint, found again on the failed page. */
     async function fingerprintProposal(failure: FailureInfo, dom: TraceDom | undefined): Promise<Proposal | null> {
+      if (framework === 'cypress') return cypressProposal(failure, dom);
       const found = matchFor(failure, dom);
       if (!found || !dom?.failedPage || !dom.failedCall?.selector) return null;
       const old = parseSelector(dom.failedCall.selector);
@@ -733,6 +792,12 @@ export async function heal(options: HealOptions): Promise<HealSummary> {
       const found = matchFor(failure, dom);
       const loc = found && dom?.failedPage ? locatorFor(found.match.element, dom.failedPage.root) : null;
       const what = JSON.stringify(saved.fingerprint);
+      if (framework === 'cypress') {
+        const sel = found && dom?.failedPage ? cypressSelectorFor(found.match.element, dom.failedPage.root) : null;
+        return sel
+          ? `- Element fingerprint for the broken selector (saved ${saved.at.slice(0, 10)}): ${what}. Best match on the failed page: cy.get('${sel}').`
+          : `- Element fingerprint for the broken selector (saved ${saved.at.slice(0, 10)}): ${what}. No element on the failed page matched it clearly.`;
+      }
       return loc
         ? `- Element fingerprint for the broken locator (saved ${saved.at.slice(0, 10)}): ${what}. Best match on the failed page: ${renderLocator(loc, failure.file.endsWith('.py'))}.`
         : `- Element fingerprint for the broken locator (saved ${saved.at.slice(0, 10)}): ${what}. No element on the failed page matched it clearly.`;
@@ -820,7 +885,27 @@ export async function heal(options: HealOptions): Promise<HealSummary> {
         if (!result.reasons.includes(denied)) result.reasons = [...result.reasons, denied];
         return false;
       }
-      const old = parseSelector(move.selector);
+      if (framework === 'cypress') {
+        const at = await cypressFind(failure, move.selector);
+        if (at && move.cySelector) {
+          const change = replaceCypressSelector(at.source, move.selector, move.cySelector);
+          if (!change) return false;
+          log(`  same UI change as "${move.title}": ${change.before} → ${change.after}`);
+          return attempt(failure, result, {
+            by: 'same-change',
+            file: at.file,
+            current: at.source,
+            next: change.next,
+            before: change.before,
+            after: change.after,
+            why: `The same UI change broke "${move.title}"; this makes the same selector change.`,
+            sameAs: move.title,
+            cySelector: move.cySelector,
+          });
+        }
+        if (at) return false;
+      }
+      const old = framework === 'cypress' ? null : parseSelector(move.selector);
       const at = old ? await findLocator(failure, old) : null;
       if (at && move.locator) {
         const change = replaceLocator(at, move.locator);
@@ -993,6 +1078,7 @@ export async function heal(options: HealOptions): Promise<HealSummary> {
               file: result.fix.file,
               diff: result.fix.diff,
               ...(result.fix.by === 'fingerprint' && lastProposal?.locator ? { locator: lastProposal.locator } : {}),
+              ...(lastProposal?.cySelector ? { cySelector: lastProposal.cySelector } : {}),
             });
           }
         }

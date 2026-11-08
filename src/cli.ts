@@ -8,7 +8,7 @@ import { realpathSync } from 'node:fs';
 import { appendFile, mkdir, mkdtemp, readFile, rm, stat, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
-import { pathToFileURL } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 import { parseArgs } from 'node:util';
 import { commentBody, issueBody, issueTitle, jobSummary, prBody } from './evidence.js';
 import { heal } from './heal.js';
@@ -20,11 +20,13 @@ import type { HealSummary, Mode } from './types.js';
 import { eventsFrom, uploadEvents } from './upload.js';
 import { chooseSandbox, sandboxMode } from './sandbox.js';
 import { checkAppUrl, startApp, type StartedApp } from './app.js';
-import { domFromZip, learn, saveFingerprints, type FingerprintEntry } from './fingerprints.js';
-import { readTrace } from './runtime.js';
+import { saveFingerprints } from './fingerprints.js';
 import { reviewHistory, type ReviewHistory } from './reviews.js';
 import { loadPolicy, policyText, PolicyError, POLICY_FILE, tighten, type Policy } from './policy.js';
-import { execFileSync } from 'node:child_process';
+import { execFileSync, spawnSync } from 'node:child_process';
+import { checksText, doctor, init, type SetupCi } from './setup.js';
+import { fingerprintsFromCypress, fingerprintsFromTraces, runTests, testRun, writeLearned } from './local.js';
+import { isPytestProject } from './heal.js';
 import { VERSION } from './version.js';
 import { collectMetrics, metricsMarkdown } from './metrics.js';
 import { frameworkSetting, isCypressProject } from './cypress.js';
@@ -32,10 +34,29 @@ import { ciInfo, ciLabel, isAutohealBranch } from './ci.js';
 import { prepareSandbox } from './sandbox.js';
 import { fetchLearned, LEARNED_DIR } from './learned.js';
 
-export const USAGE = `autoheal ${VERSION}: free, self-hosted AI agent that fixes failing Playwright tests
+export const USAGE = `autoheal ${VERSION}: free, self-hosted AI agent that fixes failing Playwright,
+pytest-playwright and Cypress tests, in GitHub Actions, GitLab CI, CircleCI or on your machine.
+(npm package: xsignon-autoheal · command: autoheal · npx xsignon-autoheal <command> works too)
 
-Usage:
+Start here:
+  autoheal init [--ci github|gitlab|circleci] [--force] [--dry-run]
+                         write the AutoHeal workflow for your CI and check your setup
+  autoheal doctor        check this project and machine, with a fix for each problem
+  autoheal fix [--report <dir>] [--allow-dirty]
+                         on your machine: run the tests, fix what broke, leave the
+                         changes in your working tree for you to review (no commit)
+  autoheal learn [--out .autoheal-learned] [--traces <dir>]
+                         run the tests once with traces on and save element
+                         fingerprints, so a broken locator is fixed without AI
+
+In CI (the templates call these):
   autoheal heal --report <path|run URL> [options]
+  autoheal package <heal-out-dir> <result-dir>
+  autoheal publish [--result autoheal-result]
+                         open the fix PR (GitHub) or merge request (GitLab); needs
+                         AUTOHEAL_GITHUB_TOKEN / GH_TOKEN or AUTOHEAL_GITLAB_TOKEN
+
+Other:
   autoheal fingerprint --traces <dir> [--project <dir>]
   autoheal upload --summary <summary.json> [--pr-url URL] [--issues issues.json]
   autoheal metrics [--repo owner/name] [--days 30] [--project <dir>] [--json <file>]
@@ -65,6 +86,7 @@ heal options (each also reads the AUTOHEAL_* variable in brackets):
   --mocks-base-url <u>   live API to compare mocks with [AUTOHEAL_MOCKS_BASE_URL]
   --no-flaky-check       skip the flaky rerun
   --allow-warn           accept anti-cheat WARN findings (default: block them)
+  --setup-sandbox        prepare the sandbox user first (automatic on GitLab and CircleCI)
 
 metrics: a Markdown report of AutoHeal's PRs, fixes, spend, issues and quarantined
 tests (needs GITHUB_TOKEN or GH_TOKEN with pull-requests and issues read; repo from
@@ -82,7 +104,8 @@ AI provider (bring your own key; none = deterministic fixes only):
   or AUTOHEAL_BASE_URL + AUTOHEAL_MODEL for a local OpenAI-compatible server.
 
 fingerprint: saves element fingerprints from the traces of a green run
-(trace: 'on'), so the first broken locator can already be fixed without AI.
+(trace: 'on') into .autoheal/fingerprints/ to commit. learn does the same into a
+folder that the daily CI job keeps as an artifact or cache, and heal reads it.
 
 Exit codes: 0 done, 1 error, 2 bad usage, 3 a fix was blocked by the anti-cheat guard.
 `;
@@ -387,33 +410,156 @@ async function cmdFingerprint(argv: string[]): Promise<number> {
   const { values } = parseArgs({ args: argv, options: { traces: { type: 'string' }, project: { type: 'string' } }, strict: true });
   if (!values.traces) throw new ConfigError('--traces is required (a folder with trace.zip files, e.g. test-results).');
   const projectRoot = path.resolve(values.project ?? '.');
-  const dir = path.resolve(projectRoot, values.traces);
-  const entries = new Map<string, FingerprintEntry>();
-  let traces = 0;
-  const walk = async (d: string, depth: number): Promise<void> => {
-    if (depth > 6) return;
-    const { readdir, lstat } = await import('node:fs/promises');
-    for (const name of (await readdir(d).catch(() => [] as string[])).slice(0, 5000)) {
-      const p = path.join(d, name);
-      const st = await lstat(p).catch(() => null);
-      if (!st || st.isSymbolicLink() || name === 'node_modules') continue;
-      if (st.isDirectory()) await walk(p, depth + 1);
-      else if (name.endsWith('.zip') && traces < 2000) {
-        const buf = await readTrace(p);
-        if (!buf) continue;
-        try {
-          for (const e of learn(domFromZip(buf))) entries.set(`${e.selector}\n${e.page ?? ''}`, e);
-          traces++;
-        } catch {
-          // not a trace
-        }
-      }
-    }
-  };
-  await walk(dir, 0);
-  const written = await saveFingerprints(projectRoot, [...entries.values()]);
+  const { entries, traces } = await fingerprintsFromTraces(path.resolve(projectRoot, values.traces));
+  const written = await saveFingerprints(projectRoot, entries);
   process.stderr.write(`[autoheal] Read ${traces} trace(s); saved ${written.length} element fingerprint(s) in .autoheal/fingerprints/. Commit them.\n`);
   return 0;
+}
+
+async function detectFramework(projectRoot: string, value: string | undefined): Promise<'playwright' | 'pytest' | 'cypress'> {
+  let setting: ReturnType<typeof frameworkSetting>;
+  try {
+    setting = frameworkSetting(value ?? process.env.AUTOHEAL_FRAMEWORK);
+  } catch (error) {
+    throw new ConfigError(error instanceof Error ? error.message : String(error));
+  }
+  if (setting !== 'auto') return setting;
+  if (await isCypressProject(projectRoot)) return 'cypress';
+  return (await isPytestProject(projectRoot)) ? 'pytest' : 'playwright';
+}
+
+/** Runs the tests once with traces on and saves fingerprints into a flat folder (no AI, no secrets). */
+async function cmdLearn(argv: string[]): Promise<number> {
+  const { values } = parseArgs({ args: argv, options: { project: { type: 'string' }, framework: { type: 'string' }, out: { type: 'string' }, traces: { type: 'string' } }, strict: true });
+  const projectRoot = path.resolve(values.project ?? '.');
+  const framework = await detectFramework(projectRoot, values.framework);
+  const out = path.resolve(projectRoot, values.out ?? LEARNED_DIR);
+  const log = (line: string) => process.stderr.write(`[autoheal] ${line}\n`);
+  let source = values.traces ? path.resolve(projectRoot, values.traces) : '';
+  if (!source) {
+    const rel = path.join('.autoheal-local', 'learn');
+    await rm(path.join(projectRoot, rel), { recursive: true, force: true });
+    await mkdir(path.join(projectRoot, rel), { recursive: true });
+    log(`Running your ${framework} tests once with traces on…`);
+    const code = runTests(projectRoot, testRun(framework, 'learn', rel));
+    if (code !== 0) log(`Some tests failed (exit ${code}); learning from the ones that passed.`);
+    source = path.join(projectRoot, rel);
+  }
+  const found = framework === 'cypress' ? await fingerprintsFromCypress(projectRoot, path.relative(projectRoot, source) || '.') : await fingerprintsFromTraces(source);
+  const n = await writeLearned(out, found.entries);
+  log(`Saved ${n} element fingerprint(s) in ${path.relative(projectRoot, out) || out}. ${n ? 'The heal job reads them.' : framework === 'cypress' ? 'None found: add the xsignon-autoheal/cypress plugin.' : 'None found: are there passing tests?'}`);
+  return 0;
+}
+
+/** On your machine: run the tests, heal what failed, leave the changes in the working tree. */
+async function cmdFix(argv: string[]): Promise<number> {
+  const { values } = parseArgs({
+    args: argv,
+    options: {
+      report: { type: 'string' },
+      project: { type: 'string' },
+      framework: { type: 'string' },
+      'allow-dirty': { type: 'boolean' },
+      'max-failures': { type: 'string' },
+      'max-usd': { type: 'string' },
+      'no-flaky-check': { type: 'boolean' },
+      'allow-warn': { type: 'boolean' },
+      'start-command': { type: 'string' },
+      'start-url': { type: 'string' },
+    },
+    strict: true,
+  });
+  const env = process.env;
+  const projectRoot = path.resolve(values.project ?? '.');
+  const log = (line: string) => process.stderr.write(`[autoheal] ${line}\n`);
+  const top = gitTop(projectRoot);
+  if (!top) throw new ConfigError('autoheal fix works in a git repository, so you can review its changes with git diff.');
+  const dirty = execFileSync('git', ['-c', 'core.hooksPath=/dev/null', 'status', '--porcelain', '--untracked-files=no'], { cwd: projectRoot, encoding: 'utf8' }).trim();
+  if (dirty && !values['allow-dirty']) throw new ConfigError('You have uncommitted changes. Commit or stash them first, so AutoHeal\'s fixes are easy to review (or pass --allow-dirty).');
+  const framework = await detectFramework(projectRoot, values.framework);
+  const local = path.join(projectRoot, '.autoheal-local');
+  let report = values.report;
+  if (!report) {
+    const rel = path.join('.autoheal-local', 'run');
+    await rm(path.join(projectRoot, rel), { recursive: true, force: true });
+    await mkdir(path.join(projectRoot, rel), { recursive: true });
+    log(`Running your ${framework} tests…`);
+    const code = runTests(projectRoot, testRun(framework, 'fix', rel));
+    if (code === 0) {
+      log('All tests passed. Nothing to fix.');
+      return 0;
+    }
+    report = rel;
+  }
+  // Your own machine, your own code: the sandbox is for CI.
+  if (!env.AUTOHEAL_SANDBOX) env.AUTOHEAL_SANDBOX = 'off';
+  env.AUTOHEAL_LEARN_REVIEWS = env.AUTOHEAL_LEARN_REVIEWS ?? 'false';
+  const args = ['--report', report, '--project', projectRoot, '--out', path.join(local, 'out'), '--mode', 'pr', '--framework', framework];
+  for (const k of ['max-failures', 'max-usd', 'start-command', 'start-url'] as const) if (values[k]) args.push(`--${k}`, values[k] as string);
+  if (values['no-flaky-check']) args.push('--no-flaky-check');
+  if (values['allow-warn']) args.push('--allow-warn');
+  const code = await cmdHeal(args);
+  const stat = execFileSync('git', ['-c', 'core.hooksPath=/dev/null', 'diff', '--stat'], { cwd: projectRoot, encoding: 'utf8' }).trim();
+  process.stderr.write(
+    stat
+      ? `\n[autoheal] Changes are in your working tree (nothing was committed):\n${stat}\n[autoheal] Review with \`git diff\`; undo with \`git checkout -- .\`. Report: .autoheal-local/out/job-summary.md\n`
+      : '\n[autoheal] No files were changed. Report: .autoheal-local/out/job-summary.md\n',
+  );
+  return code;
+}
+
+/** autoheal init: writes the workflow for your CI and checks the setup. */
+async function cmdInit(argv: string[]): Promise<number> {
+  const { values } = parseArgs({ args: argv, options: { ci: { type: 'string' }, project: { type: 'string' }, force: { type: 'boolean' }, 'dry-run': { type: 'boolean' } }, strict: true });
+  const ci = values.ci;
+  if (ci !== undefined && !['github', 'gitlab', 'circleci'].includes(ci)) throw new ConfigError('--ci must be github, gitlab or circleci.');
+  const root = path.resolve(values.project ?? '.');
+  const r = await init(root, { ...(ci ? { ci: ci as SetupCi } : {}), force: values.force === true, dryRun: values['dry-run'] === true });
+  const out: string[] = [`AutoHeal ${VERSION} for ${r.project.framework} on ${ciLabel(r.project.ci)}${r.project.workflow ? ` (test workflow "${r.project.workflow.name}")` : ''}`, ''];
+  for (const w of r.written) out.push(`${values['dry-run'] ? 'would write' : 'wrote'}   ${w}`);
+  for (const w of r.skipped) out.push(`kept    ${w} (exists; --force to overwrite)`);
+  out.push('', 'Checks:', checksText(r.checks), '', 'Only you can do these:');
+  r.steps.forEach((step, i) => out.push(`  ${i + 1}. ${step}`));
+  out.push('', 'Then run `npx xsignon-autoheal doctor` any time to check again.', '');
+  process.stdout.write(out.join('\n'));
+  return 0;
+}
+
+async function cmdDoctor(argv: string[]): Promise<number> {
+  const { values } = parseArgs({ args: argv, options: { ci: { type: 'string' }, project: { type: 'string' } }, strict: true });
+  const ci = values.ci;
+  if (ci !== undefined && !['github', 'gitlab', 'circleci'].includes(ci)) throw new ConfigError('--ci must be github, gitlab or circleci.');
+  const checks = await doctor(path.resolve(values.project ?? '.'), process.env, ci ? { ci: ci as SetupCi } : {});
+  process.stdout.write(`AutoHeal ${VERSION} doctor\n\n${checksText(checks)}\n`);
+  return checks.some((c) => c.level === 'fail') ? 1 : 0;
+}
+
+/** Packs the heal output for the publish job (scripts/package.mjs). */
+async function cmdPackage(argv: string[]): Promise<number> {
+  const [outDir, resultDir] = argv;
+  if (!outDir || !resultDir) throw new ConfigError('usage: autoheal package <heal-out-dir> <result-dir>');
+  const script = fileURLToPath(new URL('../scripts/package.mjs', import.meta.url));
+  const res = spawnSync(process.execPath, [script, outDir, resultDir], { stdio: 'inherit' });
+  return res.status ?? 1;
+}
+
+/** The publish job outside GitHub Actions (scripts/publish.mjs, with AUTOHEAL_* settings). */
+async function cmdPublish(argv: string[]): Promise<number> {
+  const { values } = parseArgs({ args: argv, options: { result: { type: 'string' }, mode: { type: 'string' } }, strict: true });
+  const env = process.env;
+  const map: Record<string, string | undefined> = {
+    RESULT_DIR: values.result ?? env.AUTOHEAL_RESULT_DIR,
+    MODE: values.mode ?? env.AUTOHEAL_MODE,
+    ALLOWED_PATHS: env.AUTOHEAL_ALLOWED_PATHS,
+    ALLOW_WARN: env.AUTOHEAL_ALLOW_WARN === '1' || env.AUTOHEAL_ALLOW_WARN === 'true' ? 'true' : undefined,
+    QUARANTINE_DAYS: env.AUTOHEAL_QUARANTINE_DAYS,
+    DASHBOARD_URL: env.AUTOHEAL_DASHBOARD_URL,
+    DASHBOARD_SECRET: env.AUTOHEAL_DASHBOARD_SECRET,
+    OPEN_ISSUES: env.AUTOHEAL_OPEN_ISSUES,
+  };
+  for (const [k, v] of Object.entries(map)) if (v !== undefined && env[k] === undefined) env[k] = v;
+  const mod = (await import(new URL('../scripts/publish.mjs', import.meta.url).href)) as { main: (e: NodeJS.ProcessEnv) => Promise<number>; report: (p: Promise<number>) => Promise<number> };
+  return mod.report(mod.main(env));
 }
 
 async function cmdUpload(argv: string[]): Promise<number> {
@@ -515,6 +661,12 @@ export async function main(argv: string[]): Promise<number> {
       return 0;
     }
     if (command === 'heal') return await cmdHeal(rest);
+    if (command === 'init') return await cmdInit(rest);
+    if (command === 'doctor') return await cmdDoctor(rest);
+    if (command === 'fix') return await cmdFix(rest);
+    if (command === 'learn') return await cmdLearn(rest);
+    if (command === 'package') return await cmdPackage(rest);
+    if (command === 'publish') return await cmdPublish(rest);
     if (command === 'upload') return await cmdUpload(rest);
     if (command === 'fingerprint') return await cmdFingerprint(rest);
     if (command === 'dashboard') return await cmdDashboard(rest);

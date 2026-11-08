@@ -607,7 +607,7 @@ export async function uploadDashboard(dir, prUrl, issues) {
   const clean = events.slice(0, 200).filter((e) => e && typeof e === 'object').map((e) => {
     const out = {
       id: str(e.id, 64),
-      repo: ciInfo(env).repo ?? '',
+      repo: ciInfo(env).repo ?? env.GITHUB_REPOSITORY ?? '',
       run_id: str(e.run_id, 40),
       run_url: str(e.run_url, 500),
       commit_sha: str(e.commit_sha, 64),
