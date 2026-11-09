@@ -170,6 +170,10 @@ jobs:
       #   path: "cypress/results/\ncypress/screenshots/\ncypress/autoheal/"
       # AutoHeal finds the Cypress config and reruns specs through Cypress itself.
 
+      # WebdriverIO projects: add @wdio/junit-reporter to your reporters
+      # (outputDir: 'reports') and upload reports/ from your test workflow.
+      # AutoHeal finds wdio.conf and reruns single tests through WebdriverIO.
+
       # pytest-playwright projects: uncomment instead of the Node install above.
       # - uses: actions/setup-python@v5
       #   with: { python-version: '3.12' }

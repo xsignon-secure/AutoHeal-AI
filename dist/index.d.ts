@@ -32,3 +32,5 @@ export { CypressTools, isCypressProject, frameworkSetting, parseCypressReport, p
 export { systemPrompt, CYPRESS_PROMPT } from './agent.js';
 export { screenshotFile } from './vision.js';
 export { fetchHistory, parseHistory, recordRun, historyOf, HISTORY_ARTIFACT, type History } from './history.js';
+export { WdioTools, isWdioProject, parseWdioJunit, parseWdioJson, parseWdioReport, wdioKind, wdioFailure } from './wdio.js';
+export { WDIO_PROMPT } from './agent.js';

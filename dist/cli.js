@@ -15,6 +15,7 @@ import { priceFor } from './budget.js';
 import { ConfigError, providerFromEnv } from './providers/index.js';
 import { redactDeep } from './redact.js';
 import { fetchHistory, HISTORY_FILE, recordRun } from './history.js';
+import { isWdioProject } from './wdio.js';
 import { findReport } from './report-files.js';
 import { eventsFrom, uploadEvents } from './upload.js';
 import { chooseSandbox, sandboxMode } from './sandbox.js';
@@ -65,7 +66,7 @@ heal options (each also reads the AUTOHEAL_* variable in brackets):
   --report <p>           JSON report, blob-report folder, artifacts folder, or a
                          GitHub Actions / GitLab run URL (needs GITHUB_TOKEN)
   --project <dir>        project root (default: current directory)
-  --framework <f>        auto | playwright | pytest | cypress (default auto: from the
+  --framework <f>        auto | playwright | pytest | cypress | webdriverio (default auto: from the
                          config files) [AUTOHEAL_FRAMEWORK]. Cypress reads JUnit XML,
                          mochawesome or cypress.run() results from --report
   --mode <m>             comment | draft-pr | pr (default draft-pr) [AUTOHEAL_MODE]
@@ -225,12 +226,13 @@ async function cmdHeal(argv) {
     catch (error) {
         throw new ConfigError(error instanceof Error ? error.message : String(error));
     }
-    const cypress = setting === 'cypress' || (setting === 'auto' && (await isCypressProject(projectRoot)));
+    const wdio = setting === 'webdriverio' || (setting === 'auto' && (await isWdioProject(projectRoot)));
+    const cypress = !wdio && (setting === 'cypress' || (setting === 'auto' && (await isCypressProject(projectRoot))));
     let traceDirs;
-    if (cypress) {
-        // Cypress results (JUnit XML, mochawesome or cypress.run() JSON) are found by the Cypress tools.
+    if (cypress || wdio) {
+        // Cypress and WebdriverIO results (JUnit XML or JSON) are found by their tools.
         if (/^https?:\/\//.test(report))
-            throw new ConfigError('For Cypress, download the run\'s artifacts into the project and pass the folder as --report.');
+            throw new ConfigError(`For ${wdio ? 'WebdriverIO' : 'Cypress'}, download the run's artifacts into the project and pass the folder as --report.`);
         const abs = path.resolve(projectRoot, report);
         if (!(await stat(abs).catch(() => null)))
             throw new ConfigError(`Report not found: ${report}`);
@@ -366,7 +368,7 @@ async function cmdHeal(argv) {
         ...(past ? { history: past.history } : {}),
         fixFlaky: env.AUTOHEAL_FIX_FLAKY !== 'false',
         ...(traceDirs ? { traceDirs } : {}),
-        framework: cypress ? 'cypress' : setting,
+        framework: wdio ? 'webdriverio' : cypress ? 'cypress' : setting,
         learnedDirs,
         mode,
         maxFailures: limits.maxFailures,
@@ -463,6 +465,8 @@ async function detectFramework(projectRoot, value) {
     }
     if (setting !== 'auto')
         return setting;
+    if (await isWdioProject(projectRoot))
+        return 'webdriverio';
     if (await isCypressProject(projectRoot))
         return 'cypress';
     return (await isPytestProject(projectRoot)) ? 'pytest' : 'playwright';

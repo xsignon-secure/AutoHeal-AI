@@ -16,7 +16,7 @@ inputs:
     description: Folder of the Playwright, pytest-playwright or Cypress project.
     default: .
   framework:
-    description: "auto (default: from the config files), playwright, pytest or cypress."
+    description: "auto (default: from the config files), playwright, pytest, cypress or webdriverio."
     default: auto
   anthropic-api-key:
     description: Your Anthropic API key (default provider, model claude-opus-5-5).

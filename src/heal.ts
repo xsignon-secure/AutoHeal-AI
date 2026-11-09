@@ -26,6 +26,7 @@ import { ciInfo } from './ci.js';
 import { loadLearned } from './learned.js';
 import { CYPRESS_DOM_DIR, cypressPattern, cypressSelectorFor, domFor, loadCypressDoms, replaceCypressSelector } from './cypress-dom.js';
 import { CypressTools, isCypressProject, type Framework } from './cypress.js';
+import { isWdioProject, WdioTools } from './wdio.js';
 import { findReport } from './report-files.js';
 import { loadMemory, memoryEntryPath, memoryText, relevantMemory, remember } from './memory.js';
 import type { Provider } from './providers/types.js';
@@ -381,7 +382,9 @@ export async function heal(options: HealOptions): Promise<HealSummary> {
   const framework: Framework =
     options.framework && options.framework !== 'auto'
       ? options.framework
-      : (await isCypressProject(root))
+      : (await isWdioProject(root))
+        ? 'webdriverio'
+        : (await isCypressProject(root))
         ? 'cypress'
         : (await isPytestProject(root))
           ? 'pytest'
@@ -401,7 +404,11 @@ export async function heal(options: HealOptions): Promise<HealSummary> {
   }
   const mcp =
     options.mcp ??
-    (framework === 'cypress' ? new CypressTools(root, { sandbox: options.sandbox ?? null, log }) : await McpTools.start(root, { sandbox: options.sandbox ?? null }));
+    (framework === 'cypress'
+      ? new CypressTools(root, { sandbox: options.sandbox ?? null, log })
+      : framework === 'webdriverio'
+        ? new WdioTools(root, { sandbox: options.sandbox ?? null, log })
+        : await McpTools.start(root, { sandbox: options.sandbox ?? null }));
   /** Original content of every file this job wrote, to revert on demand. */
   const originals = new Map<string, string>();
   /** Binary files (screenshot baselines) this job rewrote: their original bytes. */

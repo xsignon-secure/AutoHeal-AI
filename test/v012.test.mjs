@@ -516,3 +516,82 @@ test('visual: no app change since the baseline is an app bug, the baseline stays
   assert.ok(readFileSync(path.join(dir, 'tests/home.spec.ts-snapshots/home-chromium-linux.png')).equals(png(1)));
   assert.ok(!engine.calls.some((c) => (c.args.args ?? []).includes('--update-snapshots')));
 });
+
+// ---------- WebdriverIO ----------
+
+import { parseWdioJunit, parseWdioReport, wdioKind, isWdioProject, scanChange, frameworkSetting } from '../dist/index.js';
+
+const WDIO_XML = `<?xml version="1.0" encoding="UTF-8"?>
+<testsuites>
+  <testsuite name="Login page" timestamp="2026-11-09T10:00:00" time="3.1" tests="2" failures="1" errors="0" skipped="0">
+    <properties>
+      <property name="specId" value="0"/>
+      <property name="suiteName" value="Login page"/>
+      <property name="file" value="./test/specs/login.e2e.js"/>
+    </properties>
+    <testcase classname="chrome.Login_page" name="should log in" time="2.0">
+      <failure message="Can't call click on element with selector &quot;#login&quot; because element wasn't found"><![CDATA[Error: Can't call click on element with selector "#login" because element wasn't found
+    at Context.<anonymous> (test/specs/login.e2e.js:4:31)]]></failure>
+    </testcase>
+    <testcase classname="chrome.Login_page" name="shows the title" time="1.0"/>
+  </testsuite>
+</testsuites>`;
+
+test('WebdriverIO: JUnit results, failure kinds, framework setting', async () => {
+  const tests = parseWdioJunit(WDIO_XML);
+  assert.equal(tests.length, 2);
+  assert.equal(tests[0].file, './test/specs/login.e2e.js');
+  assert.equal(tests[0].title, 'Login page should log in');
+  assert.equal(tests[0].state, 'failed');
+  assert.equal(tests[1].state, 'passed');
+  assert.equal(parseWdioReport('{"specs":["/p/a.e2e.js"],"suites":[{"name":"S","tests":[{"name":"t","state":"failed","error":"boom"}]}]}')[0].title, 'S t');
+  assert.equal(wdioKind(tests[0].message), 'timeout');
+  assert.equal(wdioKind('Expect $(`#x`) to have text\n\nExpected: "a"\nReceived: "b"'), 'assertion');
+  assert.equal(wdioKind('Failed to create session.'), 'server-unreachable');
+  assert.equal(frameworkSetting('wdio'), 'webdriverio');
+  const dir = mkdtempSync(path.join(os.tmpdir(), 'autoheal-wdioproj-'));
+  writeFileSync(path.join(dir, 'wdio.conf.js'), 'export const config = {};\n');
+  assert.equal(await isWdioProject(dir), true);
+  writeFileSync(path.join(dir, 'playwright.config.ts'), '');
+  assert.equal(await isWdioProject(dir), false);
+});
+
+test('WebdriverIO anti-cheat: browser.execute and browser.mock are blocked, pause warns', () => {
+  const before = "it('x', async () => {\n  await $('#login').click();\n  await expect($('h1')).toHaveText('Hi');\n});\n";
+  assert.equal(scanChange(before, before.replace("$('#login')", "$('button=Log in')"), 'test/specs/a.e2e.js').verdict, 'PASS');
+  assert.equal(scanChange(before, before.replace("  await $('#login').click();", "  await browser.execute(() => document.querySelector('h1').textContent = 'Hi');"), 'test/specs/a.e2e.js').verdict, 'BLOCK');
+  assert.equal(scanChange(before, before.replace("  await $('#login').click();", "  await browser.mock('**/api');\n  await $('#login').click();"), 'test/specs/a.e2e.js').verdict, 'BLOCK');
+  assert.notEqual(scanChange(before, before.replace("  await $('#login').click();", "  await browser.pause(3000);\n  await $('#login').click();"), 'test/specs/a.e2e.js').verdict, 'PASS');
+});
+
+test('WebdriverIO heal: the AI fixes the selector, proven by reruns through the WebdriverIO runner', async () => {
+  const dir = project();
+  mkdirSync(path.join(dir, 'test', 'specs'), { recursive: true });
+  const spec = "describe('Login page', () => {\n  it('should log in', async () => {\n    await browser.url('/');\n    await $('#login').click();\n    await expect($('h1')).toHaveText('Welcome');\n  });\n});\n";
+  writeFileSync(path.join(dir, 'test', 'specs', 'login.e2e.js'), spec);
+  writeFileSync(path.join(dir, 'wdio.conf.js'), 'export const config = {};\n');
+  for (const f of ['playwright.config.ts']) execFileSync('git', ['rm', '-q', f], { cwd: dir });
+  mkdirSync(path.join(dir, 'reports'));
+  writeFileSync(path.join(dir, 'reports', 'results-0-0.xml'), WDIO_XML);
+  git(dir, 'add', '-A');
+  git(dir, 'commit', '-qm', 'wdio');
+  // A stand-in for scripts/wdio-run.mjs: passes once the spec uses the new selector.
+  const runner = path.join(tmp('autoheal-wdiorun-'), 'run.mjs');
+  writeFileSync(runner, `import { readFileSync, writeFileSync } from 'node:fs';
+const [out, config, grep, ...specs] = process.argv.slice(2);
+const ok = readFileSync(specs[0], 'utf8').includes("button=Log in");
+const xml = '<testsuites><testsuite name="Login page"><properties><property name="file" value="' + specs[0] + '"/></properties>' +
+  (ok ? '<testcase name="should log in"/>' : '<testcase name="should log in"><failure message="element wasn&apos;t found"/></testcase>') + '</testsuite></testsuites>';
+writeFileSync(out + '/results.xml', xml);
+`);
+  const { WdioTools } = await import('../dist/wdio.js');
+  const tools = new WdioTools(dir, { runner });
+  const provider = new ScriptedProvider([{ calls: [{ name: 'propose_fix', input: { path: 'test/specs/login.e2e.js', content: spec.replace("$('#login')", "$('button=Log in')"), explanation: 'the button lost its id' } }] }]);
+  const s = await heal(opts(dir, tools, { report: 'reports', framework: 'webdriverio', provider, checkFlaky: false }));
+  assert.equal(s.framework, 'webdriverio');
+  const [r] = s.results;
+  assert.equal(r.failure.file, 'test/specs/login.e2e.js');
+  assert.equal(r.status, 'FIXED', r.summary);
+  assert.equal(r.fix.by, 'ai');
+  assert.match(readFileSync(path.join(dir, 'test/specs/login.e2e.js'), 'utf8'), /button=Log in/);
+});

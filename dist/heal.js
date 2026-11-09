@@ -25,6 +25,7 @@ import { ciInfo } from './ci.js';
 import { loadLearned } from './learned.js';
 import { CYPRESS_DOM_DIR, cypressPattern, cypressSelectorFor, domFor, loadCypressDoms, replaceCypressSelector } from './cypress-dom.js';
 import { CypressTools, isCypressProject } from './cypress.js';
+import { isWdioProject, WdioTools } from './wdio.js';
 import { findReport } from './report-files.js';
 import { loadMemory, memoryEntryPath, memoryText, relevantMemory, remember } from './memory.js';
 import { triage as triageFailure } from './triage.js';
@@ -299,11 +300,13 @@ export async function heal(options) {
     let traceDirs = options.traceDirs;
     const framework = options.framework && options.framework !== 'auto'
         ? options.framework
-        : (await isCypressProject(root))
-            ? 'cypress'
-            : (await isPytestProject(root))
-                ? 'pytest'
-                : 'playwright';
+        : (await isWdioProject(root))
+            ? 'webdriverio'
+            : (await isCypressProject(root))
+                ? 'cypress'
+                : (await isPytestProject(root))
+                    ? 'pytest'
+                    : 'playwright';
     summary.framework = framework;
     if (framework !== 'playwright')
         log(`Framework: ${framework}`);
@@ -319,7 +322,11 @@ export async function heal(options) {
         traceDirs = local.traceDirs;
     }
     const mcp = options.mcp ??
-        (framework === 'cypress' ? new CypressTools(root, { sandbox: options.sandbox ?? null, log }) : await McpTools.start(root, { sandbox: options.sandbox ?? null }));
+        (framework === 'cypress'
+            ? new CypressTools(root, { sandbox: options.sandbox ?? null, log })
+            : framework === 'webdriverio'
+                ? new WdioTools(root, { sandbox: options.sandbox ?? null, log })
+                : await McpTools.start(root, { sandbox: options.sandbox ?? null }));
     /** Original content of every file this job wrote, to revert on demand. */
     const originals = new Map();
     /** Binary files (screenshot baselines) this job rewrote: their original bytes. */

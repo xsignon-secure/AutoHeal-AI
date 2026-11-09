@@ -74,6 +74,8 @@ const CYPRESS = /\bcy\s*\.\s*(?:get|contains|visit|find|request|intercept)\s*\(/
 const CY_ASSERTION = /\.\s*(?:should|and)\s*\(/;
 /** Cypress commands that fake the app or its time, or change the page instead of testing it. */
 const CY_TAMPER = /\bcy\s*\.\s*(?:intercept|stub|clock|tick|window|document|server|route)\s*\(|\.\s*invoke\s*\(/;
+/** WebdriverIO commands that run code in the page, fake the network or rewrite commands. */
+const WDIO_TAMPER = /\bbrowser\s*\.\s*(?:execute|executeAsync|executeScript|mock|mockClearAll|mockRestoreAll|overwriteCommand|addCommand|throttle|throttleNetwork|emulate)\s*\(/;
 /** Hiding failures: an uncaught-exception or fail handler that swallows errors. */
 const CY_SWALLOW = /\b(?:cy|Cypress)\s*\.\s*on\s*\(\s*['"`](?:uncaught:exception|fail)['"`]/;
 /** Things a test fix never needs, and an exfiltration attempt does. */
@@ -305,6 +307,9 @@ export function scanChange(before, after, file) {
     if (count(b, CY_TAMPER) > count(a, CY_TAMPER) || count(after, CY_TAMPER) > count(before, CY_TAMPER)) {
         block('app-tampered', 'the change adds cy.intercept, cy.stub, cy.clock, cy.window or .invoke, which fake or edit the app instead of testing it');
     }
+    if (count(b, WDIO_TAMPER) > count(a, WDIO_TAMPER) || count(after, WDIO_TAMPER) > count(before, WDIO_TAMPER)) {
+        block('app-tampered', 'the change adds browser.execute, browser.mock or a command override, which fake or edit the app instead of testing it');
+    }
     if (count(b, CY_SWALLOW) > count(a, CY_SWALLOW) || count(after, CY_SWALLOW) > count(before, CY_SWALLOW))
         block('swallowed-error', "an uncaught:exception or fail handler was added, which hides the app's errors");
     if (count(b, /\bCypress\s*\.\s*config\s*\(/) > count(a, /\bCypress\s*\.\s*config\s*\(/))
@@ -320,7 +325,7 @@ export function scanChange(before, after, file) {
         warn('timeout-raised', `a timeout was raised to ${timeoutAfter} ms`);
     if (count(b, /setTimeout\s*\(|\.slow\s*\(/) > count(a, /setTimeout\s*\(|\.slow\s*\(/))
         warn('timeout-raised', 'test.setTimeout or test.slow was added');
-    const FIXED_WAIT = /waitForTimeout\s*\(|time\.sleep\s*\(|wait_for_timeout\s*\(|\bcy\s*\.\s*wait\s*\(\s*[\d_]/;
+    const FIXED_WAIT = /waitForTimeout\s*\(|time\.sleep\s*\(|wait_for_timeout\s*\(|\bcy\s*\.\s*wait\s*\(\s*[\d_]|\bbrowser\s*\.\s*pause\s*\(/;
     if (count(b, FIXED_WAIT) > count(a, FIXED_WAIT)) {
         warn('fixed-wait', 'a fixed wait (waitForTimeout / sleep / cy.wait(ms)) was added');
     }
