@@ -106,8 +106,9 @@ export function githubForge({ api, server, repo, token }) {
       const pr = await call('GET', `${r}/pulls/${number}`);
       return { number: pr.number, url: pr.html_url, state: pr.state, head: pr.head?.ref, headRepo: pr.head?.repo?.full_name, base: pr.base?.ref, sha: pr.head?.sha, body: pr.body ?? '', title: pr.title ?? '' };
     },
-    async closePr(number) {
-      await call('PATCH', `${r}/pulls/${number}`, { state: 'closed' });
+    /** Closes a PR; `body` replaces its description in the same call. */
+    async closePr(number, { body } = {}) {
+      await call('PATCH', `${r}/pulls/${number}`, typeof body === 'string' ? { state: 'closed', body: body.slice(0, 65_000) } : { state: 'closed' });
     },
     /** Open PRs into a branch, or from a branch (head is a bare branch name in this repository). */
     async listPrs({ base, head } = {}) {

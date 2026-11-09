@@ -5,7 +5,7 @@ import http from 'node:http';
 import os from 'node:os';
 import path from 'node:path';
 import { test } from 'node:test';
-import { checkBaselines, main as publishMain, parsePatch, prBranchTarget, sourceComment } from '../scripts/publish.mjs';
+import { checkBaselines, main as publishMain, noFixComment, parsePatch, prBranchTarget, sourceComment } from '../scripts/publish.mjs';
 import { checkFixCommit, parseCommand, runCommand, main as commandMain } from '../scripts/command.mjs';
 import { githubForge } from '../scripts/forge.mjs';
 import { historyOf, parseHistory, recordRun } from '../dist/history.js';
@@ -190,6 +190,12 @@ test('prBranchTarget: only an open PR branch that is not the default or a shared
   assert.equal((await prBranchTarget(forge, 'feature/x', '3')).ok, true);
   assert.match(sourceComment({ fixUrl: 'https://x/pr/2', onBranch: false, fixed: 2, label: 'pull request' }), /\/autoheal apply/);
   assert.match(sourceComment({ fixUrl: null, onBranch: true, fixed: 1, label: 'merge request' }), /pushed 1 test fix onto this branch/);
+  const none = noFixComment('## AutoHeal AI report\n\nOutcome: **unfixed**\n\n| Why | closed without merging in PR #2 @alice |', 'pull request');
+  assert.match(none, /did not open a fix pull request/);
+  assert.match(none, /closed without merging in PR #2/);
+  assert.doesNotMatch(none, /## AutoHeal AI report/);
+  assert.doesNotMatch(none, /@alice/, 'mentions are neutralized');
+  assert.equal(noFixComment(null), null);
 });
 
 async function prBranchRun({ branch, target }) {
@@ -339,7 +345,7 @@ test('/autoheal apply: cherry-picks the AutoHeal commit onto the PR branch and c
     assert.ok(calls.some((c) => c.method === 'POST' && c.url === '/repos/acme/shop/actions/workflows/e2e.yml/dispatches' && JSON.parse(c.body).ref === 'feature/x'), 'the failed tests are started on the PR branch');
     assert.match(execFileSync('git', ['show', 'feature/x:tests/login.spec.ts'], { cwd: bare, encoding: 'utf8' }), /Sign in/);
     assert.match(execFileSync('git', ['show', 'feature/x:README.md'], { cwd: bare, encoding: 'utf8' }), /hi/, 'the PR branch keeps its own commits');
-    assert.ok(calls.some((c) => c.method === 'PATCH' && c.url === '/repos/acme/shop/pulls/6' && JSON.parse(c.body).state === 'closed'));
+    assert.ok(calls.some((c) => c.method === 'PATCH' && c.url === '/repos/acme/shop/pulls/6' && JSON.parse(c.body).state === 'closed' && JSON.parse(c.body).body.endsWith('<!-- autoheal-applied -->')), 'closed as applied, so it is not learned as rejected');
     const explain = await runCommand({ cmd: 'explain', forge, number: '5', commenter: '', root: checkout, env: {} });
     assert.match(explain, /@​alice/, 'mentions in the fix PR body are neutralized');
   } finally {

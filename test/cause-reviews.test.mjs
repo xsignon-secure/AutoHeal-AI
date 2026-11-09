@@ -76,6 +76,7 @@ test('reviews: merged, edited and closed AutoHeal PRs are read; other PRs and fo
     { number: 3, body: fix('tests/c.spec.ts', 'C1', 'C2'), merged_at: null, closed_at: '2026-11-03T00:00:00Z', head: { ref: 'autoheal/3', ...own }, base: own },
     { number: 4, body: fix('tests/d.spec.ts', 'D1', 'D2'), merged_at: null, head: { ref: 'feature', ...own }, base: own },
     { number: 5, body: fix('tests/e.spec.ts', 'E1', 'E2'), merged_at: null, head: { ref: 'autoheal/5', repo: { full_name: 'evil/shop' } }, base: own },
+    { number: 6, body: `${fix('tests/f.spec.ts', 'F1', 'F2')}\n\n<!-- autoheal-applied -->`, merged_at: null, closed_at: '2026-11-04T00:00:00Z', head: { ref: 'autoheal/6', ...own }, base: own },
   ];
   const sha = (c) => c.repeat(40);
   const routes = {
@@ -92,7 +93,8 @@ test('reviews: merged, edited and closed AutoHeal PRs are read; other PRs and fo
     return { ok: !!body, status: body ? 200 : 404, json: async () => body };
   };
   const h = await reviewHistory({ repo: 'acme/shop', token: 't0k', apiUrl: 'https://api.example.test', fetchFn });
-  assert.deepEqual(h.prs, { merged: 1, edited: 1, closed: 1 });
+  assert.deepEqual(h.prs, { merged: 2, edited: 1, closed: 1 });
+  assert.equal(rejected(h, 'tests/f.spec.ts', 'F1', 'F2'), undefined, 'a fix closed by /autoheal apply was accepted, not rejected');
   assert.ok(seen.every((a) => a === 'Bearer t0k'));
   const edited = h.fixes.find((f) => f.pr === 2);
   assert.equal(edited.outcome, 'edited');

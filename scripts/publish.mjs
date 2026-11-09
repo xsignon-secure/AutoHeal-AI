@@ -605,6 +605,25 @@ export async function prBranchTarget(forge, base, pr) {
 }
 
 /** A short note on the failing PR, pointing at the fix and the chat commands. */
+/** The failing PR's comment when AutoHeal opened no fix: why, per test, from the heal report. */
+export function noFixComment(report, label = 'pull request') {
+  const text = report ? neutralize(report).replace(/^## AutoHeal AI report\n+/, '').trim() : '';
+  if (!text) return null;
+  return [
+    `**AutoHeal AI** looked at the failing tests here and did not open a fix ${label}.`,
+    '',
+    '<details><summary>Why, test by test</summary>',
+    '',
+    text.slice(0, 50_000),
+    '',
+    '</details>',
+    '',
+    'App bugs get their own issue. Comment `/autoheal retry` to heal again after a change.',
+    '',
+    '<!-- autoheal-source-comment -->',
+  ].join('\n');
+}
+
 export function sourceComment({ fixUrl, onBranch, fixed, label }) {
   const n = `${fixed} test fix${fixed === 1 ? '' : 'es'}`;
   const lines = onBranch
@@ -778,8 +797,10 @@ export async function main(env = process.env) {
     prUrl = done?.url ?? null;
     if (prUrl) summaryLine(`Fix ${forge.label}: ${prUrl}`);
     // Tell the failing PR where its fix is (or that it is already on its branch).
-    if (done && /^\d+$/.test(s.pr ?? '')) {
-      await forge.commentPr(s.pr, sourceComment({ fixUrl: done.url, onBranch: done.onBranch, fixed, label: forge.label })).catch((err) => console.log(`Could not comment on ${forge.label} ${s.pr}: ${err instanceof Error ? err.message : String(err)}`));
+    if (/^\d+$/.test(s.pr ?? '')) {
+      // Without a fix the PR still hears back, so a red check is never met with silence.
+      const text = done ? sourceComment({ fixUrl: done.url, onBranch: done.onBranch, fixed, label: forge.label }) : noFixComment(readText(dir, 'comment.md'), forge.label);
+      if (text) await forge.commentPr(s.pr, text).catch((err) => console.log(`Could not comment on ${forge.label} ${s.pr}: ${err instanceof Error ? err.message : String(err)}`));
     }
     if (s.openIssues && readPolicy(root)?.issues.enabled !== false) issues = await publishIssues(dir, forge);
   }

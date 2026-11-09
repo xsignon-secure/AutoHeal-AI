@@ -108,9 +108,12 @@ export async function reviewHistory(options: ReviewOptions): Promise<ReviewHisto
   for (const p of ours) {
     const marked = readMarker(p.body);
     if (!marked.length || typeof p.number !== 'number') continue;
-    let outcome: ReviewOutcome = p.merged_at ? 'merged' : 'closed';
+    // `/autoheal apply` copies the fix onto the PR branch and closes the fix PR
+    // with this marker: the fix was accepted, so it counts as merged.
+    const applied = !p.merged_at && typeof p.body === 'string' && p.body.includes('<!-- autoheal-applied -->');
+    let outcome: ReviewOutcome = p.merged_at || applied ? 'merged' : 'closed';
     const edits = new Map<string, string>();
-    if (outcome === 'merged') {
+    if (outcome === 'merged' && !applied) {
       const commits = (await get(`/pulls/${p.number}/commits?per_page=50`)) as Array<Record<string, any>>;
       const list = Array.isArray(commits) ? commits : [];
       const first = list.findIndex((c) => String(c?.commit?.message ?? '').startsWith('test: AutoHeal fixes'));

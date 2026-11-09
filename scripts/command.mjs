@@ -87,6 +87,8 @@ export function explainText(body, url) {
   return out.join('\n');
 }
 
+export const APPLIED_MARKER = '<!-- autoheal-applied -->';
+
 export const HELP = [
   '**AutoHeal AI commands** (maintainers only):',
   '',
@@ -169,7 +171,8 @@ export async function runCommand({ cmd, forge, number, commenter, root, env = pr
       () => ` Could not start \`${workflow}\` on it: add \`workflow_dispatch:\` to its \`on:\` list, or rerun the tests by hand.`,
     );
   }
-  await forge.closePr(fix.number);
+  // The marker tells the review learner this fix was accepted, not rejected.
+  await forge.closePr(fix.number, { body: `${String(fix.body ?? '').slice(0, 64_000)}\n\n${APPLIED_MARKER}` });
   await forge.commentPr(fix.number, `Applied to \`${source.head}\` with \`/autoheal apply\`${who}; closing this ${forge.label}.`);
   return `Applied the AutoHeal fix from ${fix.url} to \`${source.head}\`${who}.${tests}`;
 }
