@@ -316,6 +316,16 @@ function githubMock() {
   });
 }
 
+test('/autoheal explain: a short table from the fix record, no hidden markers copied', async () => {
+  const { explainText } = await import('../scripts/command.mjs');
+  const body = '<!-- autoheal-fixes:W3siZmlsZSI6InRlc3RzL2NhcnQuc3BlYy50cyIsInRlc3QiOiJjYXJ0LnNwZWMudHMg4oC6IGFkZCBhIG11ZyB0byB0aGUgY2FydCIsImJ5IjoiZmluZ2VycHJpbnQiLCJiZWZvcmUiOiJnZXRCeVRlc3RJZCgnYWRkLW11ZycpIiwiYWZ0ZXIiOiJnZXRCeVJvbGUoJ2J1dHRvbicsIHsgbmFtZTogJ0FkZCB0byBjYXJ0JyB9KSJ9LHsiZmlsZSI6InRlc3RzL2xvZ2luLnNwZWMudHMiLCJ0ZXN0IjoibG9naW4uc3BlYy50cyDigLogdXNlciBjYW4gbG9nIGluIiwiYnkiOiJmaW5nZXJwcmludCIsImJlZm9yZSI6ImdldEJ5Um9sZSgnYnV0dG9uJywgeyBuYW1lOiAnTG9nIGluJyB9KSIsImFmdGVyIjoiZ2V0QnlSb2xlKCdidXR0b24nLCB7IG5hbWU6ICdTaWduIGluJyB9KSJ9XQ== -->\n<!-- autoheal-run:eyJ1c2QiOjB9 -->\n## AutoHeal AI: 2 test fixes\n\n### Not changed in this PR\n\n- 🐞 APP_BUG `tests/pricing.spec.ts` › pro plan price: the app looks wrong.\n\nSpend: 0 tokens';
+  const out = explainText(body, 'https://gh/acme/shop/pull/2');
+  assert.match(out, /\| cart\.spec\.ts › add a mug to the cart \| `getByTestId\('add-mug'\)` → `getByRole\('button', \{ name: 'Add to cart' \}\)` \| saved fingerprint, no AI \|/);
+  assert.match(out, /user can log in/);
+  assert.match(out, /Left alone on purpose:[\s\S]*pro plan price/);
+  assert.doesNotMatch(out, /<!--/);
+});
+
 test('/autoheal apply: cherry-picks the AutoHeal commit onto the PR branch and closes the fix PR', async () => {
   const { bare, checkout } = commandRepo();
   const { server, calls, url } = await githubMock();

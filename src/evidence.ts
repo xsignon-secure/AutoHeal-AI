@@ -37,7 +37,8 @@ const BADGE: Record<string, string> = {
   UNFIXED: '⚠️ UNFIXED',
 };
 
-function money(usd: number, priced: boolean): string {
+function money(usd: number, priced: boolean, tokens = 1): string {
+  if (!tokens) return '$0';
   return priced ? `$${usd.toFixed(4)}` : 'not priced (set AUTOHEAL_PRICE_IN/OUT)';
 }
 
@@ -62,9 +63,17 @@ const FIX_BY: Record<string, string> = {
 /** Groups fixes by the UI change behind them: one change that broke several tests. */
 export function uiChanges(results: FailureResult[]): string[] {
   const groups = new Map<string, { label: string; tests: string[] }>();
+  // One commit can hold several UI changes, so the key is the change itself:
+  // the same locator change, or a fix reused from another test (sameAs).
+  const keyOf = new Map<string, string>();
+  for (const r of results) {
+    if (r.status !== 'FIXED' || !r.fix || r.fix.sameAs) continue;
+    const l = r.fix.locators?.[0];
+    keyOf.set(r.failure.title, l ? `${l.before}\n${l.after}` : r.failure.title);
+  }
   for (const r of results) {
     if (r.status !== 'FIXED' || !r.fix) continue;
-    const root = r.cause?.commit ?? r.fix.sameAs ?? r.failure.title;
+    const root = (r.fix.sameAs ? keyOf.get(r.fix.sameAs) : undefined) ?? keyOf.get(r.failure.title) ?? r.failure.title;
     const g = groups.get(root) ?? { label: '', tests: [] };
     g.tests.push(r.failure.title);
     if (!r.fix.sameAs) {
@@ -123,7 +132,7 @@ function resultBlock(r: FailureResult): string {
   if (r.cause) out.push(`| Likely cause | ${causeText(r.cause, repoUrl())} |`);
   if (r.quarantine) out.push(`| Quarantine | ${r.quarantine.days} days, then it counts again |`);
   if (r.failure.screenshot && r.spend.steps > 0) out.push(`| Visual grounding | the AI saw the page at the moment of failure (${r.failure.screenshot === 'attachment' ? 'Playwright failure screenshot' : 'trace frame'}) |`);
-  out.push(`| AI spend | ${r.spend.inputTokens + r.spend.outputTokens} tokens · ${money(r.spend.usd, r.spend.priced)} |`);
+  out.push(`| AI spend | ${r.spend.inputTokens + r.spend.outputTokens} tokens · ${money(r.spend.usd, r.spend.priced, r.spend.inputTokens + r.spend.outputTokens)} |`);
   out.push('');
   const marker = evidenceMarkers.get(r);
   if (marker) out.push(marker, '');
@@ -147,7 +156,7 @@ function resultBlock(r: FailureResult): string {
 }
 
 function totals(summary: HealSummary): string {
-  const lines = [`Spend: ${summary.spend.inputTokens + summary.spend.outputTokens} tokens · ${money(summary.spend.usd, summary.spend.priced)} · model \`${summary.model}\``];
+  const lines = [`Spend: ${summary.spend.inputTokens + summary.spend.outputTokens} tokens · ${money(summary.spend.usd, summary.spend.priced, summary.spend.inputTokens + summary.spend.outputTokens)} · model \`${summary.model}\``];
   if (summary.sandbox) lines.push(`Sandbox: ${summary.sandbox.replace(/[\r\n]+/g, ' ')}`);
   if (summary.policy) lines.push(summary.policy.replace(/[\r\n]+/g, ' '));
   if (summary.app) lines.push(`Live app: ${summary.app.replace(/[\r\n]+/g, ' ')}`);

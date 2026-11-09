@@ -41,6 +41,46 @@ export function parseCommand(body) {
   return COMMANDS.includes(cmd) ? cmd : 'unknown';
 }
 
+const BY = { rules: 'rule', fingerprint: 'saved fingerprint, no AI', 'same-change': 'same UI change, no AI', baseline: 'new screenshot baseline', ai: 'AI agent' };
+
+/**
+ * `/autoheal explain`: a short answer built from the fix PR's own record (the
+ * autoheal-fixes marker and its sections), never its hidden markers, so the
+ * reply stays readable and no metrics marker is copied into a comment.
+ */
+export function explainText(body, url) {
+  const text = String(body);
+  const code = (v) => `\`${neutralize(String(v ?? '')).replace(/`/g, "'").slice(0, 200)}\``;
+  let fixes = [];
+  const m = /<!-- autoheal-fixes:([A-Za-z0-9+/=]{1,40000}) -->/.exec(text);
+  if (m) {
+    try {
+      const parsed = JSON.parse(Buffer.from(m[1], 'base64').toString('utf8'));
+      if (Array.isArray(parsed)) fixes = parsed.slice(0, 20);
+    } catch {
+      fixes = [];
+    }
+  }
+  const out = [`**What AutoHeal changed** in ${url}`, ''];
+  if (fixes.length) {
+    out.push('| Test | Change | How |', '|---|---|---|');
+    for (const f of fixes) {
+      const change = f.before && f.after ? `${code(f.before)} → ${code(f.after)}` : `edited ${code(f.file)}`;
+      out.push(`| ${neutralize(String(f.test ?? f.file ?? '')).replace(/\|/g, '/').slice(0, 200)} | ${change} | ${BY[f.by] ?? neutralize(String(f.by ?? 'fix'))} |`);
+    }
+    out.push('');
+  } else {
+    // An older fix PR without the record: its own text, without hidden markers.
+    const prose = neutralize(text.replace(/<!--[\s\S]*?-->/g, '')).trim().slice(0, 20_000);
+    if (prose) out.push('<details><summary>Fix details</summary>', '', prose, '', '</details>', '');
+  }
+  out.push('Each fix was triaged as a test problem (not an app bug), passed the anti-cheat checks, and passed every stability rerun before the PR was opened.');
+  const kept = /### Not changed in this PR\n+([\s\S]*?)(?:\n\n[A-Z]|\n###|$)/.exec(text)?.[1]?.trim();
+  if (kept) out.push('', '**Left alone on purpose:**', '', neutralize(kept).slice(0, 3000));
+  out.push('', `Screenshots, the diff and the proof for each fix are in ${url}.`);
+  return out.join('\n');
+}
+
 export const HELP = [
   '**AutoHeal AI commands** (maintainers only):',
   '',
@@ -87,8 +127,7 @@ export async function runCommand({ cmd, forge, number, commenter, root, env = pr
   }
   if (!fix) return `No open AutoHeal fix ${forge.label} found for this ${here === 'fix' ? 'fix' : forge.label}.`;
   if (cmd === 'explain') {
-    const body = neutralize(fix.body || '').slice(0, 30_000);
-    return [`**What AutoHeal changed** in ${fix.url}:`, '', '<details><summary>Fix details</summary>', '', body, '', '</details>'].join('\n');
+    return explainText(fix.body || '', fix.url);
   }
   if (cmd === 'ignore') {
     await forge.closePr(fix.number);

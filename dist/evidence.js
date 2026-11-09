@@ -29,7 +29,9 @@ const BADGE = {
     ENV: '🧰 ENV',
     UNFIXED: '⚠️ UNFIXED',
 };
-function money(usd, priced) {
+function money(usd, priced, tokens = 1) {
+    if (!tokens)
+        return '$0';
     return priced ? `$${usd.toFixed(4)}` : 'not priced (set AUTOHEAL_PRICE_IN/OUT)';
 }
 function fence(text, lang = '') {
@@ -50,10 +52,19 @@ const FIX_BY = {
 /** Groups fixes by the UI change behind them: one change that broke several tests. */
 export function uiChanges(results) {
     const groups = new Map();
+    // One commit can hold several UI changes, so the key is the change itself:
+    // the same locator change, or a fix reused from another test (sameAs).
+    const keyOf = new Map();
+    for (const r of results) {
+        if (r.status !== 'FIXED' || !r.fix || r.fix.sameAs)
+            continue;
+        const l = r.fix.locators?.[0];
+        keyOf.set(r.failure.title, l ? `${l.before}\n${l.after}` : r.failure.title);
+    }
     for (const r of results) {
         if (r.status !== 'FIXED' || !r.fix)
             continue;
-        const root = r.cause?.commit ?? r.fix.sameAs ?? r.failure.title;
+        const root = (r.fix.sameAs ? keyOf.get(r.fix.sameAs) : undefined) ?? keyOf.get(r.failure.title) ?? r.failure.title;
         const g = groups.get(root) ?? { label: '', tests: [] };
         g.tests.push(r.failure.title);
         if (!r.fix.sameAs) {
@@ -125,7 +136,7 @@ function resultBlock(r) {
         out.push(`| Quarantine | ${r.quarantine.days} days, then it counts again |`);
     if (r.failure.screenshot && r.spend.steps > 0)
         out.push(`| Visual grounding | the AI saw the page at the moment of failure (${r.failure.screenshot === 'attachment' ? 'Playwright failure screenshot' : 'trace frame'}) |`);
-    out.push(`| AI spend | ${r.spend.inputTokens + r.spend.outputTokens} tokens · ${money(r.spend.usd, r.spend.priced)} |`);
+    out.push(`| AI spend | ${r.spend.inputTokens + r.spend.outputTokens} tokens · ${money(r.spend.usd, r.spend.priced, r.spend.inputTokens + r.spend.outputTokens)} |`);
     out.push('');
     const marker = evidenceMarkers.get(r);
     if (marker)
@@ -151,7 +162,7 @@ function resultBlock(r) {
     return out.join('\n');
 }
 function totals(summary) {
-    const lines = [`Spend: ${summary.spend.inputTokens + summary.spend.outputTokens} tokens · ${money(summary.spend.usd, summary.spend.priced)} · model \`${summary.model}\``];
+    const lines = [`Spend: ${summary.spend.inputTokens + summary.spend.outputTokens} tokens · ${money(summary.spend.usd, summary.spend.priced, summary.spend.inputTokens + summary.spend.outputTokens)} · model \`${summary.model}\``];
     if (summary.sandbox)
         lines.push(`Sandbox: ${summary.sandbox.replace(/[\r\n]+/g, ' ')}`);
     if (summary.policy)

@@ -211,6 +211,17 @@ test('one UI change, one fix: the PR groups the tests one change fixed', () => {
   assert.deepEqual(events.map((e) => e.fix_by), ['rules', 'rules']);
 });
 
+test('one UI change, one fix: two different changes in one commit are not grouped', () => {
+  const base = { category: 'TEST_BUG', rootCause: 'LOCATOR_DRIFT', confidence: 0.9, reasons: [], spend: { steps: 0, inputTokens: 0, outputTokens: 0, usd: 0, priced: true }, status: 'FIXED', summary: '' };
+  const cause = { commit: 'f3085e6', short: 'f3085e6', subject: 'Shop redesign', files: ['app/server.mjs'], evidence: '', author: 'Dev', date: '2026-11-09' };
+  const loc = (before, after) => [{ before, after, from: 'strong', to: 'strong', direction: 0 }];
+  const results = [
+    { ...base, cause, failure: { index: 1, file: 'cart.spec.ts', title: 'add a mug', kind: 'timeout', message: '' }, fix: { by: 'fingerprint', file: 'tests/cart.spec.ts', explanation: '', diff: '', locators: loc("getByTestId('add-mug')", "getByRole('button', { name: 'Add to cart' })") } },
+    { ...base, cause, failure: { index: 2, file: 'login.spec.ts', title: 'user can log in', kind: 'timeout', message: '' }, fix: { by: 'fingerprint', file: 'tests/login.spec.ts', explanation: '', diff: '', locators: loc("getByRole('button', { name: 'Log in' })", "getByRole('button', { name: 'Sign in' })") } },
+  ];
+  assert.deepEqual(uiChanges(results), []);
+});
+
 test('runtime guard: newer traces mark the snapshot phase in "phase", and the page check reads it', () => {
   const entries = new Map([
     ['test.trace', enc([{ type: 'before', stepId: 's1', method: 'pw:api', title: 'Click', params: {} }])],
