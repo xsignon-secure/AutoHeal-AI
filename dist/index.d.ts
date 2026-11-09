@@ -2,7 +2,7 @@ export { heal, outcomeOf, isPytestProject, failureGroup, healedFolders, isVisual
 export { withAutoHeal, loadHealed, runtimeMode, healOnPage, HEALED_DIR, type HealedEntry, type AutoHealOptions, type RuntimeMode } from './runtime-heal.js';
 export { triage, type Triage, type TriageInput, type Category, type RootCause } from './triage.js';
 export { checkAllowlist, tokenizeJs, tokenizePy } from './allowlist.js';
-export { scanChange, stripComments, type CheatReport, type CheatFinding, type Verdict } from './cheat.js';
+export { scanChange, scanNewTest, stripComments, type CheatReport, type CheatFinding, type Verdict } from './cheat.js';
 export { aiFix, aiTriage, safePath, relativeImports, estimateTokens, openingParts, SYSTEM_PROMPT } from './agent.js';
 export { chooseSandbox, sandboxMode, wrapCommand, type Sandbox, type SandboxChoice, type SandboxMode } from './sandbox.js';
 export { recordFromTrace, recordFromFile, compareRuns, findTrace, type RunRecord, type RunStep, type RuntimeFinding } from './runtime.js';
@@ -34,3 +34,5 @@ export { screenshotFile } from './vision.js';
 export { fetchHistory, parseHistory, recordRun, historyOf, HISTORY_ARTIFACT, type History } from './history.js';
 export { WdioTools, isWdioProject, parseWdioJunit, parseWdioJson, parseWdioReport, wdioKind, wdioFailure } from './wdio.js';
 export { WDIO_PROMPT } from './agent.js';
+export { cover, coverFile, type CoverOptions, type CoverResult } from './cover.js';
+export { serveMcp, TOOLS as MCP_TOOLS } from './mcp-server.js';

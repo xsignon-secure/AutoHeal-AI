@@ -340,4 +340,50 @@ export function scanChange(before, after, file) {
     const verdict = findings.some((f) => f.severity === 'BLOCK') ? 'BLOCK' : findings.length ? 'WARN' : 'PASS';
     return { verdict, findings };
 }
+/**
+ * The guard for a NEW test (`autoheal cover`): there is no "before" to
+ * compare with, so the test itself must be honest. It must declare a test,
+ * make real assertions that can fail, drive the app (an action or a page
+ * load), and use none of the ways to fake a pass: no skips, no faked network
+ * or page, no fixed waits, no forced clicks, no swallowed errors, no
+ * environment, process, file or network access, and no URL outside the app.
+ */
+export function scanNewTest(content, file, appOrigin) {
+    const findings = [];
+    const block = (rule, message) => findings.push({ severity: 'BLOCK', rule, message });
+    const code = stripComments(content);
+    const n = (re) => count(code, re);
+    if (!n(TEST_DECL))
+        block('no-test', 'the file declares no test');
+    const assertions = n(new RegExp(ASSERTION.source, 'g')) + n(new RegExp(CY_ASSERTION.source, 'g'));
+    if (!assertions)
+        block('no-assertion', 'the test makes no assertion, so it cannot fail');
+    if (n(TRIVIAL))
+        block('trivial-assertion', 'an assertion that cannot fail');
+    if (!n(ACTION) && !/\.(?:goto|visit|url)\s*\(/.test(code))
+        block('no-action', 'the test never opens a page or acts on it');
+    if (n(SKIP) || n(COMPUTED_TEST))
+        block('skipped', 'the test is skipped, focused or marked to fail');
+    if (n(TAMPER) || n(CY_TAMPER) || n(WDIO_TAMPER))
+        block('app-tampered', 'the test fakes network answers, injects scripts or edits the page');
+    if (n(CY_SWALLOW) || /catch\s*(\(\s*\w*\s*\))?\s*\{\s*\}/.test(code) || /\.catch\s*\(\s*\(\s*\)\s*=>/.test(code))
+        block('swallowed-error', 'errors are swallowed');
+    if (/waitForTimeout\s*\(|time\.sleep\s*\(|wait_for_timeout\s*\(|\bcy\s*\.\s*wait\s*\(\s*[\d_]|\bbrowser\s*\.\s*pause\s*\(/.test(code))
+        block('fixed-wait', 'a fixed wait; wait for the real condition instead');
+    if (/force\s*[:=]\s*(true|True)/.test(code))
+        block('force-action', 'force: true skips the checks a user would hit');
+    if (/retries\s*[:=]\s*[1-9]|\.slow\s*\(|setTimeout\s*\(/.test(code))
+        block('retries-added', 'retries or longer timeouts');
+    for (const [pattern, what] of ESCAPE)
+        if (pattern.test(code))
+            block('unsafe-code', `the test ${what}`);
+    for (const m of code.matchAll(URL_LITERAL)) {
+        const url = m[0].slice(1, -1).trim();
+        if (!appOrigin || !url.startsWith(appOrigin))
+            block('foreign-url', `the test names a URL outside the app (${url.slice(0, 80)}); use paths such as '/login'`);
+    }
+    void file;
+    const verdict = findings.length ? 'BLOCK' : 'PASS';
+    return { verdict, findings };
+}
 //# sourceMappingURL=cheat.js.map

@@ -595,3 +595,93 @@ writeFileSync(out + '/results.xml', xml);
   assert.equal(r.fix.by, 'ai');
   assert.match(readFileSync(path.join(dir, 'test/specs/login.e2e.js'), 'utf8'), /button=Log in/);
 });
+
+// ---------- autoheal cover ----------
+
+import { cover, coverFile } from '../dist/cover.js';
+import { scanNewTest, Budget } from '../dist/index.js';
+import { handle as mcpHandle, TOOLS as MCP_TOOLS } from '../dist/mcp-server.js';
+
+const GOOD_NEW = "import { test, expect } from '@playwright/test';\n\ntest('checkout', async ({ page }) => {\n  await page.goto('/cart');\n  await page.getByRole('button', { name: 'Check out' }).click();\n  await expect(page.getByRole('heading')).toHaveText('Thank you');\n});\n";
+
+test('new-test guard: real assertions and actions, no fakes', () => {
+  assert.equal(scanNewTest(GOOD_NEW, 'tests/a.spec.ts', 'http://127.0.0.1:3000').verdict, 'PASS');
+  const rule = (src) => scanNewTest(src, 'tests/a.spec.ts', 'http://127.0.0.1:3000').findings.map((f) => f.rule);
+  assert.ok(rule(GOOD_NEW.replace(/  await expect[^\n]+\n/, '')).includes('no-assertion'));
+  assert.ok(rule(GOOD_NEW.replace("toHaveText('Thank you')", "toBeVisible();\n  expect(true).toBe(true)")).includes('trivial-assertion'));
+  assert.ok(rule(GOOD_NEW.replace("test('checkout'", "test.skip('checkout'")).includes('skipped'));
+  assert.ok(rule(GOOD_NEW.replace("  await page.goto('/cart');", "  await page.route('**/api', (r) => r.fulfill({ body: '{}' }));\n  await page.goto('/cart');")).includes('app-tampered'));
+  assert.ok(rule(GOOD_NEW.replace("page.goto('/cart')", "page.goto('https://evil.example/cart')")).includes('foreign-url'));
+  assert.equal(scanNewTest(GOOD_NEW.replace("page.goto('/cart')", "page.goto('http://127.0.0.1:3000/cart')"), 'tests/a.spec.ts', 'http://127.0.0.1:3000').verdict, 'PASS');
+  assert.ok(rule(GOOD_NEW.replace("  await page.goto('/cart');", "  await page.waitForTimeout(500);\n  await page.goto('/cart');")).includes('fixed-wait'));
+  assert.ok(rule(GOOD_NEW.replace("  await page.goto('/cart');", "  console.log(process.env.SECRET);\n  await page.goto('/cart');")).includes('unsafe-code'));
+  assert.equal(coverFile('A shopper adds 2 items & checks out!'), 'tests/autoheal-a-shopper-adds-2-items-checks.spec.ts');
+  assert.equal(coverFile('log in', 'pytest'), 'tests/test_autoheal_log_in.py');
+});
+
+function coverEngine(dir, { passes = true } = {}) {
+  const calls = [];
+  return {
+    calls,
+    async close() {},
+    async call(name, args) {
+      calls.push({ name, args });
+      if (name === 'inspect-page') return { ok: true, isError: false, text: "button: getByRole('button', { name: 'Check out' })", data: {} };
+      if (name === 'run-test') {
+        const repeat = Number((args.args ?? []).find((a) => a.startsWith('--repeat-each='))?.split('=')[1] ?? 1);
+        return passes ? { ok: true, isError: false, text: 'ok', data: { run: { passed: repeat, failed: 0, flaky: 0 } } } : { ok: false, isError: false, text: 'boom', data: { run: { passed: 0, failed: 1 } } };
+      }
+      return { ok: true, isError: false, text: '', data: {} };
+    },
+  };
+}
+
+test('autoheal cover: a guarded, proven new test is kept; a cheat is rejected first', async () => {
+  const dir = project();
+  const provider = new ScriptedProvider([
+    { calls: [{ name: 'inspect_page', input: { url: '/cart' } }] },
+    { calls: [{ name: 'write_test', input: { content: GOOD_NEW.replace(/  await expect[^\n]+\n/, ''), explanation: 'no assertion' } }] },
+    { calls: [{ name: 'write_test', input: { content: GOOD_NEW, explanation: 'covers checkout' } }] },
+  ]);
+  const engine = coverEngine(dir);
+  const r = await cover({ projectRoot: dir, flow: 'checkout', appUrl: 'http://127.0.0.1:3000', provider, budget: new Budget({ maxSteps: 20, maxTokens: 1e6, maxUsd: 1 }, null), mcp: engine, runs: 5 });
+  assert.equal(r.status, 'written', r.explanation);
+  assert.equal(r.attempts, 2);
+  assert.equal(readFileSync(path.join(dir, r.file), 'utf8'), GOOD_NEW);
+  assert.ok(engine.calls.some((c) => c.name === 'run-test' && c.args.args.includes('--repeat-each=5')));
+  assert.ok(engine.calls.some((c) => c.name === 'inspect-page' && c.args.url === 'http://127.0.0.1:3000/cart'));
+});
+
+test('autoheal cover: a test that fails a run is removed', async () => {
+  const dir = project();
+  const provider = new ScriptedProvider([
+    { calls: [{ name: 'write_test', input: { content: GOOD_NEW, explanation: 'x' } }] },
+    { calls: [{ name: 'give_up', input: { reason: 'the app has no checkout' } }] },
+  ]);
+  const r = await cover({ projectRoot: dir, flow: 'checkout', provider, budget: new Budget({ maxSteps: 20, maxTokens: 1e6, maxUsd: 1 }, null), mcp: coverEngine(dir, { passes: false }) });
+  assert.equal(r.status, 'gave-up');
+  assert.throws(() => readFileSync(path.join(dir, r.file)), /ENOENT/);
+});
+
+// ---------- autoheal mcp ----------
+
+test('MCP server: initialize, tools/list, tools/call with safe arguments', async () => {
+  const ran = [];
+  const opts = { projectRoot: '/tmp/x', run: async (args) => (ran.push(args), { code: 0, output: 'done' }) };
+  const init = await mcpHandle({ jsonrpc: '2.0', id: 1, method: 'initialize', params: { protocolVersion: '2025-11-25' } }, opts);
+  assert.equal(init.result.protocolVersion, '2025-11-25');
+  assert.equal(init.result.serverInfo.name, 'autoheal');
+  assert.equal(await mcpHandle({ jsonrpc: '2.0', method: 'notifications/initialized' }, opts), null);
+  const list = await mcpHandle({ jsonrpc: '2.0', id: 2, method: 'tools/list' }, opts);
+  assert.deepEqual(list.result.tools.map((t) => t.name), ['autoheal_fix', 'autoheal_cover', 'autoheal_doctor', 'autoheal_learn']);
+  assert.equal(list.result.tools.find((t) => t.name === 'autoheal_doctor').annotations.readOnlyHint, true);
+  const call = await mcpHandle({ jsonrpc: '2.0', id: 3, method: 'tools/call', params: { name: 'autoheal_cover', arguments: { flow: 'log in', url: 'http://localhost:3000', runs: 3 } } }, opts);
+  assert.equal(call.result.isError, false);
+  assert.deepEqual(ran[0], ['cover', '--flow', 'log in', '--url', 'http://localhost:3000', '--runs', '3']);
+  const flagInjection = await mcpHandle({ jsonrpc: '2.0', id: 4, method: 'tools/call', params: { name: 'autoheal_cover', arguments: { flow: '--help' } } }, opts);
+  assert.equal(flagInjection.result.isError, true);
+  await mcpHandle({ jsonrpc: '2.0', id: 5, method: 'tools/call', params: { name: 'autoheal_fix', arguments: { report: '--evil', maxUsd: 999, allowDirty: true } } }, opts);
+  assert.deepEqual(ran[1], ['fix', '--allow-dirty']);
+  assert.equal((await mcpHandle({ jsonrpc: '2.0', id: 6, method: 'nope' }, opts)).error.code, -32601);
+  assert.equal(MCP_TOOLS.length, 4);
+});

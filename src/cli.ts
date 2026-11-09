@@ -16,7 +16,11 @@ import { priceFor } from './budget.js';
 import { ConfigError, providerFromEnv } from './providers/index.js';
 import { redactDeep } from './redact.js';
 import { fetchHistory, HISTORY_FILE, recordRun } from './history.js';
-import { isWdioProject } from './wdio.js';
+import { isWdioProject, WdioTools } from './wdio.js';
+import { cover } from './cover.js';
+import { Budget } from './budget.js';
+import { McpTools } from './mcp.js';
+import { CypressTools } from './cypress.js';
 import { findReport } from './report-files.js';
 import type { HealSummary, Mode } from './types.js';
 import { eventsFrom, uploadEvents } from './upload.js';
@@ -50,6 +54,11 @@ Start here:
   autoheal learn [--out .autoheal-learned] [--traces <dir>]
                          run the tests once with traces on and save element
                          fingerprints, so a broken locator is fixed without AI
+  autoheal cover --flow "<what a user does>" [--url <app> | --start-command <cmd> --start-url <url>]
+                 [--file <path>] [--runs 5] [--max-usd 1]
+                         write a NEW test for a flow with no test yet; kept only if it
+                         makes real assertions and passes every run (needs an AI key)
+  autoheal mcp           run AutoHeal as an MCP server (stdio) for AI coding agents
 
 In CI (the templates call these):
   autoheal heal --report <path|run URL> [options]
@@ -670,6 +679,81 @@ async function cmdDashboard(argv: string[]): Promise<number> {
   return await new Promise<number>(() => undefined);
 }
 
+/** Writes a new, proven test for a flow that has none (needs an AI key; runs on your machine). */
+async function cmdCover(argv: string[]): Promise<number> {
+  const { values } = parseArgs({
+    args: argv,
+    options: {
+      flow: { type: 'string' },
+      file: { type: 'string' },
+      url: { type: 'string' },
+      'start-command': { type: 'string' },
+      'start-url': { type: 'string' },
+      runs: { type: 'string' },
+      'max-usd': { type: 'string' },
+      project: { type: 'string' },
+      framework: { type: 'string' },
+    },
+    strict: true,
+  });
+  const log = (line: string) => process.stderr.write(`[autoheal] ${line}\n`);
+  const env = process.env;
+  const flow = (values.flow ?? '').trim();
+  if (!flow || flow.length > 2000) throw new ConfigError('--flow is required: describe the user flow in plain words (at most 2000 characters).');
+  const projectRoot = path.resolve(values.project ?? '.');
+  const framework = await detectFramework(projectRoot, values.framework);
+  const provider = providerFromEnv(env);
+  if (!provider) throw new ConfigError('autoheal cover needs an AI key: set ANTHROPIC_API_KEY, OPENAI_API_KEY or AUTOHEAL_BASE_URL.');
+  const maxUsd = Number(values['max-usd'] ?? env.AUTOHEAL_MAX_USD ?? 1);
+  if (!Number.isFinite(maxUsd) || maxUsd <= 0) throw new ConfigError('--max-usd must be a positive number.');
+  const runs = Number(values.runs ?? 5);
+  if (!Number.isInteger(runs) || runs < 2 || runs > 20) throw new ConfigError('--runs must be a whole number from 2 to 20.');
+  let app: StartedApp | null = null;
+  let appUrl = values.url;
+  if (values['start-command']) {
+    const url = values['start-url'] ?? values.url;
+    if (!url) throw new ConfigError('--start-command needs --start-url: the address to wait for.');
+    app = await startApp({ command: values['start-command'], url, cwd: projectRoot, sandbox: null, log });
+    appUrl = app.url;
+  }
+  if (appUrl) checkAppUrl(appUrl);
+  const mcp =
+    framework === 'cypress' ? new CypressTools(projectRoot, { log }) : framework === 'webdriverio' ? new WdioTools(projectRoot, { log }) : await McpTools.start(projectRoot);
+  try {
+    log(`Writing a ${framework} test for: ${flow}`);
+    const result = await cover({
+      projectRoot,
+      flow,
+      ...(values.file ? { file: values.file } : {}),
+      ...(appUrl ? { appUrl } : {}),
+      provider,
+      budget: new Budget({ maxUsd, maxTokens: 2_000_000, maxSteps: 40 }, priceFor(provider.model, env)),
+      mcp,
+      framework,
+      runs,
+      log,
+    });
+    if (result.status === 'written') {
+      log(`Wrote ${result.file}: ${result.explanation}`);
+      log(`It passed ${result.runs} runs in a row and the new-test guard. Review it, then commit it.`);
+      return 0;
+    }
+    log(`No test written (${result.status}): ${result.explanation}${result.findings?.length ? ` [${result.findings.join('; ')}]` : ''}`);
+    return 1;
+  } finally {
+    await mcp.close();
+    await app?.stop().catch(() => undefined);
+  }
+}
+
+/** AutoHeal as an MCP server on stdio, for AI coding agents. */
+async function cmdMcp(argv: string[]): Promise<number> {
+  const { values } = parseArgs({ args: argv, options: { project: { type: 'string' } }, strict: true });
+  const { serveMcp } = await import('./mcp-server.js');
+  await serveMcp({ projectRoot: path.resolve(values.project ?? '.') });
+  return 0;
+}
+
 export async function main(argv: string[]): Promise<number> {
   const [command, ...rest] = argv;
   try {
@@ -686,6 +770,8 @@ export async function main(argv: string[]): Promise<number> {
     if (command === 'doctor') return await cmdDoctor(rest);
     if (command === 'fix') return await cmdFix(rest);
     if (command === 'learn') return await cmdLearn(rest);
+    if (command === 'cover') return await cmdCover(rest);
+    if (command === 'mcp') return await cmdMcp(rest);
     if (command === 'package') return await cmdPackage(rest);
     if (command === 'publish') return await cmdPublish(rest);
     if (command === 'upload') return await cmdUpload(rest);

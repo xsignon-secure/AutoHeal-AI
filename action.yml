@@ -1,5 +1,5 @@
 name: AutoHeal AI
-description: Free, self-hosted AI agent that fixes failing Playwright and Cypress tests in your own GitHub Actions, with your own AI key.
+description: Free self-hosted AI agent that heals failing Playwright, pytest, Cypress and WebdriverIO tests without weakening them.
 author: xsignon-secure
 branding:
   icon: activity

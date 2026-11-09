@@ -2,7 +2,7 @@ export { heal, outcomeOf, isPytestProject, failureGroup, healedFolders, isVisual
 export { withAutoHeal, loadHealed, runtimeMode, healOnPage, HEALED_DIR } from './runtime-heal.js';
 export { triage } from './triage.js';
 export { checkAllowlist, tokenizeJs, tokenizePy } from './allowlist.js';
-export { scanChange, stripComments } from './cheat.js';
+export { scanChange, scanNewTest, stripComments } from './cheat.js';
 export { aiFix, aiTriage, safePath, relativeImports, estimateTokens, openingParts, SYSTEM_PROMPT } from './agent.js';
 export { chooseSandbox, sandboxMode, wrapCommand } from './sandbox.js';
 export { recordFromTrace, recordFromFile, compareRuns, findTrace } from './runtime.js';
@@ -33,4 +33,6 @@ export { screenshotFile } from './vision.js';
 export { fetchHistory, parseHistory, recordRun, historyOf, HISTORY_ARTIFACT } from './history.js';
 export { WdioTools, isWdioProject, parseWdioJunit, parseWdioJson, parseWdioReport, wdioKind, wdioFailure } from './wdio.js';
 export { WDIO_PROMPT } from './agent.js';
+export { cover, coverFile } from './cover.js';
+export { serveMcp, TOOLS as MCP_TOOLS } from './mcp-server.js';
 //# sourceMappingURL=index.js.map

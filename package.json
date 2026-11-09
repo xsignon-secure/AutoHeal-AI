@@ -64,7 +64,8 @@
     "LICENSE",
     "SECURITY.md",
     "CHANGELOG.md",
-    "playwright"
+    "playwright",
+    "skills"
   ],
   "engines": {
     "node": ">=22.13"
