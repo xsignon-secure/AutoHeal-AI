@@ -55,6 +55,7 @@ const FIX_BY: Record<string, string> = {
   rules: 'deterministic, no AI tokens',
   fingerprint: 'element fingerprint, no AI tokens',
   'same-change': 'same UI change as another test, no AI tokens',
+  baseline: 'screenshot baseline updated after an intended UI change, no AI tokens',
   ai: 'AI agent',
 };
 
@@ -110,6 +111,15 @@ function resultBlock(r: FailureResult): string {
       evidenceMarkers.set(r, marker);
     }
   } else if (r.runtime?.note) out.push(`| Runtime guard | ${cell(r.runtime.note)} |`);
+  if (r.visual) {
+    const why = r.visual.commits.length ? `app changes since the baseline: ${r.visual.commits.slice(0, 3).map((c) => `\`${cell(c)}\``).join(', ')}` : 'no app change since the baseline explains it';
+    out.push(`| Visual check | ${r.visual.intended ? 'intended UI change' : 'unexplained visual difference'} (${why}) |`);
+    if (r.visual.baselines.length) out.push(`| Baselines updated | ${r.visual.baselines.map((b) => `\`${cell(b)}\``).join(', ')} |`);
+    const ev = r.visual.evidence;
+    if (ev && (ev.before || ev.after) && !evidenceMarkers.has(r)) {
+      evidenceMarkers.set(r, `<!-- autoheal-evidence${ev.before && /^[\w.-]{1,40}$/.test(ev.before) ? ` before="${ev.before}"` : ''}${ev.after && /^[\w.-]{1,40}$/.test(ev.after) ? ` after="${ev.after}"` : ''} -->`);
+    }
+  }
   if (r.cause) out.push(`| Likely cause | ${causeText(r.cause, repoUrl())} |`);
   if (r.quarantine) out.push(`| Quarantine | ${r.quarantine.days} days, then it counts again |`);
   if (r.failure.screenshot && r.spend.steps > 0) out.push(`| Visual grounding | the AI saw the page at the moment of failure (${r.failure.screenshot === 'attachment' ? 'Playwright failure screenshot' : 'trace frame'}) |`);

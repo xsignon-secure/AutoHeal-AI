@@ -19,7 +19,7 @@ import { closeSync, constants, fstatSync, openSync, readSync } from 'node:fs';
 import path from 'node:path';
 export const POLICY_FILE = '.autoheal.yml';
 const MAX_BYTES = 20_000;
-export const FIX_SOURCES = ['rules', 'fingerprint', 'same-change', 'ai'];
+export const FIX_SOURCES = ['rules', 'fingerprint', 'same-change', 'ai', 'baseline'];
 const STRENGTHS = ['strong', 'good', 'fair', 'weak'];
 export class PolicyError extends Error {
 }

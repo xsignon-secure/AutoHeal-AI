@@ -1,4 +1,4 @@
-export { heal, outcomeOf, isPytestProject, failureGroup, healedFolders, type HealOptions } from './heal.js';
+export { heal, outcomeOf, isPytestProject, failureGroup, healedFolders, isVisualFailure, visualIntent, type HealOptions } from './heal.js';
 export { withAutoHeal, loadHealed, runtimeMode, healOnPage, HEALED_DIR, type HealedEntry, type AutoHealOptions, type RuntimeMode } from './runtime-heal.js';
 export { triage, type Triage, type TriageInput, type Category, type RootCause } from './triage.js';
 export { checkAllowlist, tokenizeJs, tokenizePy } from './allowlist.js';
@@ -31,3 +31,4 @@ export { loadPolicy, parsePolicyYaml, readPolicy, type Policy } from './policy.j
 export { CypressTools, isCypressProject, frameworkSetting, parseCypressReport, parseJunit, parseMochawesome, parseModuleResults, cypressKind, cypressValues, matchScreenshot, specPath, type CypressTest, type CypressFailure, type Framework, } from './cypress.js';
 export { systemPrompt, CYPRESS_PROMPT } from './agent.js';
 export { screenshotFile } from './vision.js';
+export { fetchHistory, parseHistory, recordRun, historyOf, HISTORY_ARTIFACT, type History } from './history.js';

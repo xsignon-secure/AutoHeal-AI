@@ -81,6 +81,14 @@ export declare function isPytestProject(root: string): Promise<boolean>;
  * that follow it, so triage patterns only see real evidence.
  */
 export declare function evidenceText(detail: string): string;
+/** A Playwright screenshot comparison failure (toHaveScreenshot / toMatchSnapshot on an image). */
+export declare function isVisualFailure(f: Pick<FailureInfo, 'message'>): boolean;
+/** Did app files change since the baseline was last committed? Then the visual change was intended. */
+export declare function visualIntent(root: string, snapDir: string): Promise<{
+    intended: boolean;
+    commits: string[];
+    note: string;
+}>;
 /** The folders that may hold heals from the run: next to the report, the project, and any given. */
 export declare function healedFolders(root: string, report: string, extra?: string[]): string[];
 /** What makes two failures one problem: the same broken locator, or the same wrong value. */

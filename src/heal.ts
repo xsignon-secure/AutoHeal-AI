@@ -291,6 +291,30 @@ export function evidenceText(detail: string): string {
   return (cut >= 0 ? detail.slice(0, cut) : detail).slice(0, 20_000);
 }
 
+/** A Playwright screenshot comparison failure (toHaveScreenshot / toMatchSnapshot on an image). */
+export function isVisualFailure(f: Pick<FailureInfo, 'message'>): boolean {
+  return /toHaveScreenshot|Screenshot comparison failed|\d+ pixels? \(ratio [\d.]+ of all image pixels\) (?:are|is) different/i.test(f.message);
+}
+
+const TEST_PATH = /(?:^|\/)(?:tests?|e2e|__tests__|playwright|cypress|spec)\/|\.(?:spec|test|cy)\.[cm]?[jt]sx?$|-snapshots\/|^\.autoheal|\.md$|^\.github\/|(?:^|\/)(?:package-lock\.json|yarn\.lock|pnpm-lock\.yaml)$/;
+
+/** Did app files change since the baseline was last committed? Then the visual change was intended. */
+export async function visualIntent(root: string, snapDir: string): Promise<{ intended: boolean; commits: string[]; note: string }> {
+  try {
+    const { stdout: base } = await run('git', ['-c', 'core.hooksPath=/dev/null', 'log', '-1', '--format=%H', '--', snapDir], { cwd: root });
+    const commit = base.trim();
+    if (!/^[0-9a-f]{40}$/.test(commit)) return { intended: false, commits: [], note: 'the baseline is not in git history, so no app change can explain the difference' };
+    const { stdout: files } = await run('git', ['-c', 'core.hooksPath=/dev/null', 'diff', '--name-only', `${commit}..HEAD`, '--', '.'], { cwd: root, maxBuffer: 16 * 1024 * 1024 });
+    const app = files.split('\n').filter((f) => f && !TEST_PATH.test(f));
+    if (!app.length) return { intended: false, commits: [], note: `no app file changed since the baseline (${commit.slice(0, 7)})` };
+    const { stdout: log } = await run('git', ['-c', 'core.hooksPath=/dev/null', 'log', '--format=%h %s', '-n', '5', `${commit}..HEAD`, '--', ...app.slice(0, 200)], { cwd: root });
+    const commits = log.split('\n').filter(Boolean).map((l) => l.slice(0, 120));
+    return { intended: commits.length > 0, commits, note: commits.length ? `${app.length} app file(s) changed since the baseline` : 'no app commit since the baseline' };
+  } catch {
+    return { intended: false, commits: [], note: 'git history is not available, so no app change can explain the difference' };
+  }
+}
+
 /** The folders that may hold heals from the run: next to the report, the project, and any given. */
 export function healedFolders(root: string, report: string, extra: string[] = []): string[] {
   const out = [path.join(root, HEALED_DIR), ...extra.map((d) => path.resolve(root, d))];
@@ -380,6 +404,8 @@ export async function heal(options: HealOptions): Promise<HealSummary> {
     (framework === 'cypress' ? new CypressTools(root, { sandbox: options.sandbox ?? null, log }) : await McpTools.start(root, { sandbox: options.sandbox ?? null }));
   /** Original content of every file this job wrote, to revert on demand. */
   const originals = new Map<string, string>();
+  /** Binary files (screenshot baselines) this job rewrote: their original bytes. */
+  const binaryOriginals = new Map<string, Buffer>();
   /** pytest and Cypress: no Playwright traces and no --repeat-each, so stability is separate runs and the runtime guard is off. */
   const traceless = framework !== 'playwright';
 
@@ -392,6 +418,11 @@ export async function heal(options: HealOptions): Promise<HealSummary> {
   }
 
   async function revertAll(only?: (rel: string) => boolean): Promise<void> {
+    for (const [rel, bytes] of [...binaryOriginals]) {
+      if (only && !only(rel)) continue;
+      await writeFile(path.join(root, rel), bytes);
+      binaryOriginals.delete(rel);
+    }
     for (const [rel, original] of [...originals]) {
       if (only && !only(rel)) continue;
       const abs = path.join(root, rel);
@@ -866,6 +897,7 @@ export async function heal(options: HealOptions): Promise<HealSummary> {
       fingerprint: "Fixed by finding the element again from its saved fingerprint; no AI tokens used.",
       'same-change': 'Fixed by the same change as another test that this UI change broke; no AI tokens used.',
       ai: 'Fixed by the AI agent and proven by the stability rerun.',
+      baseline: 'Screenshot baseline updated after an intended UI change; no AI tokens used.',
     };
 
     /** Verifies one proposal and fills in the result. True when it was kept. */
@@ -981,6 +1013,94 @@ export async function heal(options: HealOptions): Promise<HealSummary> {
     }
 
     const proposals = new Map<number, Proposal>();
+
+    /**
+     * A screenshot comparison failed. If app files changed since the baseline
+     * was last committed, the UI changed on purpose: update the baseline and
+     * prove the test now passes repeatedly. Otherwise it is an unexplained
+     * visual difference: an app bug, with no change to the test.
+     */
+    async function visualCheck(failure: FailureInfo, result: FailureResult): Promise<boolean> {
+      const snapDir = `${failure.file}-snapshots`;
+      const snapAbs = safePath(root, snapDir);
+      const names = snapAbs ? (await readdir(snapAbs).catch(() => [] as string[])).filter((n) => n.endsWith('.png')).slice(0, 200) : [];
+      const why = await visualIntent(root, snapDir);
+      result.visual = { intended: why.intended, commits: why.commits, baselines: [] };
+      if (!why.intended || !names.length || !snapAbs) {
+        result.category = 'APP_BUG';
+        result.rootCause = 'REGRESSION';
+        result.status = 'APP_BUG';
+        result.reasons = [...result.reasons, why.note];
+        result.summary = `The page looks different from the screenshot baseline, and ${why.note}. The baseline was not changed; an issue with the evidence is opened instead.`;
+        return false;
+      }
+      result.category = 'TEST_BUG';
+      result.rootCause = 'VISUAL_CHANGE';
+      result.reasons = [...result.reasons, `app changes since the baseline: ${why.commits.slice(0, 3).join('; ')}`];
+      const denied = notAllowed('baseline');
+      if (denied || options.mode === 'comment') {
+        result.summary = `The UI changed on purpose (${why.commits[0]}), so the screenshot baseline is out of date. ${denied ? `Not updated: ${denied}.` : 'Comment mode: run `npx playwright test --update-snapshots ' + failure.file + '` to update it.'}`;
+        if (denied) result.reasons = [...result.reasons, denied];
+        return false;
+      }
+      const before = new Map<string, Buffer>();
+      for (const n of names) {
+        const b = await readFile(path.join(snapAbs, n)).catch(() => null);
+        if (b) before.set(n, b);
+      }
+      const grep = escapeRegex(lastTitle(failure.title));
+      log(`  visual: intended UI change (${why.commits[0]}); updating the baseline`);
+      await mcp.call('run-test', { testFiles: [failure.file], grep, args: ['--update-snapshots'], retries: 0, retryOnFailure: false, timeoutMs: 600_000 }, 660_000);
+      const changed: string[] = [];
+      for (const n of (await readdir(snapAbs).catch(() => [] as string[])).filter((x) => x.endsWith('.png'))) {
+        const now = await readFile(path.join(snapAbs, n)).catch(() => null);
+        const old = before.get(n);
+        if (!old) {
+          await rm(path.join(snapAbs, n), { force: true }); // only existing baselines are updated
+          continue;
+        }
+        if (now && !now.equals(old)) changed.push(n);
+      }
+      const restore = async () => {
+        for (const [n, b] of before) await writeFile(path.join(snapAbs, n), b);
+      };
+      if (!changed.length) {
+        await restore();
+        result.summary = 'The UI changed on purpose, but updating the baseline changed nothing, so nothing was kept.';
+        return false;
+      }
+      const st = await stableRuns(failure, grep);
+      result.stability = st;
+      if (!st.passed) {
+        await restore();
+        result.summary = `The UI changed on purpose, but the test still fails with an updated baseline:\n${st.detail}`;
+        return false;
+      }
+      for (const n of changed) binaryOriginals.set(`${snapDir}/${n}`, before.get(n) as Buffer);
+      result.visual.baselines = changed.map((n) => `${snapDir}/${n}`);
+      // The old and new baseline, side by side in the PR.
+      if (options.evidenceDir && shotCount < 20) {
+        const first = changed[0] as string;
+        const now = await readFile(path.join(snapAbs, first)).catch(() => null);
+        const old = before.get(first);
+        if (now && old && now.length <= 1_500_000 && old.length <= 1_500_000) {
+          const n = ++shotCount;
+          await mkdir(options.evidenceDir, { recursive: true });
+          await writeFile(path.join(options.evidenceDir, `${n}-before.png`), old, { flag: 'wx' });
+          await writeFile(path.join(options.evidenceDir, `${n}-after.png`), now, { flag: 'wx' });
+          result.visual.evidence = { before: `${n}-before.png`, after: `${n}-after.png` };
+        }
+      }
+      result.status = 'FIXED';
+      result.fix = {
+        by: 'baseline',
+        file: `${snapDir}/${changed[0]}`,
+        explanation: `The app changed on purpose since this baseline was saved (${why.commits.slice(0, 3).join('; ')}). The baseline was updated and the test passed ${st.runs} times in a row with it.`,
+        diff: changed.map((n) => `Binary: ${snapDir}/${n} (updated)`).join('\n'),
+      };
+      result.summary = 'Screenshot baseline updated after an intended UI change; proven by the stability rerun. No AI tokens used.';
+      return true;
+    }
 
     /**
      * A flaky test: ask the AI for the race and a deterministic fix, proven by
@@ -1128,7 +1248,9 @@ export async function heal(options: HealOptions): Promise<HealSummary> {
       const past = historyOf(options.history, failure.file, failure.title);
       if (past) result.history = past;
 
-      if (t.category === 'TEST_BUG') {
+      if (framework === 'playwright' && isVisualFailure(failure)) {
+        if (await visualCheck(failure, result)) fixedTitles.add(failure.title);
+      } else if (t.category === 'TEST_BUG') {
         let fixed = false;
         const dom = doms.get(failure.index);
         const broken = dom?.failedCall?.selector;
@@ -1398,7 +1520,7 @@ export async function heal(options: HealOptions): Promise<HealSummary> {
     // Comment mode never leaves changes behind; the diffs are in the comment.
     if (options.mode === 'comment') await revertAll();
 
-    summary.changedFiles = [...originals.keys()].sort();
+    summary.changedFiles = [...originals.keys(), ...binaryOriginals.keys()].sort();
     summary.changes = options.mode !== 'comment' && summary.changedFiles.length > 0;
     summary.outcome = outcomeOf(summary.results);
   } catch (error) {

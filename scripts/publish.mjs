@@ -55,6 +55,10 @@ export const DEFAULT_ALLOWED_PATHS = ['**/tests/**', '**/test/**', '**/e2e/**', 
 const QUARANTINE_FILE = /(?:^|\/)playwright-quarantine\.json$/;
 const MEMORY_FILE = /(?:^|\/)\.autoheal\/memory\/([0-9a-f]{16})\.json$/;
 const FINGERPRINT_FILE = /(?:^|\/)\.autoheal\/fingerprints\/([0-9a-f]{16})\.json$/;
+/** A Playwright screenshot baseline: the only binary file a fix may change (existing files only). */
+export const BASELINE_FILE = /(?:^|\/)[\w.-]+-snapshots\/[\w.-]+\.png$/;
+const MAX_BASELINES = 20;
+const MAX_BASELINE_BYTES = 5 * 1024 * 1024;
 
 const { scanChange } = await import(new URL('../dist/cheat.js', import.meta.url).href);
 
@@ -166,6 +170,7 @@ export function parsePatch(patch) {
     if (!name || header !== `a/${name} b/${name}`) throw new Refused(`unreadable or renamed path in "${lines[0].slice(0, 120)}"`);
     if (!safePath(name)) throw new Refused(`path not allowed: ${name}`);
     let isNew = false;
+    let binary = false;
     let i = 1;
     for (; i < lines.length && !lines[i].startsWith('@@'); i++) {
       const line = lines[i];
@@ -176,10 +181,15 @@ export function parsePatch(patch) {
         continue;
       }
       if (line === `--- a/${name}` || (isNew && line === '--- /dev/null') || line === `+++ b/${name}`) continue;
+      // An updated screenshot baseline: binary, but only for an existing PNG in a -snapshots folder.
+      if (line === 'GIT binary patch' && !isNew && BASELINE_FILE.test(name)) {
+        binary = true;
+        break;
+      }
       throw new Refused(`${name}: unsupported change "${line.slice(0, 80)}" (only plain text edits are allowed)`);
     }
     if (files.some((f) => f.path === name)) throw new Refused(`${name} appears twice in the patch`);
-    files.push({ path: name, isNew });
+    files.push({ path: name, isNew, ...(binary ? { binary: true } : {}) });
   }
   return files;
 }
@@ -209,6 +219,7 @@ export function checkPolicy(policy, files, fixed) {
 
 export function checkFiles(root, files, changedList, allowed = allowedPaths(env.ALLOWED_PATHS)) {
   const prints = files.filter((f) => FINGERPRINT_FILE.test(f.path)).length;
+  if (files.filter((f) => f.binary).length > MAX_BASELINES) throw new Refused(`too many screenshot baselines (more than ${MAX_BASELINES})`);
   if (files.length - prints > MAX_FILES) throw new Refused(`too many files (${files.length - prints})`);
   if (prints > MAX_FINGERPRINT_FILES) throw new Refused(`too many fingerprint files (${prints})`);
   const realRoot = realpathSync(root);
@@ -219,7 +230,7 @@ export function checkFiles(root, files, changedList, allowed = allowedPaths(env.
     if (!own && !allowed.some((m) => m(f.path))) throw new Refused(`${f.path} is outside allowed-paths; fixes may only change tests and page objects there`);
     if (f.isNew) {
       if (!NEW_OK.test(f.path)) throw new Refused(`new file not allowed: ${f.path}`);
-    } else if (!SOURCE.test(f.path) && !NEW_OK.test(f.path)) {
+    } else if (f.binary ? !BASELINE_FILE.test(f.path) : !SOURCE.test(f.path) && !NEW_OK.test(f.path)) {
       throw new Refused(`${f.path}: only source files can be changed`);
     }
     const abs = path.join(realRoot, f.path);
@@ -314,6 +325,26 @@ export function checkQuarantine(root, rel, beforeText, results, days = Number(en
 }
 
 /** A memory file must have AutoHeal's exact shape, and its name must be the hash AutoHeal gives it. */
+/** Each updated baseline is a real PNG of sane size, and the result says a baseline fix was kept for it. */
+export function checkBaselines(root, files, results) {
+  const kept = new Set((Array.isArray(results) ? results : []).filter((r) => r?.status === 'FIXED' && r.fix?.by === 'baseline').flatMap((r) => (Array.isArray(r.visual?.baselines) ? r.visual.baselines : [])));
+  for (const f of files) {
+    if (!f.binary) continue;
+    const buf = (() => {
+      const fd = openSync(path.join(root, f.path), constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0));
+      try {
+        const st = fstatSync(fd);
+        if (!st.isFile() || st.size > MAX_BASELINE_BYTES) return null;
+        return readFileSync(fd);
+      } finally {
+        closeSync(fd);
+      }
+    })();
+    if (!buf || buf.length < 24 || buf.readUInt32BE(0) !== 0x89504e47 || buf.readUInt32BE(4) !== 0x0d0a1a0a) throw new Refused(`${f.path} is not a PNG image of at most 5 MB`);
+    if (![...kept].some((k) => k === f.path || f.path.endsWith(`/${k}`))) throw new Refused(`${f.path}: no kept baseline fix in the result names this file`);
+  }
+}
+
 export function checkMemory(root, rel) {
   const id = MEMORY_FILE.exec(rel)?.[1];
   const text = readRegular(path.join(root, rel), 16 * 1024);
@@ -496,7 +527,7 @@ export async function publishPatch({ root, dir, mode, base, runId, fixed, forge,
   const numstat = git(['apply', '--numstat', '-z', checked], { cwd: root }).split('\0').filter(Boolean);
   const applied = numstat.map((row) => {
     const [add, del, ...rest] = row.split('\t');
-    if (add === '-' || del === '-') throw new Refused(`git sees binary data in the patch (${rest.join('\t')})`);
+    if ((add === '-' || del === '-') && !files.some((f) => f.binary && f.path === rest.join('\t'))) throw new Refused(`git sees binary data in the patch (${rest.join('\t')})`);
     return rest.join('\t');
   });
   sameFiles(applied, files.map((f) => f.path), 'git apply --numstat');
@@ -512,6 +543,7 @@ export async function publishPatch({ root, dir, mode, base, runId, fixed, forge,
   // The heal job's own checks are not trusted: run them again here.
   rescan(root, files, befores);
   const results = readJson(dir, 'summary.json')?.results;
+  checkBaselines(root, files, results);
   for (const f of files) {
     if (QUARANTINE_FILE.test(f.path)) checkQuarantine(root, f.path, befores.get(f.path) ?? null, results, Math.min(Number(env.QUARANTINE_DAYS) || 14, policy?.quarantine.maxDays ?? 90));
     if (MEMORY_FILE.test(f.path)) checkMemory(root, f.path);

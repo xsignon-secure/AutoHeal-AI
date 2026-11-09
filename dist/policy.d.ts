@@ -16,7 +16,7 @@
  * tags, multi-line strings or documents.
  */
 export declare const POLICY_FILE = ".autoheal.yml";
-export type FixSource = 'rules' | 'fingerprint' | 'same-change' | 'ai';
+export type FixSource = 'rules' | 'fingerprint' | 'same-change' | 'ai' | 'baseline';
 export declare const FIX_SOURCES: FixSource[];
 export type StrengthName = 'strong' | 'good' | 'fair' | 'weak';
 export interface Policy {

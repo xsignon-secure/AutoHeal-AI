@@ -37,7 +37,7 @@ export interface FixInfo {
    * from its saved fingerprint. same-change: the fix kept for another test with
    * the same broken locator. ai: the AI agent. Only ai spends tokens.
    */
-  by: 'rules' | 'ai' | 'fingerprint' | 'same-change';
+  by: 'rules' | 'ai' | 'fingerprint' | 'same-change' | 'baseline';
   file: string;
   explanation: string;
   /** Unified-style excerpt of what changed (short). */
@@ -93,6 +93,8 @@ export interface FailureResult {
   healed?: true;
   /** Grouped with this test's failure (same cause), so not worked on again. */
   groupOf?: string;
+  /** Visual snapshot failures: what changed in the app since the baseline, and what was updated. */
+  visual?: { intended: boolean; commits: string[]; baselines: string[]; evidence?: { before?: string; after?: string } };
   /** Earlier AutoHeal runs where this test failed (from the history artifact). */
   history?: { failures: number; flaky: number; since: string };
   spend: BudgetSnapshot;

@@ -5,11 +5,11 @@ import http from 'node:http';
 import os from 'node:os';
 import path from 'node:path';
 import { test } from 'node:test';
-import { main as publishMain, prBranchTarget, sourceComment } from '../scripts/publish.mjs';
+import { checkBaselines, main as publishMain, parsePatch, prBranchTarget, sourceComment } from '../scripts/publish.mjs';
 import { checkFixCommit, parseCommand, runCommand, main as commandMain } from '../scripts/command.mjs';
 import { githubForge } from '../scripts/forge.mjs';
 import { historyOf, parseHistory, recordRun } from '../dist/history.js';
-import { ScriptedProvider, engineEnv, failureGroup, heal, healedFolders, loadHealed, runtimeMode } from '../dist/index.js';
+import { ScriptedProvider, isVisualFailure, visualIntent, engineEnv, failureGroup, heal, healedFolders, loadHealed, runtimeMode } from '../dist/index.js';
 
 const LOGIN = "test('login', async ({ page }) => {\n  await page.getByRole('button', { name: 'Log in' }).click();\n});\n";
 
@@ -405,4 +405,114 @@ test('a flaky test gets an AI fix proven by 10 runs before any quarantine', asyn
   assert.match(r.summary, /Flaky test fixed, not quarantined: the fix passed 10 runs/);
   assert.deepEqual(r.history, { failures: 1, flaky: 1, since: '2026-10-20' });
   assert.ok(calls.some((c) => c.name === 'run-test' && (c.args.args ?? []).includes('--repeat-each=10')));
+});
+
+// ---------- Visual snapshot triage ----------
+
+const png = (n) => {
+  const b = Buffer.alloc(64, n);
+  Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]).copy(b, 0);
+  b[20] = 0;
+  return b;
+};
+
+function visualProject({ appChange }) {
+  const dir = project();
+  mkdirSync(path.join(dir, 'tests', 'home.spec.ts-snapshots'));
+  writeFileSync(path.join(dir, 'tests', 'home.spec.ts'), "test('home', async ({ page }) => {\n  await expect(page).toHaveScreenshot('home.png');\n});\n");
+  writeFileSync(path.join(dir, 'tests', 'home.spec.ts-snapshots', 'home-chromium-linux.png'), png(1));
+  mkdirSync(path.join(dir, 'src'));
+  writeFileSync(path.join(dir, 'src', 'app.css'), 'a{color:red}\n');
+  git(dir, 'add', '-A');
+  git(dir, 'commit', '-qm', 'baseline');
+  if (appChange) {
+    writeFileSync(path.join(dir, 'src', 'app.css'), 'a{color:blue}\n');
+    git(dir, 'add', '-A');
+    git(dir, 'commit', '-qm', 'Make links blue');
+  } else {
+    writeFileSync(path.join(dir, 'tests', 'other.spec.ts'), '// test only\n');
+    git(dir, 'add', '-A');
+    git(dir, 'commit', '-qm', 'tests only');
+  }
+  return dir;
+}
+
+function visualEngine(dir) {
+  const failure = { file: 'tests/home.spec.ts', line: 2, title: 'home', kind: 'assertion', message: 'Error: expect(page).toHaveScreenshot(expected) failed\n  1250 pixels (ratio 0.01 of all image pixels) are different.' };
+  const calls = [];
+  const snap = path.join(dir, 'tests', 'home.spec.ts-snapshots', 'home-chromium-linux.png');
+  return {
+    calls,
+    async close() {},
+    async call(name, args) {
+      calls.push({ name, args });
+      const ok = (data, text = '') => ({ ok: true, isError: false, text, data: { ok: true, ...data } });
+      if (name === 'get-failure') return args.index === 1 ? ok({ failure, index: 1, total: 1 }, `### Error\n${failure.message}`) : { ok: false, isError: true, text: '', data: { ok: false } };
+      if (name === 'run-test') {
+        if ((args.args ?? []).includes('--update-snapshots')) {
+          writeFileSync(snap, png(2));
+          writeFileSync(path.join(dir, 'tests', 'home.spec.ts-snapshots', 'new-chromium-linux.png'), png(3));
+          return ok({ run: { passed: 1, failed: 0 } });
+        }
+        const good = readFileSync(snap).equals(png(2));
+        const repeat = Number((args.args ?? []).find((a) => a.startsWith('--repeat-each='))?.split('=')[1] ?? 1);
+        return good ? ok({ run: { passed: repeat, failed: 0, flaky: 0, failures: [] } }) : { ok: false, isError: false, text: 'diff', data: { ok: false, run: { passed: 0, failed: 1, failures: [{ title: 'home' }] } } };
+      }
+      if (name === 'check-test-change') return ok({ status: 'PASS', findings: [] });
+      return ok({});
+    },
+  };
+}
+
+test('visual: detection and intent from git history', async () => {
+  assert.ok(isVisualFailure({ message: 'expect(page).toHaveScreenshot(expected) failed' }));
+  assert.ok(isVisualFailure({ message: '12 pixels (ratio 0.01 of all image pixels) are different.' }));
+  assert.ok(!isVisualFailure({ message: 'Expected: "a"' }));
+  const yes = await visualIntent(visualProject({ appChange: true }), 'tests/home.spec.ts-snapshots');
+  assert.equal(yes.intended, true);
+  assert.match(yes.commits[0], /Make links blue/);
+  const no = await visualIntent(visualProject({ appChange: false }), 'tests/home.spec.ts-snapshots');
+  assert.equal(no.intended, false);
+});
+
+test('visual: an intended UI change updates only the existing baseline, proven by reruns', async () => {
+  const dir = visualProject({ appChange: true });
+  const evidenceDir = path.join(dir, '.out', 'evidence');
+  const s = await heal(opts(dir, visualEngine(dir), { evidenceDir }));
+  const [r] = s.results;
+  assert.equal(r.status, 'FIXED', r.summary);
+  assert.equal(r.fix.by, 'baseline');
+  assert.equal(r.rootCause, 'VISUAL_CHANGE');
+  assert.deepEqual(r.visual.baselines, ['tests/home.spec.ts-snapshots/home-chromium-linux.png']);
+  assert.deepEqual(s.changedFiles.filter((f) => f.endsWith('.png')), ['tests/home.spec.ts-snapshots/home-chromium-linux.png']);
+  assert.ok(readFileSync(path.join(dir, 'tests/home.spec.ts-snapshots/home-chromium-linux.png')).equals(png(2)));
+  assert.throws(() => readFileSync(path.join(dir, 'tests/home.spec.ts-snapshots/new-chromium-linux.png')), /ENOENT/, 'new baselines are not added');
+  assert.ok(readFileSync(path.join(evidenceDir, r.visual.evidence.before)).equals(png(1)));
+
+  // The publish side: the binary patch is accepted only for that baseline.
+  const patch = execFileSync('git', ['diff', '--binary', '--', 'tests/home.spec.ts-snapshots/home-chromium-linux.png'], { cwd: dir, encoding: 'utf8' });
+  const files = parsePatch(patch);
+  assert.deepEqual(files, [{ path: 'tests/home.spec.ts-snapshots/home-chromium-linux.png', isNew: false, binary: true }]);
+  checkBaselines(dir, files, s.results);
+  assert.throws(() => checkBaselines(dir, files, []), /no kept baseline fix/);
+  writeFileSync(path.join(dir, 'tests/home.spec.ts-snapshots/home-chromium-linux.png'), 'not a png');
+  assert.throws(() => checkBaselines(dir, files, s.results), /not a PNG/);
+  const evil = execFileSync('git', ['diff', '--binary', '--', '.'], { cwd: dir, encoding: 'utf8' });
+  assert.ok(evil.includes('GIT binary patch'));
+  writeFileSync(path.join(dir, 'src', 'logo.png'), png(9));
+  git(dir, 'add', '-A');
+  git(dir, 'commit', '-qm', 'logo');
+  writeFileSync(path.join(dir, 'src', 'logo.png'), png(8));
+  assert.throws(() => parsePatch(execFileSync('git', ['diff', '--binary', '--', 'src/logo.png'], { cwd: dir, encoding: 'utf8' })), /unsupported change/);
+});
+
+test('visual: no app change since the baseline is an app bug, the baseline stays', async () => {
+  const dir = visualProject({ appChange: false });
+  const engine = visualEngine(dir);
+  const s = await heal(opts(dir, engine));
+  const [r] = s.results;
+  assert.equal(r.status, 'APP_BUG');
+  assert.equal(r.visual.intended, false);
+  assert.ok(readFileSync(path.join(dir, 'tests/home.spec.ts-snapshots/home-chromium-linux.png')).equals(png(1)));
+  assert.ok(!engine.calls.some((c) => (c.args.args ?? []).includes('--update-snapshots')));
 });
