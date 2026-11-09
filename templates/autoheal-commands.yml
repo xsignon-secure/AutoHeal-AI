@@ -42,7 +42,7 @@ jobs:
         with:
           persist-credentials: false
           fetch-depth: 0
-      - uses: xsignon-secure/AutoHeal-AI/command@v0.11.0
+      - uses: xsignon-secure/AutoHeal-AI/command@v0.12.0
         with:
           # rerun-workflow: playwright.yml
           # allowed-paths: 'tests/**, e2e/**, pages/**'

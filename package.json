@@ -1,6 +1,6 @@
 {
   "name": "xsignon-autoheal",
-  "version": "0.11.0",
+  "version": "0.12.0",
   "description": "Free, self-hosted AI agent that fixes failing Playwright, pytest-playwright and Cypress tests in GitHub Actions, GitLab CI, CircleCI or on your machine, with your own AI key. Anti-cheat guard, stability proof, evidence-first PRs.",
   "author": "xsignon-secure (https://github.com/xsignon-secure)",
   "license": "MIT",

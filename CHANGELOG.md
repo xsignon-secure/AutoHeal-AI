@@ -2,6 +2,27 @@
 
 All notable changes to AutoHeal AI. Versions follow [semantic versioning](https://semver.org/).
 
+## 0.12.0 (2026-11-09)
+
+Everything from the market review: AutoHeal now heals during the run, fixes inside the failing PR, triages visual changes, fixes flaky tests, supports WebdriverIO, writes new tests, and works as an MCP server.
+
+### Added
+- **Heal during the run (Playwright).** `import { test } from 'xsignon-autoheal/playwright'` (or `withAutoHeal(test)`) heals an action whose locator finds nothing from the element's saved fingerprint, so the run stays green. Modes `heal`, `report` and `off` (`AUTOHEAL_RUNTIME`). Each heal is logged, annotated and written to `autoheal-healed/`; the heal job turns it into a code fix proven with runtime healing off. The workflow template also heals green runs that uploaded an `autoheal-healed` artifact, and `autoheal fix` does the same locally.
+- **Fix on the failing PR.** Publish input `fix-target: pr-branch` pushes the fix as one more commit onto the failing PR's own branch (never forced, never the default or a shared branch; falls back to a separate PR). The failing PR always gets a comment that links the fix. AutoHeal never heals a run of its own fix commit.
+- **Chat commands.** `templates/autoheal-commands.yml` and the `command` action: `/autoheal apply`, `retry`, `explain`, `ignore` and `help` on the failing PR or the fix PR, for owners, members and collaborators.
+- **Grouping by cause.** Failures with the same broken locator or the same wrong value are one group; `max-failures` counts groups, and repeats of one app bug are reported without tokens. The PR shows the number of distinct causes.
+- **Flaky tests are fixed first.** The AI looks for the race and a deterministic fix, which must pass at least 10 runs in a row (input `fix-flaky`, default on); otherwise the test is quarantined. A new `autoheal-history` artifact keeps each test's failures across runs, and the PR shows them.
+- **Visual snapshot triage.** A `toHaveScreenshot` failure updates the existing baseline only when app files changed since it was committed (named in the PR, old and new baseline side by side), proven by the stability rerun; otherwise it is an app bug. New fix kind `baseline` in `.autoheal.yml` `fixes.allow`. The publish job accepts these PNGs and nothing else binary.
+- **WebdriverIO.** Projects with `wdio.conf.*` are healed through WebdriverIO: results from `@wdio/junit-reporter` (or `wdio-json-reporter`), single-test reruns through the Launcher in the sandbox, WebdriverIO locator advice for the AI, and anti-cheat rules for `browser.execute`, `browser.mock`, command overrides and `browser.pause`. `framework: webdriverio` (or `wdio`).
+- **`autoheal cover`.** Writes one new test for a flow with no test (`--flow "..."`), exploring the running app; kept only if it passes a guard built for new tests and 5 runs in a row.
+- **`autoheal mcp`.** AutoHeal as an MCP server (stdio) with `autoheal_fix`, `autoheal_cover`, `autoheal_doctor` and `autoheal_learn`, and an agent skill in `skills/autoheal/SKILL.md`.
+- **Head-to-head benchmark.** `BENCH_FIXER="<command>" npm run bench -- --setups fingerprints,external` runs any other fixer on the same failed project and scores it the same way, with a new **cheats** column (a test that passes only because it was weakened, judged by the anti-cheat scan). Two new cases: an icon button whose title changed (fix) and a list that lost an item (trap).
+
+### Changed
+- The engine's environment always has `AUTOHEAL_RUNTIME=off`, so reruns prove the code itself.
+- Triage knows WebdriverIO's "element wasn't found" errors as locator drift.
+- The action's Marketplace description lists every framework.
+
 ## 0.11.0 (2026-11-08)
 
 ### Added

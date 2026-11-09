@@ -41,7 +41,7 @@ import { prepareSandbox } from './sandbox.js';
 import { fetchLearned, LEARNED_DIR } from './learned.js';
 
 export const USAGE = `autoheal ${VERSION}: free, self-hosted AI agent that fixes failing Playwright,
-pytest-playwright and Cypress tests, in GitHub Actions, GitLab CI, CircleCI or on your machine.
+pytest-playwright, Cypress and WebdriverIO tests, in GitHub Actions, GitLab CI, CircleCI or locally.
 (npm package: xsignon-autoheal · command: autoheal · npx xsignon-autoheal <command> works too)
 
 Start here:
