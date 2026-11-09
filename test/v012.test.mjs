@@ -519,7 +519,7 @@ test('visual: no app change since the baseline is an app bug, the baseline stays
 
 // ---------- WebdriverIO ----------
 
-import { parseWdioJunit, parseWdioReport, wdioKind, isWdioProject, scanChange, frameworkSetting } from '../dist/index.js';
+import { parseWdioJunit, parseWdioReport, wdioKind, wdioFailure, WdioTools, isWdioProject, scanChange, frameworkSetting } from '../dist/index.js';
 
 const WDIO_XML = `<?xml version="1.0" encoding="UTF-8"?>
 <testsuites>
@@ -554,6 +554,24 @@ test('WebdriverIO: JUnit results, failure kinds, framework setting', async () =>
   assert.equal(await isWdioProject(dir), true);
   writeFileSync(path.join(dir, 'playwright.config.ts'), '');
   assert.equal(await isWdioProject(dir), false);
+});
+
+test('WebdriverIO: real reporter output (file URL, quoted values) and its default .log file name', async () => {
+  const xml = WDIO_XML.replace('value="./test/specs/login.e2e.js"', 'value="file://./test/specs/login.e2e.js"');
+  assert.equal(parseWdioJunit(xml)[0].file, './test/specs/login.e2e.js');
+  assert.equal(parseWdioJunit(WDIO_XML.replace('value="./test/specs/login.e2e.js"', 'value="file:///work/my%20app/a.e2e.js"'))[0].file, '/work/my app/a.e2e.js');
+  const f = wdioFailure({ file: 'test/specs/p.e2e.js', title: 'pricing pro plan price', state: 'failed', message: 'Expect $(`#p`) to have text\n\nExpected: "$10"\nReceived: "$12"', stack: '' });
+  assert.equal(f.kind, 'assertion');
+  assert.equal(f.expected, '$10');
+  assert.equal(f.actual, '$12');
+  const dir = mkdtempSync(path.join(os.tmpdir(), 'autoheal-wdiolog-'));
+  writeFileSync(path.join(dir, 'wdio.conf.js'), 'export const config = {};\n');
+  mkdirSync(path.join(dir, 'reports'));
+  writeFileSync(path.join(dir, 'reports', 'wdio-0-0-junit-reporter.log'), xml);
+  const tools = new WdioTools(dir, { log: () => {} });
+  const r = await tools.call('load-report', { report: 'reports' });
+  assert.equal(r.ok, true, r.text);
+  assert.match(r.text, /1 failed/);
 });
 
 test('WebdriverIO anti-cheat: browser.execute and browser.mock are blocked, pause warns', () => {

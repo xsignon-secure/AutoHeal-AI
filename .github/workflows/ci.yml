@@ -48,6 +48,9 @@ jobs:
         run: |
           npm ci --no-audit --no-fund
           npx cypress verify
+      - name: Install the dummy shop's WebdriverIO
+        working-directory: simulation/wdio-fixture
+        run: npm ci --no-audit --no-fund
       - run: python3 -m pip install --user pyyaml
       - run: git config --global user.email ci@example.com && git config --global user.name ci
       - run: npm run simulate
