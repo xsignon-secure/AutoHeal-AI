@@ -84,6 +84,8 @@ function resultBlock(r) {
         out.push(`| Healed during the run | the test passed because AutoHeal found the element again while it ran; this PR makes the code match |`);
     if (r.groupOf)
         out.push(`| Grouped with | ${cell(r.groupOf)} (same cause) |`);
+    if (r.history)
+        out.push(`| History | failed in ${r.history.failures} earlier AutoHeal run(s) since ${cell(r.history.since)}${r.history.flaky ? `, flaky in ${r.history.flaky}` : ''} |`);
     if (r.guard)
         out.push(`| Anti-cheat | engine heal guard: **${r.guard.engine}**, local scan: **${r.guard.local}** |`);
     if (r.stability)

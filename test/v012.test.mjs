@@ -8,7 +8,8 @@ import { test } from 'node:test';
 import { main as publishMain, prBranchTarget, sourceComment } from '../scripts/publish.mjs';
 import { checkFixCommit, parseCommand, runCommand, main as commandMain } from '../scripts/command.mjs';
 import { githubForge } from '../scripts/forge.mjs';
-import { engineEnv, failureGroup, heal, healedFolders, loadHealed, runtimeMode } from '../dist/index.js';
+import { historyOf, parseHistory, recordRun } from '../dist/history.js';
+import { ScriptedProvider, engineEnv, failureGroup, heal, healedFolders, loadHealed, runtimeMode } from '../dist/index.js';
 
 const LOGIN = "test('login', async ({ page }) => {\n  await page.getByRole('button', { name: 'Log in' }).click();\n});\n";
 
@@ -353,4 +354,55 @@ test('commands from people without write access only get a refusal', async () =>
   } finally {
     server.close();
   }
+});
+
+// ---------- Flaky: fix first, history ----------
+
+test('history: parsed safely, runs recorded and capped, shown per test', () => {
+  const h0 = parseHistory('{"tests":{"a":{"file":"t.spec.ts","title":"x","runs":[{"at":"2026-10-01T00:00:00Z","status":"FLAKY"}]},"b":{"file":1}}}');
+  assert.equal(Object.keys(h0.tests).length, 1);
+  assert.deepEqual(parseHistory('nope').tests, {});
+  let h = h0;
+  for (let i = 0; i < 40; i++) h = recordRun(h, [{ failure: { file: 't.spec.ts', title: 'x' }, status: 'QUARANTINED' }], `2026-11-0${i % 9}T00:00:00Z`);
+  assert.equal(h.tests['t.spec.ts\nx'].runs.length, 30);
+  const past = historyOf(h0, 't.spec.ts', 'x');
+  assert.deepEqual(past, { failures: 1, flaky: 1, since: '2026-10-01' });
+  assert.equal(historyOf(h0, 'other', 'x'), null);
+});
+
+const SOMETIMES = "test('sometimes', async ({ page }) => {\n  await page.goto('/');\n  await page.getByRole('button', { name: 'Go' }).click();\n});\n";
+
+test('a flaky test gets an AI fix proven by 10 runs before any quarantine', async () => {
+  const dir = project();
+  writeFileSync(path.join(dir, 'tests', 'sometimes.spec.ts'), SOMETIMES);
+  const failure = { file: 'tests/sometimes.spec.ts', line: 3, title: 'sometimes', kind: 'assertion', message: 'flaky' };
+  const calls = [];
+  const engine = {
+    calls,
+    async close() {},
+    async call(name, args) {
+      calls.push({ name, args });
+      const ok = (data, text = '') => ({ ok: true, isError: false, text, data: { ok: true, ...data } });
+      if (name === 'get-failure') return args.index === 1 ? ok({ failure, index: 1, total: 1 }, '### Error\nflaky') : { ok: false, isError: true, text: '', data: { ok: false } };
+      if (name === 'diagnose-flaky') return ok({ verdict: 'FLAKY' });
+      if (name === 'check-test-change') return ok({ status: 'PASS', findings: [] });
+      if (name === 'run-test') {
+        const fixed = readFileSync(path.join(dir, args.testFiles[0]), 'utf8').includes('toBeEnabled');
+        const repeat = Number((args.args ?? []).find((a) => a.startsWith('--repeat-each='))?.split('=')[1] ?? 1);
+        return fixed ? ok({ run: { passed: repeat, failed: 0, flaky: 0, failures: [] } }) : { ok: false, isError: false, text: 'flaky', data: { ok: false, run: { passed: 0, failed: 1, failures: [{ title: 'sometimes' }] } } };
+      }
+      if (name === 'quarantine') throw new Error('should not quarantine');
+      return ok({});
+    },
+  };
+  const fixed = SOMETIMES.replace("  await page.getByRole('button', { name: 'Go' }).click();", "  await expect(page.getByRole('button', { name: 'Go' })).toBeEnabled();\n  await page.getByRole('button', { name: 'Go' }).click();");
+  const provider = new ScriptedProvider([{ calls: [{ name: 'propose_fix', input: { path: 'tests/sometimes.spec.ts', content: fixed, explanation: 'wait until the button is enabled' } }] }]);
+  const history = parseHistory(JSON.stringify({ tests: { k: { file: 'tests/sometimes.spec.ts', title: 'sometimes', runs: [{ at: '2026-10-20T00:00:00Z', status: 'QUARANTINED' }] } } }));
+  const s = await heal(opts(dir, engine, { provider, checkFlaky: true, history }));
+  const [r] = s.results;
+  assert.equal(r.category, 'FLAKY');
+  assert.equal(r.status, 'FIXED', r.summary);
+  assert.match(r.summary, /Flaky test fixed, not quarantined: the fix passed 10 runs/);
+  assert.deepEqual(r.history, { failures: 1, flaky: 1, since: '2026-10-20' });
+  assert.ok(calls.some((c) => c.name === 'run-test' && (c.args.args ?? []).includes('--repeat-each=10')));
 });

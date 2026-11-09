@@ -15,6 +15,7 @@ import { heal } from './heal.js';
 import { priceFor } from './budget.js';
 import { ConfigError, providerFromEnv } from './providers/index.js';
 import { redactDeep } from './redact.js';
+import { fetchHistory, HISTORY_FILE, recordRun } from './history.js';
 import { findReport } from './report-files.js';
 import type { HealSummary, Mode } from './types.js';
 import { eventsFrom, uploadEvents } from './upload.js';
@@ -334,10 +335,15 @@ async function cmdHeal(argv: string[]): Promise<number> {
     if (note) log(`Learned fingerprints: ${note}`);
     learnedDirs.push(fetched);
   }
+  // How often each test failed in earlier AutoHeal runs.
+  const past = env.AUTOHEAL_HISTORY === 'false' ? null : await fetchHistory(ci, env);
+  if (past?.note) log(`Failure history: ${past.note}`);
   const rawSummary = await heal({
     projectRoot,
     report,
     healedDirs,
+    ...(past ? { history: past.history } : {}),
+    fixFlaky: env.AUTOHEAL_FIX_FLAKY !== 'false',
     ...(traceDirs ? { traceDirs } : {}),
     framework: cypress ? 'cypress' : setting,
     learnedDirs,
@@ -372,6 +378,12 @@ async function cmdHeal(argv: string[]): Promise<number> {
 
   await mkdir(outDir, { recursive: true });
   await writeFile(path.join(outDir, 'summary.json'), `${JSON.stringify(summary, null, 2)}\n`);
+  if (past) {
+    // The next run reads this (the action uploads it as the autoheal-history artifact).
+    await mkdir(path.join(outDir, 'history'), { recursive: true });
+    await writeFile(path.join(outDir, 'history', HISTORY_FILE), `${JSON.stringify(recordRun(past.history, summary.results, summary.startedAt))}\n`);
+    if (env.AUTOHEAL_HISTORY_FILE) await writeFile(env.AUTOHEAL_HISTORY_FILE, `${JSON.stringify(recordRun(past.history, summary.results, summary.startedAt))}\n`).catch(() => undefined);
+  }
   await writeFile(path.join(outDir, 'job-summary.md'), jobSummary(summary));
   const outputs: Record<string, string> = {
     outcome: summary.outcome,

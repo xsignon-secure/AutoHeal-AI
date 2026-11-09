@@ -66,6 +66,9 @@ inputs:
   start-url:
     description: Address to wait for after start-command (localhost only). Defaults to app-url.
     default: ''
+  fix-flaky:
+    description: Ask the AI for a deterministic fix of a flaky test (proven by at least 10 runs in a row) before quarantining it. Needs an AI key.
+    default: 'true'
   learn-from-reviews:
     description: Read earlier AutoHeal PRs (merged, edited or closed) and learn from them. The heal job needs the pull-requests read permission.
     default: 'true'
@@ -170,6 +173,7 @@ runs:
         AUTOHEAL_START_URL: ${{ inputs.start-url }}
         AUTOHEAL_START_TIMEOUT: ${{ inputs.start-timeout }}
         AUTOHEAL_LEARN_REVIEWS: ${{ inputs.learn-from-reviews }}
+        AUTOHEAL_FIX_FLAKY: ${{ inputs.fix-flaky }}
         AUTOHEAL_MOCKS_BASE_URL: ${{ inputs.mocks-base-url }}
         AUTOHEAL_OPEN_ISSUES: ${{ inputs.open-issues }}
         AUTOHEAL_ISSUE_MIN_CONFIDENCE: ${{ inputs.issue-min-confidence }}
@@ -215,6 +219,17 @@ runs:
         name: ${{ inputs.result-name }}-evidence
         path: ${{ runner.temp }}/autoheal-out/evidence
         retention-days: 14
+        if-no-files-found: ignore
+
+    # How often each test failed, read by the next heal run (flaky history).
+    - name: Upload the failure history
+      if: always() && steps.heal.outputs.exit-code != ''
+      uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+      with:
+        name: autoheal-history
+        path: ${{ runner.temp }}/autoheal-out/history
+        retention-days: 90
+        overwrite: true
         if-no-files-found: ignore
 
     - name: Upload the result for the publish job

@@ -19,6 +19,7 @@ import { type FailureInfo, type FailureResult, type HealSummary, type Mode, type
 import type { Sandbox } from './sandbox.js';
 import { type ReviewHistory } from './reviews.js';
 import { type Policy } from './policy.js';
+import { type History } from './history.js';
 export interface HealOptions {
     projectRoot: string;
     /** JSON report, blob-report folder, or a GitHub Actions / GitLab run URL. */
@@ -63,6 +64,10 @@ export interface HealOptions {
     policyNote?: string;
     /** Folders holding heals recorded during the run (autoheal-healed/), turned into code fixes. */
     healedDirs?: string[];
+    /** Earlier runs' results per test (see history.ts), shown with flaky tests. */
+    history?: History;
+    /** Try an AI fix for flaky tests before quarantining them (default true; needs a provider). */
+    fixFlaky?: boolean;
 }
 export declare function escapeRegex(text: string): string;
 /** Spec files that import `rel` (relative imports, or Python module imports). */

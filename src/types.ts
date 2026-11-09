@@ -93,6 +93,8 @@ export interface FailureResult {
   healed?: true;
   /** Grouped with this test's failure (same cause), so not worked on again. */
   groupOf?: string;
+  /** Earlier AutoHeal runs where this test failed (from the history artifact). */
+  history?: { failures: number; flaky: number; since: string };
   spend: BudgetSnapshot;
 }
 

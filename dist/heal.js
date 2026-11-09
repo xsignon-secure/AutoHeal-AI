@@ -39,6 +39,7 @@ import { rejected, reviewText } from './reviews.js';
 import { isProtected, skipRule, tooWeak, POLICY_FILE } from './policy.js';
 import { locatorChanges, locatorFor, parseSelector, rankOf, renderLocator, sourcePattern } from './locators.js';
 import { HEALED_DIR, loadHealed } from './runtime-heal.js';
+import { historyOf } from './history.js';
 const run = promisify(execFile);
 const NEW_FILE = '\u0000AUTOHEAL_NEW_FILE';
 /** The publish job accepts up to 60 fingerprint files per PR. */
@@ -487,6 +488,8 @@ export async function heal(options) {
             log(`  runtime guard: ${findings.length ? `${findings.length} problem(s)` : `ok (${checks} assertion(s) ran, all ${repeated} from the failed run repeated)`}`);
             return { findings, info };
         }
+        /** More stability runs while proving a flaky test's fix. */
+        let repeatOverride;
         let shotCount = 0;
         /** Saves the failed run's screenshot and the fixed run's screenshot at the same step. */
         async function saveEvidence(oldTrace, newTrace, end) {
@@ -569,7 +572,8 @@ export async function heal(options) {
         async function stableRuns(failure, grep) {
             let passed = false;
             let detail = '';
-            const runs = traceless ? Math.min(3, options.repeatEach) : options.repeatEach;
+            const want = repeatOverride ?? options.repeatEach;
+            const runs = traceless ? Math.min(repeatOverride ? 5 : 3, want) : want;
             if (traceless) {
                 passed = true;
                 for (let i = 0; i < runs && passed; i++) {
@@ -937,6 +941,56 @@ export async function heal(options) {
             return true;
         }
         const proposals = new Map();
+        /**
+         * A flaky test: ask the AI for the race and a deterministic fix, proven by
+         * twice the usual stability runs (at least 10). Otherwise it is quarantined.
+         */
+        async function flakyFix(failure, result, t) {
+            if (!provider || options.mode === 'comment' || options.fixFlaky === false || notAllowed('ai'))
+                return false;
+            log('  flaky: asking the AI for a deterministic fix before quarantining');
+            repeatOverride = Math.max(options.repeatEach * 2, 10);
+            try {
+                const agent = await aiFix({
+                    mcp,
+                    provider,
+                    projectRoot: root,
+                    failure,
+                    triage: t,
+                    memory: [
+                        'This test is FLAKY: it passes and fails on the same code. Find the race (an action before the page is ready, timing, animation, test order or shared data) and make the test deterministic by waiting for the right state with web-first assertions. Never add retries, sleeps, longer timeouts or skips, and never loosen an assertion.',
+                        memoryText(relevantMemory(memory, failure.file)),
+                        policy?.protect.length ? `${POLICY_FILE} protects these paths (relative to the repository root); never change files there: ${policy.protect.join(', ')}` : '',
+                    ].filter(Boolean).join('\n'),
+                    budget,
+                    ...(options.appUrl ? { appUrl: options.appUrl } : {}),
+                    screenshot: null,
+                    framework,
+                    verify: (file, content) => verify(failure, file, content),
+                });
+                if (agent.guard)
+                    result.guard = agent.guard;
+                if (agent.stability)
+                    result.stability = agent.stability;
+                if (agent.runtime)
+                    result.runtime = agent.runtime;
+                if (agent.result === 'fixed' && agent.file && agent.before !== undefined && agent.after !== undefined) {
+                    result.status = 'FIXED';
+                    result.rootCause = 'TIMING';
+                    result.fix = { by: 'ai', file: agent.file, explanation: agent.explanation, diff: shortDiff(agent.file, agent.before, agent.after) };
+                    const locs = locatorChanges(agent.before, agent.after);
+                    if (locs.length)
+                        result.fix.locators = locs;
+                    result.summary = `Flaky test fixed, not quarantined: the fix passed ${result.stability?.runs ?? repeatOverride} runs in a row and the anti-cheat guard.`;
+                    return true;
+                }
+                result.reasons = [...result.reasons, `AI flaky fix: ${agent.explanation || agent.result}`];
+                return false;
+            }
+            finally {
+                repeatOverride = undefined;
+            }
+        }
         /** One heal from the run, as a proven change to the code. */
         async function healedFix(entry, index) {
             const old = parseSelector(entry.selector);
@@ -1038,6 +1092,9 @@ export async function heal(options) {
                 summary: '',
                 spend: EMPTY_SNAPSHOT,
             };
+            const past = historyOf(options.history, failure.file, failure.title);
+            if (past)
+                result.history = past;
             if (t.category === 'TEST_BUG') {
                 let fixed = false;
                 const dom = doms.get(failure.index);
@@ -1140,6 +1197,9 @@ export async function heal(options) {
                         });
                     }
                 }
+            }
+            else if (t.category === 'FLAKY' && (await flakyFix(failure, result, t))) {
+                fixedTitles.add(failure.title);
             }
             else if (t.category === 'FLAKY') {
                 if (options.mode === 'comment') {
