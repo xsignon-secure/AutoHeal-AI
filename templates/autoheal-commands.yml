@@ -42,7 +42,7 @@ jobs:
         with:
           persist-credentials: false
           fetch-depth: 0
-      - uses: xsignon-secure/AutoHeal-AI/command@v0.12.0
+      - uses: xsignon-secure/AutoHeal-AI/command@v0.12.1
         with:
           # After /autoheal apply, the test workflow that failed is started on the PR
           # branch (it needs workflow_dispatch). Name another one here if you like:

@@ -1,3 +1,3 @@
 /** Kept in step with package.json (a test checks it). */
-export const VERSION = '0.12.0';
+export const VERSION = '0.12.1';
 //# sourceMappingURL=version.js.map

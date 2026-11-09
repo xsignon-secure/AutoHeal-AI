@@ -2,6 +2,22 @@
 
 All notable changes to AutoHeal AI. Versions follow [semantic versioning](https://semver.org/).
 
+## 0.12.1 (2026-11-09)
+
+Fixes found by running 0.12.0 for real: a real WebdriverIO project and a public GitHub demo repository ([xsignon-secure/autoheal-demo](https://github.com/xsignon-secure/autoheal-demo)) where AutoHeal healed real PRs and answered real `/autoheal` commands.
+
+### Fixed
+- **WebdriverIO results were never read.** `@wdio/junit-reporter` writes `wdio-<id>-junit-reporter.log` files by default, not `.xml`, so AutoHeal found no failures. Those files are read now, spec paths given as `file://` URLs are resolved, and quoted expected/actual values are unquoted, so a wrong price is reported as `$10` vs `$12`.
+- **"One UI change, one fix" grouped different changes.** Two UI changes made in the same commit (a renamed label and a renamed test id) were shown as one change. Fixes are now grouped by the locator change itself.
+- **`/autoheal apply` left the PR without test results.** A push made with the workflow token starts no workflows, so the applied fix was never tested on the PR. Apply now starts the test workflow on the PR branch (the `rerun-workflow` input, or the workflow of the failed run, found automatically) and says so in its reply.
+- **An applied fix was learned as rejected.** `/autoheal apply` closes the fix PR after copying the fix, and the review learner read that as "closed without merging", so the same fix was refused on the next PR. The fix PR is now closed with an `autoheal-applied` marker and counts as accepted.
+- **`/autoheal explain` pasted the whole fix PR.** It now answers with a short table (test, locator change, how it was fixed) and the tests left alone on purpose, without the PR's hidden markers.
+- **A run that fixed nothing stayed silent.** The failing PR now gets a comment with the reason for each test (for example "the same change was closed without merging in PR #2") and how to retry.
+- Spend shows `$0` when no tokens were used, instead of "not priced".
+
+### Changed
+- CI runs the WebdriverIO and heal-during-the-run scenarios of the simulation against real WebdriverIO and Playwright.
+
 ## 0.12.0 (2026-11-09)
 
 Everything from the market review: AutoHeal now heals during the run, fixes inside the failing PR, triages visual changes, fixes flaky tests, supports WebdriverIO, writes new tests, and works as an MCP server.
