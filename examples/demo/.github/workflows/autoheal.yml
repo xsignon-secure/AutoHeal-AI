@@ -122,7 +122,11 @@ jobs:
           if [[ "$branch" == autoheal/* ]]; then echo "::error::Run ${RUN_ID} is on an AutoHeal branch."; exit 1; fi
           # A green run is only worth healing when it healed locators during the run.
           skip=false
-          if [ "$(jq -r '.conclusion' <<< "$info")" = "success" ]; then
+          # A run of AutoHeal's own fix commit (fix-target: pr-branch) is never healed again: no loops.
+          if jq -r '.head_commit.message // ""' <<< "$info" | head -1 | grep -q '^test: AutoHeal fixes for failed run'; then
+            skip=true; echo "Run ${RUN_ID} tests AutoHeal's own fix commit; not healing it again."
+          fi
+          if [ "$skip" = false ] && [ "$(jq -r '.conclusion' <<< "$info")" = "success" ]; then
             healed="$(gh api "repos/${GITHUB_REPOSITORY}/actions/runs/${RUN_ID}/artifacts" --jq '[.artifacts[] | select(.name == "autoheal-healed" and .expired == false)] | length')"
             if [ "$healed" = "0" ]; then skip=true; echo "Green run with nothing healed: nothing to do."; fi
           fi
@@ -239,6 +243,8 @@ jobs:
           blocked: ${{ needs.heal.outputs.blocked }}
           # Your test workflow, started on the fix PR so it gets its checks.
           rerun-workflow: ${{ needs.heal.outputs.workflow }}
+          # Push the fix onto the failing PR's own branch instead of opening a separate PR:
+          # fix-target: pr-branch
           # dashboard-url: https://autoheal.example.com
           # dashboard-secret: ${{ secrets.AUTOHEAL_DASHBOARD_SECRET }}
 

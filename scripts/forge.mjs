@@ -95,6 +95,20 @@ export function githubForge({ api, server, repo, token }) {
     imageUrl(sha, file) {
       return `${trimSlash(server)}/${repo}/blob/${sha}/${file}?raw=true`;
     },
+    async defaultBranch() {
+      const info = await call('GET', r);
+      return info && typeof info.default_branch === 'string' ? info.default_branch : null;
+    },
+    prLink(number) {
+      return `${trimSlash(server)}/${repo}/pull/${number}`;
+    },
+    async getPr(number) {
+      const pr = await call('GET', `${r}/pulls/${number}`);
+      return { number: pr.number, url: pr.html_url, state: pr.state, head: pr.head?.ref, headRepo: pr.head?.repo?.full_name, base: pr.base?.ref, body: pr.body ?? '', title: pr.title ?? '' };
+    },
+    async closePr(number) {
+      await call('PATCH', `${r}/pulls/${number}`, { state: 'closed' });
+    },
   };
 }
 
@@ -140,6 +154,13 @@ export function gitlabForge({ api, server, repo, projectId, token }) {
     },
     async commentCommit(sha, body) {
       await call('POST', `${p}/repository/commits/${sha}/comments`, { note: body });
+    },
+    async defaultBranch() {
+      const info = await call('GET', p);
+      return info && typeof info.default_branch === 'string' ? info.default_branch : null;
+    },
+    prLink(number) {
+      return `${trimSlash(server)}/${repo}/-/merge_requests/${number}`;
     },
     /** Uploads an image to the project and returns its Markdown link. */
     async uploadImage(name, buffer, type) {

@@ -21,7 +21,7 @@
  * publish` sets them):
  *   RESULT_DIR, MODE, BASE_BRANCH, RUN_ID, COMMIT, PR_NUMBER, BLOCKED,
  *   OPEN_ISSUES, GH_TOKEN, DASHBOARD_URL, DASHBOARD_SECRET, ALLOWED_PATHS,
- *   ALLOW_WARN, QUARANTINE_DAYS, RERUN_WORKFLOW
+ *   ALLOW_WARN, QUARANTINE_DAYS, RERUN_WORKFLOW, FIX_TARGET
  * and, outside GitHub Actions, from the CI's own variables (src/ci.ts) and
  * AUTOHEAL_GITLAB_TOKEN or AUTOHEAL_GITHUB_TOKEN.
  *
@@ -467,7 +467,7 @@ export async function hostEvidence({ forge, root, dir, runId }) {
 }
 
 /** Applies the checked patch on a fresh branch and opens or updates the PR. */
-export async function publishPatch({ root, dir, mode, base, runId, fixed, forge, rerun }) {
+export async function publishPatch({ root, dir, mode, base, runId, fixed, forge, rerun, target = 'new-pr', pr: sourcePr = '' }) {
   const patchFile = path.join(dir, 'patch.diff');
   const patch = readRegular(patchFile, MAX_PATCH_BYTES);
   if (!patch?.trim()) return null;
@@ -521,7 +521,27 @@ export async function publishPatch({ root, dir, mode, base, runId, fixed, forge,
   const staged = git(['diff', '--cached', '--name-only'], { cwd: root }).split('\n').filter(Boolean).sort();
   const expected = files.map((f) => f.path).sort();
   if (JSON.stringify(staged) !== JSON.stringify(expected)) throw new Refused(`staged files differ from the patch (${staged.join(', ')})`);
-  git(['-c', 'user.name=autoheal-ai[bot]', '-c', 'user.email=autoheal-ai@users.noreply.github.com', 'commit', '-q', '--no-verify', '-m', `test: AutoHeal fixes for failed run ${runId}`, '-m', 'Verified by the AutoHeal anti-cheat guard and a stability rerun.'], { cwd: root });
+  git(['-c', 'user.name=autoheal-ai[bot]', '-c', 'user.email=autoheal-ai@users.noreply.github.com', 'commit', '-q', '--no-verify', '-m', `${COMMIT_SUBJECT} ${runId}`, '-m', 'Verified by the AutoHeal anti-cheat guard and a stability rerun.'], { cwd: root });
+
+  // fix-target pr-branch: the fix goes onto the failing PR's own branch, as one
+  // more commit (never forced, never the default branch). Anything else falls
+  // back to a separate fix PR.
+  if (target === 'pr-branch') {
+    const onto = await prBranchTarget(forge, base, sourcePr);
+    if (onto.ok) {
+      try {
+        git([...pushAuth(forge), 'push', forge.pushUrl, `HEAD:refs/heads/${base}`], { cwd: root, stdio: ['ignore', 'pipe', 'pipe'] });
+        summaryLine(`Pushed the fix onto ${base}, the branch of ${forge.label} ${sourcePr}.`);
+        if (rerun) await rerunTests(forge, rerun, base);
+        const url = forge.prLink ? forge.prLink(sourcePr) : null;
+        return { url, onBranch: true };
+      } catch (err) {
+        console.log(`Could not push onto ${base} (${err instanceof Error ? err.message.split('\n')[0] : String(err)}); opening a fix ${forge.label} instead.`);
+      }
+    } else {
+      console.log(`fix-target pr-branch: ${onto.why}; opening a fix ${forge.label} instead.`);
+    }
+  }
   git([...pushAuth(forge), 'push', '--force', forge.pushUrl, `HEAD:refs/heads/${branch}`], { cwd: root, stdio: ['ignore', 'pipe', 'inherit'] });
 
   const urls = await hostEvidence({ forge, root, dir, runId });
@@ -535,7 +555,34 @@ export async function publishPatch({ root, dir, mode, base, runId, fixed, forge,
     pr = await forge.createPr({ base, head: branch, title: `AutoHeal: ${fixed} test fix(es) for run ${runId}`, body, draft: mode === 'draft-pr' });
   }
   if (rerun) await rerunTests(forge, rerun, branch);
-  return pr.url;
+  return { url: pr.url, onBranch: false };
+}
+
+/** The subject of every AutoHeal fix commit; the heal workflow skips runs of such a commit (no loops). */
+export const COMMIT_SUBJECT = 'test: AutoHeal fixes for failed run';
+
+/** May the fix go onto this branch? Only an open PR's branch, never the default branch. */
+export async function prBranchTarget(forge, base, pr) {
+  if (!/^\d+$/.test(pr ?? '')) return { ok: false, why: 'the failed run has no pull request' };
+  if (isAutohealBranch(base)) return { ok: false, why: 'the branch is an AutoHeal branch' };
+  const main = forge.defaultBranch ? await forge.defaultBranch().catch(() => null) : null;
+  if (!main) return { ok: false, why: 'the default branch is unknown' };
+  if (main === base) return { ok: false, why: `${base} is the default branch, and AutoHeal never pushes there` };
+  if (/^(?:main|master|develop|release[/-].*)$/.test(base)) return { ok: false, why: `${base} looks like a shared branch` };
+  return { ok: true };
+}
+
+/** A short note on the failing PR, pointing at the fix and the chat commands. */
+export function sourceComment({ fixUrl, onBranch, fixed, label }) {
+  const n = `${fixed} test fix${fixed === 1 ? '' : 'es'}`;
+  const lines = onBranch
+    ? [`**AutoHeal AI** pushed ${n} onto this branch. Each one passed the anti-cheat guard and a stability rerun; review the commit like any other.`]
+    : [
+        `**AutoHeal AI** found ${n} for the failing tests here: ${fixUrl}`,
+        '',
+        `Comment \`/autoheal apply\` to add the fix to this ${label}, \`/autoheal explain\` for why, \`/autoheal retry\` to heal again, or \`/autoheal ignore\` to close the fix ${label}.`,
+      ];
+  return [...lines, '', '<!-- autoheal-source-comment -->'].join('\n');
 }
 
 /**
@@ -662,6 +709,7 @@ export function settings(env = process.env) {
     base: env.BASE_BRANCH || info.branch || '',
     commit: env.COMMIT || info.commit || '',
     pr: env.PR_NUMBER || info.pr || '',
+    target: env.FIX_TARGET || env.AUTOHEAL_FIX_TARGET || 'new-pr',
     rerun: env.RERUN_WORKFLOW || env.AUTOHEAL_RERUN_WORKFLOW || '',
     openIssues: (env.OPEN_ISSUES ?? env.AUTOHEAL_OPEN_ISSUES) !== 'false',
   };
@@ -693,8 +741,14 @@ export async function main(env = process.env) {
       console.log('The failed run is on an AutoHeal branch; nothing to publish.');
       return 0;
     }
-    prUrl = await publishPatch({ root, dir, mode, base, runId, fixed, forge, rerun: s.rerun });
+    if (!['new-pr', 'pr-branch'].includes(s.target)) throw new Refused(`fix-target must be new-pr or pr-branch (got "${s.target}")`);
+    const done = await publishPatch({ root, dir, mode, base, runId, fixed, forge, rerun: s.rerun, target: s.target, pr: s.pr });
+    prUrl = done?.url ?? null;
     if (prUrl) summaryLine(`Fix ${forge.label}: ${prUrl}`);
+    // Tell the failing PR where its fix is (or that it is already on its branch).
+    if (done && /^\d+$/.test(s.pr ?? '')) {
+      await forge.commentPr(s.pr, sourceComment({ fixUrl: done.url, onBranch: done.onBranch, fixed, label: forge.label })).catch((err) => console.log(`Could not comment on ${forge.label} ${s.pr}: ${err instanceof Error ? err.message : String(err)}`));
+    }
     if (s.openIssues && readPolicy(root)?.issues.enabled !== false) issues = await publishIssues(dir, forge);
   }
   if (env.GITHUB_OUTPUT) appendFileSync(env.GITHUB_OUTPUT, `pr-url=${prUrl ?? ''}\n`);

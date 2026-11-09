@@ -42,6 +42,9 @@ inputs:
   quarantine-days:
     description: Longest quarantine a patch may set (days, at most 90). Keep it the same as the heal action's quarantine-days.
     default: '14'
+  fix-target:
+    description: "new-pr (default) opens a separate fix PR against the failing branch. pr-branch pushes the fix as one more commit onto the failing PR's own branch (never the default branch, never forced; falls back to new-pr). Either way the failing PR gets a comment with the fix."
+    default: new-pr
   rerun-workflow:
     description: "File name of your test workflow (e.g. playwright.yml). The publish job starts it on the fix branch with workflow_dispatch, so the PR gets its CI checks even with the default token. Needs `actions: write` and `workflow_dispatch:` in that workflow. Empty: skip."
     default: ''
@@ -79,4 +82,5 @@ runs:
         ALLOW_WARN: ${{ inputs.allow-warn }}
         QUARANTINE_DAYS: ${{ inputs.quarantine-days }}
         RERUN_WORKFLOW: ${{ inputs.rerun-workflow }}
+        FIX_TARGET: ${{ inputs.fix-target }}
       run: node "$GITHUB_ACTION_PATH/../scripts/publish.mjs"

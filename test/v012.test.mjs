@@ -1,9 +1,11 @@
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
 import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
+import http from 'node:http';
 import os from 'node:os';
 import path from 'node:path';
 import { test } from 'node:test';
+import { main as publishMain, prBranchTarget, sourceComment } from '../scripts/publish.mjs';
 import { engineEnv, failureGroup, heal, healedFolders, loadHealed, runtimeMode } from '../dist/index.js';
 
 const LOGIN = "test('login', async ({ page }) => {\n  await page.getByRole('button', { name: 'Log in' }).click();\n});\n";
@@ -153,4 +155,108 @@ test('grouping: same wrong value = one app bug, max-failures counts groups', asy
   assert.equal(byTitle.p2.groupOf, 'p1');
   assert.equal(byTitle.p3.groupOf, 'p1');
   assert.equal(s.skippedFailures, 0);
+});
+
+// ---------- Fix on the failing PR's own branch ----------
+
+const tmp = (p) => mkdtempSync(path.join(os.tmpdir(), p));
+const git = (cwd, ...args) => execFileSync('git', ['-c', 'user.email=t@t', '-c', 'user.name=t', ...args], { cwd, encoding: 'utf8' }).trim();
+
+function mockServer(handler) {
+  const calls = [];
+  const server = http.createServer((req, res) => {
+    let body = '';
+    req.on('data', (c) => (body += c));
+    req.on('end', () => {
+      calls.push({ method: req.method, url: req.url, body });
+      const [status, data] = handler(req, body);
+      res.writeHead(status, { 'content-type': 'application/json' });
+      res.end(JSON.stringify(data));
+    });
+  });
+  return new Promise((resolve) => server.listen(0, '127.0.0.1', () => resolve({ server, calls, url: `http://127.0.0.1:${server.address().port}` })));
+}
+
+test('prBranchTarget: only an open PR branch that is not the default or a shared branch', async () => {
+  const forge = { defaultBranch: async () => 'main' };
+  assert.equal((await prBranchTarget(forge, 'feature/x', '')).ok, false);
+  assert.equal((await prBranchTarget(forge, 'main', '3')).ok, false);
+  assert.equal((await prBranchTarget(forge, 'release/1.2', '3')).ok, false);
+  assert.equal((await prBranchTarget(forge, 'autoheal/9', '3')).ok, false);
+  assert.equal((await prBranchTarget({}, 'feature/x', '3')).ok, false, 'unknown default branch');
+  assert.equal((await prBranchTarget(forge, 'feature/x', '3')).ok, true);
+  assert.match(sourceComment({ fixUrl: 'https://x/pr/2', onBranch: false, fixed: 2, label: 'pull request' }), /\/autoheal apply/);
+  assert.match(sourceComment({ fixUrl: null, onBranch: true, fixed: 1, label: 'merge request' }), /pushed 1 test fix onto this branch/);
+});
+
+async function prBranchRun({ branch, target }) {
+  const bare = tmp('autoheal-bare-');
+  git(bare, 'init', '-q', '--bare');
+  const work = tmp('autoheal-work-');
+  git(work, 'init', '-q', '-b', branch);
+  mkdirSync(path.join(work, 'tests'));
+  writeFileSync(path.join(work, 'tests', 'login.spec.ts'), LOGIN);
+  git(work, 'add', '-A');
+  git(work, 'commit', '-qm', 'init');
+  git(work, 'push', '-q', bare, `HEAD:refs/heads/${branch}`);
+  const sha = git(work, 'rev-parse', 'HEAD');
+  writeFileSync(path.join(work, 'tests', 'login.spec.ts'), LOGIN.replace("'Log in'", "'Sign in'"));
+  const patch = execFileSync('git', ['diff'], { cwd: work, encoding: 'utf8' });
+  git(work, 'checkout', '--', '.');
+  const result = tmp('autoheal-result-');
+  writeFileSync(path.join(result, 'patch.diff'), patch);
+  writeFileSync(path.join(result, 'changed-files.txt'), 'tests/login.spec.ts\n');
+  writeFileSync(path.join(result, 'meta.json'), JSON.stringify({ version: 1, fixed: 1, blocked: 0 }));
+  writeFileSync(path.join(result, 'pr-body.md'), '## AutoHeal\n');
+  writeFileSync(path.join(result, 'issues.json'), '[]');
+  const { server, calls, url } = await mockServer((req) => {
+    if (req.method === 'GET' && req.url === '/api/v4/projects/7') return [200, { default_branch: 'main' }];
+    if (req.method === 'GET') return [200, []];
+    if (req.url === '/api/v4/projects/7/merge_requests') return [201, { web_url: `${url}/acme/shop/-/merge_requests/9`, iid: 9 }];
+    return [201, {}];
+  });
+  const cwd = process.cwd();
+  try {
+    process.chdir(work);
+    const env = {
+      GITLAB_CI: 'true',
+      CI_SERVER_URL: url,
+      CI_API_V4_URL: `${url}/api/v4`,
+      CI_PROJECT_PATH: 'acme/shop',
+      CI_PROJECT_ID: '7',
+      CI_PIPELINE_ID: '556',
+      CI_COMMIT_SHA: sha,
+      CI_COMMIT_BRANCH: branch,
+      CI_MERGE_REQUEST_IID: '4',
+      AUTOHEAL_GITLAB_TOKEN: 'glpat-x',
+      AUTOHEAL_PUSH_URL: bare,
+      FIX_TARGET: target,
+      RESULT_DIR: result,
+      PATH: process.env.PATH,
+      HOME: process.env.HOME,
+    };
+    assert.equal(await publishMain(env), 0);
+  } finally {
+    process.chdir(cwd);
+    server.close();
+  }
+  return { bare, calls, sha };
+}
+
+test('fix-target pr-branch: one more commit on the PR branch, and a note on the PR', async () => {
+  const { bare, calls, sha } = await prBranchRun({ branch: 'feature/login', target: 'pr-branch' });
+  assert.match(execFileSync('git', ['show', 'feature/login:tests/login.spec.ts'], { cwd: bare, encoding: 'utf8' }), /Sign in/);
+  assert.equal(execFileSync('git', ['rev-parse', 'feature/login~1'], { cwd: bare, encoding: 'utf8' }).trim(), sha, 'a plain fast-forward commit');
+  assert.match(execFileSync('git', ['log', '-1', '--format=%s', 'feature/login'], { cwd: bare, encoding: 'utf8' }), /^test: AutoHeal fixes for failed run 556/);
+  assert.ok(!calls.some((c) => c.method === 'POST' && c.url === '/api/v4/projects/7/merge_requests'), 'no separate MR');
+  const note = calls.find((c) => c.method === 'POST' && c.url === '/api/v4/projects/7/merge_requests/4/notes');
+  assert.match(JSON.parse(note.body).body, /pushed 1 test fix onto this branch/);
+});
+
+test('fix-target pr-branch never pushes to the default branch: falls back to a fix MR', async () => {
+  const { bare, calls } = await prBranchRun({ branch: 'main', target: 'pr-branch' });
+  assert.doesNotMatch(execFileSync('git', ['show', 'main:tests/login.spec.ts'], { cwd: bare, encoding: 'utf8' }), /Sign in/);
+  assert.match(execFileSync('git', ['show', 'autoheal/556:tests/login.spec.ts'], { cwd: bare, encoding: 'utf8' }), /Sign in/);
+  const note = calls.find((c) => c.method === 'POST' && c.url === '/api/v4/projects/7/merge_requests/4/notes');
+  assert.match(JSON.parse(note.body).body, /\/autoheal apply/);
 });
