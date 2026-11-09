@@ -311,6 +311,7 @@ function githubMock() {
     if (req.method === 'GET' && u === '/repos/acme/shop') return [200, { default_branch: 'main' }];
     if (req.method === 'GET' && u === '/repos/acme/shop/pulls/5') return [200, { number: 5, html_url: 'https://gh/acme/shop/pull/5', state: 'open', head: { ref: 'feature/x', sha: 'abc', repo: { full_name: 'acme/shop' } }, base: { ref: 'main' } }];
     if (req.method === 'GET' && u.startsWith('/repos/acme/shop/pulls?state=open') && u.includes('base=feature%2Fx')) return [200, [{ number: 6, html_url: 'https://gh/acme/shop/pull/6', head: { ref: 'autoheal/77', repo: { full_name: 'acme/shop' } }, base: { ref: 'feature/x' }, body: 'Changed the login locator because @alice renamed it' }]];
+    if (req.method === 'GET' && u === '/repos/acme/shop/actions/runs/77') return [200, { id: 77, path: '.github/workflows/e2e.yml' }];
     if (req.method === 'GET') return [200, []];
     return [200, {}];
   });
@@ -334,6 +335,8 @@ test('/autoheal apply: cherry-picks the AutoHeal commit onto the PR branch and c
     forge.pushUrl = bare;
     const reply = await runCommand({ cmd: 'apply', forge, number: '5', commenter: '@​bob', root: checkout, env: {} });
     assert.match(reply, /Applied the AutoHeal fix/);
+    assert.match(reply, /Started `e2e.yml` on it/);
+    assert.ok(calls.some((c) => c.method === 'POST' && c.url === '/repos/acme/shop/actions/workflows/e2e.yml/dispatches' && JSON.parse(c.body).ref === 'feature/x'), 'the failed tests are started on the PR branch');
     assert.match(execFileSync('git', ['show', 'feature/x:tests/login.spec.ts'], { cwd: bare, encoding: 'utf8' }), /Sign in/);
     assert.match(execFileSync('git', ['show', 'feature/x:README.md'], { cwd: bare, encoding: 'utf8' }), /hi/, 'the PR branch keeps its own commits');
     assert.ok(calls.some((c) => c.method === 'PATCH' && c.url === '/repos/acme/shop/pulls/6' && JSON.parse(c.body).state === 'closed'));

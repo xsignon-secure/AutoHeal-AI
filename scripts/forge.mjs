@@ -121,6 +121,13 @@ export function githubForge({ api, server, repo, token }) {
       const run = Array.isArray(data?.workflow_runs) ? data.workflow_runs.find((x) => !String(x.name ?? '').startsWith('AutoHeal')) : null;
       return run ? String(run.id) : null;
     },
+    /** The workflow file (e.g. e2e.yml) of a run, or null. */
+    async runWorkflow(runId) {
+      if (!/^\d{1,20}$/.test(String(runId))) return null;
+      const data = await call('GET', `${r}/actions/runs/${runId}`);
+      const file = String(data?.path ?? '').split('@')[0].split('/').pop() ?? '';
+      return /^[\w.-]{1,100}\.ya?ml$/.test(file) ? file : null;
+    },
     async dispatchWith(workflow, ref, inputs) {
       await call('POST', `${r}/actions/workflows/${encodeURIComponent(workflow)}/dispatches`, { ref, inputs });
     },

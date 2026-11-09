@@ -150,10 +150,22 @@ export async function runCommand({ cmd, forge, number, commenter, root, env = pr
     return `The fix does not apply cleanly on the newest commit of \`${source.head}\`. Use \`/autoheal retry\`, or merge ${fix.url} by hand.`;
   }
   git([...auth, 'push', forge.pushUrl, `HEAD:refs/heads/${source.head}`], { cwd: root });
-  if (env.RERUN_WORKFLOW && /^[\w.-]{1,100}\.ya?ml$/.test(env.RERUN_WORKFLOW)) await forge.dispatch(env.RERUN_WORKFLOW, source.head).catch(() => undefined);
+  // A push with the workflow token starts no workflows (or waits for approval),
+  // so start the tests that failed on the PR branch: rerun-workflow, or the
+  // workflow of the failed run the fix was made for.
+  let tests = '';
+  const runId = fix.head.startsWith('autoheal/') ? fix.head.slice('autoheal/'.length) : '';
+  const workflow =
+    env.RERUN_WORKFLOW && /^[\w.-]{1,100}\.ya?ml$/.test(env.RERUN_WORKFLOW) ? env.RERUN_WORKFLOW : forge.runWorkflow && runId ? await forge.runWorkflow(runId).catch(() => null) : null;
+  if (workflow && forge.dispatch) {
+    tests = await forge.dispatch(workflow, source.head).then(
+      () => ` Started \`${workflow}\` on it.`,
+      () => ` Could not start \`${workflow}\` on it: add \`workflow_dispatch:\` to its \`on:\` list, or rerun the tests by hand.`,
+    );
+  }
   await forge.closePr(fix.number);
   await forge.commentPr(fix.number, `Applied to \`${source.head}\` with \`/autoheal apply\`${who}; closing this ${forge.label}.`);
-  return `Applied the AutoHeal fix from ${fix.url} to \`${source.head}\`${who}.`;
+  return `Applied the AutoHeal fix from ${fix.url} to \`${source.head}\`${who}.${tests}`;
 }
 
 export async function main(env = process.env) {
