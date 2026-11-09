@@ -1154,6 +1154,39 @@ export async function heal(options: HealOptions): Promise<HealSummary> {
       }
     }
 
+    const canFixFlaky = (): boolean => Boolean(provider) && options.mode !== 'comment' && options.fixFlaky !== false && !notAllowed('ai');
+    const deferredFlaky: Array<{ failure: FailureInfo; result: FailureResult; t: Triage }> = [];
+
+    /** A flaky test with no deterministic fix: quarantined (or only reported). */
+    async function quarantineFlaky(failure: FailureInfo, result: FailureResult, t: Triage): Promise<void> {
+      if (options.mode === 'comment') {
+        result.status = 'FLAKY';
+        result.summary = 'Flaky: passes and fails on the same code. Comment mode, so it was not quarantined.';
+      } else if (policy && !policy.quarantine.enabled) {
+        result.status = 'FLAKY';
+        result.summary = `Flaky: passes and fails on the same code. ${POLICY_FILE} turns quarantine off, so it was not quarantined.`;
+      } else {
+        const before = (await exists(path.join(root, 'playwright-quarantine.json'))) ? await readFile(path.join(root, 'playwright-quarantine.json'), 'utf8') : null;
+        const q = await mcp.call('quarantine', {
+          action: 'add',
+          file: failure.file,
+          title: failure.title,
+          days: options.quarantineDays,
+          owner: options.owner ?? 'AutoHeal AI (unassigned)',
+          reason: `AutoHeal: ${t.reasons.join('; ')}`.slice(0, 300),
+        });
+        if (q.ok) {
+          if (!originals.has('playwright-quarantine.json')) originals.set('playwright-quarantine.json', before ?? NEW_FILE);
+          result.status = 'QUARANTINED';
+          result.quarantine = { days: options.quarantineDays };
+          result.summary = `Flaky, so it was quarantined for ${options.quarantineDays} days: it still runs, but its failures do not fail the build until the entry expires.`;
+        } else {
+          result.status = 'FLAKY';
+          result.summary = `Flaky, but quarantining failed: ${q.text.split('\n')[0]}`;
+        }
+      }
+    }
+
     /** One heal from the run, as a proven change to the code. */
     async function healedFix(entry: HealedEntry, index: number): Promise<void> {
       const old = parseSelector(entry.selector);
@@ -1344,35 +1377,11 @@ export async function heal(options: HealOptions): Promise<HealSummary> {
             });
           }
         }
-      } else if (t.category === 'FLAKY' && (await flakyFix(failure, result, t))) {
-        fixedTitles.add(failure.title);
+      } else if (t.category === 'FLAKY' && canFixFlaky()) {
+        // Fixed after the other failures, so the AI budget goes to real breaks first.
+        deferredFlaky.push({ failure, result, t });
       } else if (t.category === 'FLAKY') {
-        if (options.mode === 'comment') {
-          result.status = 'FLAKY';
-          result.summary = 'Flaky: passes and fails on the same code. Comment mode, so it was not quarantined.';
-        } else if (policy && !policy.quarantine.enabled) {
-          result.status = 'FLAKY';
-          result.summary = `Flaky: passes and fails on the same code. ${POLICY_FILE} turns quarantine off, so it was not quarantined.`;
-        } else {
-          const before = (await exists(path.join(root, 'playwright-quarantine.json'))) ? await readFile(path.join(root, 'playwright-quarantine.json'), 'utf8') : null;
-          const q = await mcp.call('quarantine', {
-            action: 'add',
-            file: failure.file,
-            title: failure.title,
-            days: options.quarantineDays,
-            owner: options.owner ?? 'AutoHeal AI (unassigned)',
-            reason: `AutoHeal: ${t.reasons.join('; ')}`.slice(0, 300),
-          });
-          if (q.ok) {
-            if (!originals.has('playwright-quarantine.json')) originals.set('playwright-quarantine.json', before ?? NEW_FILE);
-            result.status = 'QUARANTINED';
-            result.quarantine = { days: options.quarantineDays };
-            result.summary = `Flaky, so it was quarantined for ${options.quarantineDays} days: it still runs, but its failures do not fail the build until the entry expires.`;
-          } else {
-            result.status = 'FLAKY';
-            result.summary = `Flaky, but quarantining failed: ${q.text.split('\n')[0]}`;
-          }
-        }
+        await quarantineFlaky(failure, result, t);
       } else if (t.category === 'APP_BUG') {
         result.status = 'APP_BUG';
         result.summary = 'The test looks right and the app looks wrong, so the test was not changed. An issue with the evidence is opened instead.';
@@ -1387,6 +1396,14 @@ export async function heal(options: HealOptions): Promise<HealSummary> {
 
       result.spend = deltaSnapshot(budget.snapshot(), spentBefore);
       summary.results.push(result);
+    }
+
+    for (const { failure, result, t } of deferredFlaky) {
+      log(`Failure ${failure.index}: ${failure.file} › ${failure.title} (flaky)`);
+      const spentBefore = budget.snapshot();
+      if (await flakyFix(failure, result, t)) fixedTitles.add(failure.title);
+      else await quarantineFlaky(failure, result, t);
+      result.spend = deltaSnapshot(budget.snapshot(), spentBefore);
     }
 
     // One UI change, one fix: failures past max-failures that the same broken
