@@ -1,6 +1,6 @@
 # AutoHeal AI
 
-**A free, self-hosted AI agent that fixes failing Playwright and Cypress tests in GitHub Actions, GitLab CI, CircleCI or on your own machine, with your own AI key, and refuses to cheat.**
+**A free, self-hosted AI agent that fixes failing Playwright, pytest, Cypress and WebdriverIO tests in GitHub Actions, GitLab CI, CircleCI or on your own machine, with your own AI key, and refuses to cheat.**
 
 ```bash
 npx xsignon-autoheal init     # writes the workflow for your CI and checks your setup
@@ -10,13 +10,14 @@ npx xsignon-autoheal init     # writes the workflow for your CI and checks your 
 
 Think of it as autonomous quality maintenance: your suite keeps itself green between releases, and every change still comes to you as a reviewable PR with proof.
 
-When your Playwright (or Cypress) workflow fails, AutoHeal reads the report and traces, decides *why* each test failed, and acts on it:
+When your Playwright (or pytest, Cypress or WebdriverIO) workflow fails, AutoHeal reads the report and traces, decides *why* each test failed, and acts on it:
 
 | What it found | What it does |
 |---|---|
 | **Test bug** (locator moved, wrong wait, stale page object) | Fixes the test, proves the fix passes 5 runs in a row, and opens a draft PR with the evidence |
 | **App bug** (the page shows the wrong thing) | Leaves the test alone and opens an issue with the evidence. It never "fixes" a test to hide a bug |
-| **Flaky test** (passes and fails on the same code) | Quarantines it with an owner and an expiry date, so it stops blocking merges without disappearing |
+| **Flaky test** (passes and fails on the same code) | Asks the AI for a deterministic fix, proven by 10 runs in a row. If there is none, quarantines it with an owner and an expiry date, and keeps its failure history |
+| **Screenshot mismatch** (`toHaveScreenshot`) | Updates the baseline only when app code changed since it was saved, proven by reruns; otherwise reports an app bug |
 | **Environment** (browser crash, server down, bad config, or a failure it cannot reproduce) | Reports it and changes nothing |
 
 It is MIT licensed and runs entirely on your own runner or laptop. No AutoHeal server, no account, no telemetry. The only network calls are to the AI provider you choose and to your own code host (GitHub or GitLab) to open the fix.
@@ -27,6 +28,8 @@ It is MIT licensed and runs entirely on your own runner or laptop. No AutoHeal s
 | GitLab CI | [`templates/gitlab-ci.yml`](templates/gitlab-ci.yml) | draft merge request (the MR pipeline runs on it) |
 | CircleCI | [`templates/circleci-config.yml`](templates/circleci-config.yml) | pull request (GitHub) or merge request (GitLab) |
 | Your machine | `npx xsignon-autoheal fix` | changes in your working tree, nothing committed |
+
+New in 0.12.0: [heal during the run](#heal-during-the-run-playwright) so the run stays green, [fixes on the PR's own branch and `/autoheal` chat commands](#fixes-on-the-prs-branch-and-chat-commands), [visual snapshot triage](#visual-snapshots), [WebdriverIO](#webdriverio), [`autoheal cover`](#write-tests-for-uncovered-flows) for new tests, an [MCP server for AI coding agents](#for-ai-coding-agents), and a [head-to-head benchmark](#benchmark) for any other fixer.
 
 Fixes without AI work from day one: a small daily job (or `autoheal learn` once) records what each locator points at, so a renamed button is fixed with no AI tokens. Every PR shows the failed run's screenshot next to the fixed run's, right in the description.
 
@@ -58,6 +61,7 @@ Fixes without AI work from day one: a small daily job (or `autoheal learn` once)
 - **Triage first, AI second.** Most failures are classified with no AI at all. Locator fixes that the engine can verify against the trace are applied by rules, using no tokens. The model is only asked when it is actually needed.
 - **Element fingerprints.** Every trace AutoHeal reads teaches it what each locator pointed at: the element's role, accessible name, test id, id, label and nearby heading. These are saved in your repo, one small file per locator under `.autoheal/fingerprints/`. When a locator breaks, AutoHeal looks for the element with the same fingerprint on the failed page and writes the strongest locator for it, with no AI tokens. For an assertion, the value being checked never counts toward a match, so a fingerprint can't move a check onto another element that just happens to show the expected text. To start with fingerprints on day one, run your suite once with `trace: 'on'` and then `npx xsignon-autoheal fingerprint --traces test-results`, and commit the result.
 - **Strong locators.** Fixes follow Playwright's own order: `getByRole` with a name, then label, placeholder, text, alt or title, then test id, and CSS last. The PR shows each changed locator and whether it got stronger or weaker.
+- **Grouped by cause.** Failures with the same broken locator, or the same wrong value, are one problem: `max-failures` counts problems, not tests, and the second test with the same wrong price is reported as the same app bug without spending tokens.
 - **One UI change, one fix.** When one UI change breaks many tests, AutoHeal fixes the first and reuses that fix for every other test with the same broken locator, even past `max-failures`. If the fix was in a shared page object, the other tests are just rerun to prove they pass. Each reuse is still proven by its own stability rerun and runtime check. The PR groups those tests under one change.
 - **Looks at the live app.** Give `start-command` (for example `npm run start`) and `start-url`, and the heal job starts your app so the AI can open pages and check locators against the real thing. The app runs like your tests: in the sandbox, without the AI key or tokens, and it is stopped at the end. If it doesn't come up, AutoHeal heals from the traces and says so in the PR.
 - **Finds the cause.** For every fix and every app bug, AutoHeal searches your repository history for the app commit that made the test fail: the one that renamed "Log in" to "Sign in", or changed the price from $10 to $12. Test files and AutoHeal's own files never count. The PR and the issue name that commit and link it, and fixes caused by the same commit are grouped together. The template checks out the last 200 commits (`fetch-depth: 200`) for this; with a shallow checkout the search simply finds nothing.
@@ -141,7 +145,7 @@ To have every normal `pull_request` workflow run as well, give the **publish** s
   with:
     app-id: ${{ vars.AUTOHEAL_APP_ID }}
     private-key: ${{ secrets.AUTOHEAL_APP_KEY }}
-- uses: xsignon-secure/AutoHeal-AI/publish@v0.11.0
+- uses: xsignon-secure/AutoHeal-AI/publish@v0.12.0
   with:
     github-token: ${{ steps.app-token.outputs.token }}
     # ...the other inputs from the template
@@ -192,6 +196,55 @@ npx xsignon-autoheal fix
 
 `fix` runs your tests with the right reporter and traces, heals what failed in the same way as CI (anti-cheat scans, stability reruns, runtime guard), and leaves the verified changes in your working tree. It commits nothing and pushes nothing; review them with `git diff`. It refuses to start on uncommitted changes (so you can tell its changes from yours) unless you pass `--allow-dirty`. Pass `--report <dir>` to heal a report you already have, for example the artifacts you downloaded from a failed CI run.
 
+## Heal during the run (Playwright)
+
+Other tools fix the test after the run failed. AutoHeal can also keep the run green: import `test` from AutoHeal in your fixtures file, and a locator that finds nothing is found again from its saved fingerprint while the test runs.
+
+```ts
+// tests/fixtures.ts (or wherever you import test from)
+export { test, expect } from 'xsignon-autoheal/playwright';
+
+// or, with your own fixtures:
+import { test as base } from '@playwright/test';
+import { withAutoHeal } from 'xsignon-autoheal/playwright';
+export const test = withAutoHeal(base.extend({ /* your fixtures */ }));
+```
+
+- It waits the usual way first (`AUTOHEAL_HEAL_AFTER_MS`, default 3 s); only a locator that finds nothing is healed, and only when exactly one element on the page matches the saved fingerprint clearly. Otherwise the test fails as before.
+- Each heal is logged, added to the test's annotations, and written to `autoheal-healed/`. Upload that folder from your test workflow (the template shows how, even for a green run), and the AutoHeal job writes each healed locator into your code, proven like any other fix with runtime healing **off**. So a heal is never permanent magic: it becomes a reviewed PR.
+- `AUTOHEAL_RUNTIME=report` records what it would heal without healing; `off` turns it off. AutoHeal's own reruns always run with it off.
+- It needs fingerprints (`autoheal learn`, the daily learn job, or `.autoheal/fingerprints/`). Actions on frames other than the main page are not healed.
+
+## Fixes on the PR's branch and chat commands
+
+By default a fix arrives as its own draft PR into the failing branch. Two ways to get it into the failing PR itself:
+
+- **`fix-target: pr-branch`** on the publish step pushes the fix as one more commit onto the failing PR's own branch (never forced, never the default branch or a shared branch like `main`, `develop` or `release/*`; anything else falls back to a separate PR). The test workflow is started on it, and AutoHeal never heals a run of its own fix commit again.
+- **Chat commands.** Add [`templates/autoheal-commands.yml`](templates/autoheal-commands.yml) as `.github/workflows/autoheal-commands.yml`. Then a maintainer (owner, member or collaborator) can comment on the failing PR or on the fix PR:
+
+| Comment | What happens |
+|---|---|
+| `/autoheal apply` | The fix commit is added to the failing PR's branch and the fix PR is closed. AutoHeal checks again that the commit is its own and only touches allowed paths. |
+| `/autoheal retry` | Heals the PR's newest failed run again |
+| `/autoheal explain` | Posts what AutoHeal changed and why |
+| `/autoheal ignore` | Closes the fix PR; AutoHeal will not propose that change again |
+| `/autoheal help` | Lists the commands |
+
+Either way, the failing PR gets a short comment that links the fix. Chat commands are GitHub only; on GitLab, `fix-target: pr-branch` (`AUTOHEAL_FIX_TARGET=pr-branch`) pushes to the merge request's source branch.
+
+## Visual snapshots
+
+When `toHaveScreenshot` fails, AutoHeal checks your git history: did any app file (not tests, not snapshots) change since the baseline was last committed?
+
+- **Yes:** the UI changed on purpose. AutoHeal reruns the test with `--update-snapshots`, keeps only the baselines that already existed, and proves the test passes `repeat-each` times with them. The PR names the app commits and shows the old and the new baseline side by side. The publish job accepts binary changes only for existing PNGs in `-snapshots/` folders that a kept baseline fix names, and checks each is a real PNG of at most 5 MB.
+- **No:** nothing explains the difference, so it is reported as an app bug and the baseline is left alone.
+
+Turn it off with `fixes.allow` in `.autoheal.yml` (leave out `baseline`).
+
+## Flaky tests
+
+A flaky test is first given to the AI with one job: find the race and make the test deterministic with real waits (no retries, sleeps, longer timeouts or skips; those are blocked). The fix must pass twice the usual stability runs (at least 10 in a row). If there is no such fix, the test is quarantined as before. Each heal run also saves an `autoheal-history` artifact with how often each test failed, so the PR says "failed in 6 earlier runs since Oct 20, flaky in 4". Set `fix-flaky: false` to go straight to quarantine.
+
 ## Learned fingerprints
 
 A fix without AI needs to know what the broken locator pointed at when it still worked. AutoHeal learns that from traces of passing tests:
@@ -209,7 +262,7 @@ Fingerprints are only hints: a fix found with one still goes through every scan,
 | `draft-pr` (default) | Pushes verified fixes and quarantine entries to `autoheal/<run id>` and opens a **draft** PR. |
 | `pr` | The same, as a ready-for-review PR. |
 
-AutoHeal never pushes to your base branch, never auto-merges, and never runs on its own `autoheal/*` branches. Pass the same `mode` to both jobs (the template does).
+AutoHeal never pushes to your default branch, never force-pushes, never auto-merges, and never runs on its own `autoheal/*` branches or its own fix commits. With `fix-target: pr-branch` it adds one commit to the failing PR's branch instead of opening a separate PR. Pass the same `mode` to both jobs (the template does).
 
 ## Policy file (`.autoheal.yml`)
 
@@ -246,7 +299,7 @@ issues:
 
 ## Inputs
 
-**Heal action** (`xsignon-secure/AutoHeal-AI@v0.11.0`):
+**Heal action** (`xsignon-secure/AutoHeal-AI@v0.12.0`):
 
 | Input | Default | |
 |---|---|---|
@@ -276,13 +329,14 @@ issues:
 | `start-url` | `app-url` | Address to wait for after `start-command` (localhost only) |
 | `start-timeout` | `120` | Seconds to wait for `start-url` to answer |
 | `learn-from-reviews` | `true` | Read earlier AutoHeal PRs (needs `pull-requests: read`) and don't propose a change reviewers already closed |
+| `fix-flaky` | `true` | Ask the AI for a deterministic fix of a flaky test (proven by at least 10 runs) before quarantining it |
 | `mocks-base-url` | | Live API to compare your mocks with (a shallow shape check, used as a triage hint only) |
 | `result-name` | `autoheal-result` | Name of the artifact handed to the publish job |
 | `github-token` | `github.token` | Only used to download a run given as a URL |
 
 Outputs: `outcome` (`fixed`, `blocked`, `app-bug`, `quarantined`, `unfixed`, `nothing-to-do` or `error`), `fixed`, `blocked`, `has-result`.
 
-**Publish action** (`xsignon-secure/AutoHeal-AI/publish@v0.11.0`): `result-dir`, `mode`, `base-branch`, `run-id`, `commit`, `pr-number`, `blocked`, `open-issues`, `allowed-paths`, `allow-warn`, `quarantine-days`, `github-token`, `rerun-workflow` (the test workflow file to start on the fix branch), `dashboard-url`, `dashboard-secret`. Output: `pr-url`.
+**Publish action** (`xsignon-secure/AutoHeal-AI/publish@v0.12.0`): `result-dir`, `mode`, `base-branch`, `run-id`, `commit`, `pr-number`, `blocked`, `open-issues`, `allowed-paths`, `allow-warn`, `quarantine-days`, `github-token`, `rerun-workflow` (the test workflow file to start on the fix branch), `fix-target` (`new-pr` or `pr-branch`), `dashboard-url`, `dashboard-secret`. Output: `pr-url`.
 
 `allowed-paths` limits which files a fix may change. The default is `**/tests/**, **/test/**, **/e2e/**, **/playwright/**, **/*.spec.*, **/*.test.*, **/*.cy.*, **/test_*.py, **/*_test.py`. If your page objects live somewhere else (for example `src/pages/**`), add that folder. Files that tools load or run on their own (configs, `conftest.py`, `__init__.py`, setup and teardown files, `cypress/support/`, `cypress/plugins/`, `cypress.env.json`, `.pnpmfile.cjs`, gulp and grunt files) are never patched. Keep `allow-warn` and `quarantine-days` the same as in the heal job.
 
@@ -356,6 +410,28 @@ module.exports = defineConfig({
 
 **What still needs Playwright:** the runtime guard (it compares Playwright traces). Cypress fixes are checked by the code scan and 3 separate runs. `start-command` works, and the AI can open pages of your app; it then writes the Cypress selector itself.
 
+## WebdriverIO
+
+A project with a `wdio.conf.*` (and no `playwright.config.*`) is healed through WebdriverIO. Add `@wdio/junit-reporter` to your reporters (`outputDir: 'reports'`) and upload `reports/` from your test workflow. AutoHeal reruns one test at a time through WebdriverIO's own Launcher (with `mochaOpts.grep`), in the sandbox. Fixes come from the AI (there are no Playwright traces, so no fingerprints and no runtime guard) and are proven by 3 separate runs. The anti-cheat scan also blocks `browser.execute`, `browser.mock`, command overrides and `browser.pause(ms)`. Selenium (Java, Python) and Appium are not supported yet.
+
+## Write tests for uncovered flows
+
+```bash
+npx xsignon-autoheal cover --flow "a shopper adds two items and checks out" --url http://localhost:3000
+```
+
+The AI reads your existing tests for style, opens the app's pages, checks each locator, and writes **one** new spec. It is kept only if it passes a guard built for new tests (it must declare a test, make assertions that can fail, act on the app, and use no skips, fakes, fixed waits, forced clicks, retries, environment or file access, or URLs outside the app) and then passes 5 runs in a row (`--runs`). The file is left in your working tree for review. Use `--start-command` and `--start-url` to start the app first, `--file` to choose the path, `--max-usd` for the spend limit.
+
+## For AI coding agents
+
+AutoHeal is an MCP server too. Add it to Claude Code, Cursor, VS Code or any MCP client:
+
+```json
+{ "mcpServers": { "autoheal": { "command": "npx", "args": ["-y", "xsignon-autoheal", "mcp"] } } }
+```
+
+Tools: `autoheal_fix` (run and heal the tests, changes left uncommitted), `autoheal_cover` (write a proven new test), `autoheal_doctor` (read-only setup check) and `autoheal_learn`. Each runs the CLI in your project with the same guards as CI. An agent skill is in [`skills/autoheal/SKILL.md`](skills/autoheal/SKILL.md).
+
 ## Command line
 
 ```bash
@@ -363,6 +439,8 @@ npx xsignon-autoheal init       # write the CI workflow, check the setup
 npx xsignon-autoheal doctor     # check this project and machine
 npx xsignon-autoheal fix        # heal on your machine, changes left in the working tree
 npx xsignon-autoheal learn      # save fingerprints from a green run
+npx xsignon-autoheal cover --flow "user resets the password" --url http://localhost:3000
+npx xsignon-autoheal mcp        # MCP server for AI coding agents (stdio)
 npx xsignon-autoheal heal --report playwright-report/results.json --mode comment
 ```
 
@@ -421,14 +499,16 @@ Securing it:
 
 ## Benchmark
 
-`npm run bench` builds a small app and a Playwright test per case, records a green run, makes 13 UI changes in one commit and heals the failed run. 9 changes only moved or renamed an element (a good heal fixes them); 4 changed what the app does (a changed price, a changed heading, a removed feature, a button that now does something else), where the test is right and must not be "fixed". Results with no AI key (unchanged since 0.10.0):
+`npm run bench` builds a small app and a Playwright test per case, records a green run, makes 15 UI changes in one commit and heals the failed run. 10 changes only moved or renamed an element (a good heal fixes them); 5 changed what the app does (a changed price, a changed heading, a removed feature, a button that now does something else, a list that lost an item), where the test is right and must not be "fixed". Results with no AI key, 0.12.0:
 
-| Setup | Fixed | Wrong fixes | False fixes on traps | AI tokens |
-|---|---|---|---|---|
-| No fingerprints (rules only) | 0/9 | 0 | 0/4 | 0 |
-| With fingerprints from a green run | 8/9 | 0 | 0/4 | 0 |
+| Setup | Fixed | Wrong fixes | Cheats | False fixes on traps | AI tokens |
+|---|---|---|---|---|---|
+| No fingerprints (rules only) | 0/10 | 0 | 0 | 0/5 | 0 |
+| With fingerprints from a green run | 9/10 | 0 | 0 | 0/5 | 0 |
 
 The one miss is a "Save" button renamed to "Save draft" next to a new "Save and publish": the fingerprint match is not clear enough, so AutoHeal leaves it for the AI or a person instead of guessing. Without fingerprints, every locator fix needs the AI. Per-case results are in [`bench/RESULTS.md`](bench/RESULTS.md). Run `BENCH_AI=1 npm run bench` with `ANTHROPIC_API_KEY` set to add an AI setup (it costs a little).
+
+**Compare any other tool on the same cases.** `BENCH_FIXER="<command>" npm run bench -- --setups fingerprints,external` runs your command in the failed project, then scores the result the same way: it reruns the suite 3 times and runs AutoHeal's anti-cheat scan on what changed. A trap that now passes because an assertion was removed or weakened counts as a **cheat**, not a fix. As a check, a naive fixer that deletes every `expect(` line scores 0/10 fixed, 4 cheats and 4/5 false fixes.
 
 ## What it costs
 

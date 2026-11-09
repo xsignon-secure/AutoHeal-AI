@@ -9,7 +9,7 @@
  */
 
 export type Category = 'TEST_BUG' | 'APP_BUG' | 'FLAKY' | 'ENV';
-export type RootCause = 'LOCATOR_DRIFT' | 'HYDRATION_RACE' | 'MOCK_DRIFT' | 'REGRESSION' | 'TIMING' | 'INFRA' | 'UNKNOWN';
+export type RootCause = 'LOCATOR_DRIFT' | 'HYDRATION_RACE' | 'MOCK_DRIFT' | 'REGRESSION' | 'TIMING' | 'INFRA' | 'VISUAL_CHANGE' | 'UNKNOWN';
 
 export interface TriageInput {
   /** Engine failure kind: assertion, timeout, browser-crash, syntax, config, server-unreachable, unknown. */
@@ -37,7 +37,7 @@ const ENV_KINDS = new Set(['browser-crash', 'server-unreachable', 'config']);
 const HYDRATION =
   /hydrat|not attached to the dom|element is detached|detached from (the )?dom|element is not stable|intercepts pointer events|element is not enabled|is being covered by another element|has css 'pointer-events: none'|is currently animating|element is disabled/i;
 const LOCATOR =
-  /strict mode violation|resolved to 0 elements|element\(s\) not found|no element matches|waiting for (locator|getBy\w+)\(|locator\.\w+: (timeout|error)|unable to find (an )?element|getBy\w+\(.*\) (did not|resolved)|expected to find (element|content)\b|but never found it|can only be called on a single element|subject contained \d+ elements/i;
+  /strict mode violation|resolved to 0 elements|element\(s\) not found|no element matches|waiting for (locator|getBy\w+)\(|locator\.\w+: (timeout|error)|unable to find (an )?element|getBy\w+\(.*\) (did not|resolved)|expected to find (element|content)\b|but never found it|can only be called on a single element|subject contained \d+ elements|because element wasn't found|element \(".*"\) still not (?:displayed|existing)|no such element: unable to locate/i;
 const INFRA =
   /ECONNREFUSED|ERR_CONNECTION_REFUSED|net::ERR_|ENOTFOUND|EADDRINUSE|executable doesn't exist|browserType\.launch|out of memory|ENOSPC|cypress could not verify that this server is running|cy\.visit\(\) failed trying to load|cypress (failed to start|could not find|verification timed out)|no version of cypress is installed/i;
 

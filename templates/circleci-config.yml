@@ -43,7 +43,7 @@ jobs:
       # Use the image your tests run in.
       - image: mcr.microsoft.com/playwright:v1.56.1-noble
     environment:
-      AUTOHEAL_VERSION: "0.11.0"
+      AUTOHEAL_VERSION: "0.12.0"
       AUTOHEAL_MODE: draft-pr
       AUTOHEAL_MAX_USD: "1.00"
     steps:
@@ -72,7 +72,7 @@ jobs:
     steps:
       - checkout
       - attach_workspace: { at: . }
-      - run: npx -y xsignon-autoheal@0.11.0 publish --result autoheal-result
+      - run: npx -y xsignon-autoheal@0.12.0 publish --result autoheal-result
 
   autoheal-learn:
     docker:
@@ -80,7 +80,7 @@ jobs:
     steps:
       - checkout
       - run: npm ci
-      - run: npx -y xsignon-autoheal@0.11.0 learn --out .autoheal-learned
+      - run: npx -y xsignon-autoheal@0.12.0 learn --out .autoheal-learned
       - save_cache:
           key: autoheal-learned-{{ epoch }}
           paths: [.autoheal-learned]

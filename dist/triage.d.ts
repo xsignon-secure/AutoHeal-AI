@@ -8,7 +8,7 @@
  * when the signals say APP_BUG with high confidence.
  */
 export type Category = 'TEST_BUG' | 'APP_BUG' | 'FLAKY' | 'ENV';
-export type RootCause = 'LOCATOR_DRIFT' | 'HYDRATION_RACE' | 'MOCK_DRIFT' | 'REGRESSION' | 'TIMING' | 'INFRA' | 'UNKNOWN';
+export type RootCause = 'LOCATOR_DRIFT' | 'HYDRATION_RACE' | 'MOCK_DRIFT' | 'REGRESSION' | 'TIMING' | 'INFRA' | 'VISUAL_CHANGE' | 'UNKNOWN';
 export interface TriageInput {
     /** Engine failure kind: assertion, timeout, browser-crash, syntax, config, server-unreachable, unknown. */
     kind: string;

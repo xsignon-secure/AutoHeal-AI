@@ -32,7 +32,7 @@ export interface FixInfo {
      * from its saved fingerprint. same-change: the fix kept for another test with
      * the same broken locator. ai: the AI agent. Only ai spends tokens.
      */
-    by: 'rules' | 'ai' | 'fingerprint' | 'same-change';
+    by: 'rules' | 'ai' | 'fingerprint' | 'same-change' | 'baseline';
     file: string;
     explanation: string;
     /** Unified-style excerpt of what changed (short). */
@@ -110,6 +110,26 @@ export interface FailureResult {
     skipped?: true;
     /** The app commit that most likely caused this failure. */
     cause?: Cause;
+    /** The test passed only because AutoHeal healed a locator during the run. */
+    healed?: true;
+    /** Grouped with this test's failure (same cause), so not worked on again. */
+    groupOf?: string;
+    /** Visual snapshot failures: what changed in the app since the baseline, and what was updated. */
+    visual?: {
+        intended: boolean;
+        commits: string[];
+        baselines: string[];
+        evidence?: {
+            before?: string;
+            after?: string;
+        };
+    };
+    /** Earlier AutoHeal runs where this test failed (from the history artifact). */
+    history?: {
+        failures: number;
+        flaky: number;
+        since: string;
+    };
     spend: BudgetSnapshot;
 }
 export type Outcome = 'fixed' | 'blocked' | 'app-bug' | 'quarantined' | 'nothing-to-do' | 'unfixed' | 'error';
@@ -147,6 +167,8 @@ export interface HealSummary {
     app?: string;
     /** Element fingerprints saved with this change. */
     fingerprints?: number;
+    /** Distinct problems among the failures (same broken locator or same wrong value = one). */
+    groups?: number;
     /** What the repository's .autoheal.yml changed. */
     policy?: string;
     /** What earlier AutoHeal PRs taught this run. */

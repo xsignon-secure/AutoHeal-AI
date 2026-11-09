@@ -132,10 +132,11 @@ function fixScript(login, po) {
 }
 
 /** The dummy shop with fingerprints from a green run of the old app, then two app commits that break tests. */
-function fingerprintRepo(name) {
+function fingerprintRepo(name, before) {
   return prepare(
     name,
     (d) => {
+      before?.(d);
       // A second test that clicks the same button: one UI change, two broken tests.
       writeFileSync(path.join(d, 'tests', 'checkout-login.spec.ts'), file(d, 'tests/login.spec.ts').replace("'user can log in'", "'checkout asks to log in'"));
       // A green run of the app as it was ("Log in"), traced, then `autoheal fingerprint`.
@@ -377,6 +378,37 @@ const scenarios = {
     check(first?.cause?.subject === 'Rename the login button to Sign in' && /Log in.*Sign in/.test(first.cause.evidence), `fix linked to the commit that renamed the button (${JSON.stringify(first?.cause)})`);
     check(second?.cause?.commit === first?.cause?.commit, 'the same-change fix has the same cause');
     check(/Likely cause/.test(body) && /Rename the login button to Sign in/.test(body), 'PR body names the commit');
+  },
+
+  runtime() {
+    // Heal during the run: the login specs import test from a fixtures file that uses withAutoHeal.
+    const dir = fingerprintRepo('runtime', (d) => {
+      writeFileSync(
+        path.join(d, 'tests', 'fixtures.ts'),
+        `import { test as base } from '@playwright/test';\nimport { withAutoHeal } from ${JSON.stringify(path.join(repo, 'dist', 'runtime-heal.js'))};\nexport const test = withAutoHeal(base);\nexport { expect } from '@playwright/test';\n`,
+      );
+      writeFileSync(path.join(d, 'tests', 'login.spec.ts'), file(d, 'tests/login.spec.ts').replace(/from '@playwright\/test'/, "from './fixtures'"));
+    });
+    // The CI run healed both login specs while it ran; its heals are uploaded with the artifacts.
+    const healedDir = path.join(dir, 'autoheal-healed');
+    const healed = existsSync(healedDir) ? readdirSync(healedDir) : [];
+    check(healed.length >= 1, `the run recorded heals in autoheal-healed/ (${healed.length})`);
+    cpSync(healedDir, path.join(dir, 'autoheal-artifacts', 'autoheal-healed'), { recursive: true });
+    rmSync(healedDir, { recursive: true, force: true });
+    const passed = spawnSync('npx', ['playwright', 'test', 'tests/login.spec.ts', 'tests/checkout-login.spec.ts'], { cwd: dir, encoding: 'utf8', env: { ...process.env, CI: '1' } });
+    check(passed.status === 0 && /healed click\(\)/.test(passed.stdout + passed.stderr), 'with healing on, the renamed button no longer fails the run');
+    rmSync(path.join(dir, 'autoheal-healed'), { recursive: true, force: true });
+    for (const x of ['test-results', 'playwright-report']) rmSync(path.join(dir, x), { recursive: true, force: true });
+    const { code, summary } = heal(dir, ['--mode', 'draft-pr', '--max-failures', '1', '--no-flaky-check']);
+    check(code === 0, `exit code 0 (got ${code})`);
+    const fromRun = summary?.results.filter((r) => r.healed) ?? [];
+    check(fromRun.length >= 1 && fromRun.every((r) => r.status === 'FIXED' && r.fix?.by === 'fingerprint'), `each heal became a code fix (${fromRun.map((r) => `${r.failure.title}: ${r.status}`).join('; ')})`);
+    check(fromRun.every((r) => r.stability?.passed === true), 'each was proven by the stability rerun with healing off');
+    check(file(dir, 'tests/login.spec.ts').includes("name: 'Sign in'"), 'the healed locator is written into the spec');
+    const off = spawnSync('npx', ['playwright', 'test', 'tests/login.spec.ts'], { cwd: dir, encoding: 'utf8', env: { ...process.env, CI: '1', AUTOHEAL_RUNTIME: 'off' } });
+    check(off.status === 0, 'the fixed spec passes with runtime healing off');
+    check(/Healed during the run/.test(file(dir, '.autoheal-out/pr-body.md')), 'the PR says the test was healed during the run');
+    check(summary?.spend.inputTokens === 0, 'no AI tokens used');
   },
 
   reviews() {

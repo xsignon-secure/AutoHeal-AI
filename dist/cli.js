@@ -4,7 +4,7 @@
  * self-hosted dashboard.
  */
 import { realpathSync } from 'node:fs';
-import { appendFile, mkdir, mkdtemp, readFile, rm, stat, writeFile } from 'node:fs/promises';
+import { appendFile, mkdir, mkdtemp, readdir, readFile, rm, stat, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
@@ -14,6 +14,12 @@ import { heal } from './heal.js';
 import { priceFor } from './budget.js';
 import { ConfigError, providerFromEnv } from './providers/index.js';
 import { redactDeep } from './redact.js';
+import { fetchHistory, HISTORY_FILE, recordRun } from './history.js';
+import { isWdioProject, WdioTools } from './wdio.js';
+import { cover } from './cover.js';
+import { Budget } from './budget.js';
+import { McpTools } from './mcp.js';
+import { CypressTools } from './cypress.js';
 import { findReport } from './report-files.js';
 import { eventsFrom, uploadEvents } from './upload.js';
 import { chooseSandbox, sandboxMode } from './sandbox.js';
@@ -32,7 +38,7 @@ import { ciInfo, ciLabel, isAutohealBranch } from './ci.js';
 import { prepareSandbox } from './sandbox.js';
 import { fetchLearned, LEARNED_DIR } from './learned.js';
 export const USAGE = `autoheal ${VERSION}: free, self-hosted AI agent that fixes failing Playwright,
-pytest-playwright and Cypress tests, in GitHub Actions, GitLab CI, CircleCI or on your machine.
+pytest-playwright, Cypress and WebdriverIO tests, in GitHub Actions, GitLab CI, CircleCI or locally.
 (npm package: xsignon-autoheal · command: autoheal · npx xsignon-autoheal <command> works too)
 
 Start here:
@@ -45,6 +51,11 @@ Start here:
   autoheal learn [--out .autoheal-learned] [--traces <dir>]
                          run the tests once with traces on and save element
                          fingerprints, so a broken locator is fixed without AI
+  autoheal cover --flow "<what a user does>" [--url <app> | --start-command <cmd> --start-url <url>]
+                 [--file <path>] [--runs 5] [--max-usd 1]
+                         write a NEW test for a flow with no test yet; kept only if it
+                         makes real assertions and passes every run (needs an AI key)
+  autoheal mcp           run AutoHeal as an MCP server (stdio) for AI coding agents
 
 In CI (the templates call these):
   autoheal heal --report <path|run URL> [options]
@@ -64,7 +75,7 @@ heal options (each also reads the AUTOHEAL_* variable in brackets):
   --report <p>           JSON report, blob-report folder, artifacts folder, or a
                          GitHub Actions / GitLab run URL (needs GITHUB_TOKEN)
   --project <dir>        project root (default: current directory)
-  --framework <f>        auto | playwright | pytest | cypress (default auto: from the
+  --framework <f>        auto | playwright | pytest | cypress | webdriverio (default auto: from the
                          config files) [AUTOHEAL_FRAMEWORK]. Cypress reads JUnit XML,
                          mochawesome or cypress.run() results from --report
   --mode <m>             comment | draft-pr | pr (default draft-pr) [AUTOHEAL_MODE]
@@ -215,6 +226,8 @@ async function cmdHeal(argv) {
     let report = values.report ?? env.AUTOHEAL_REPORT;
     if (!report)
         throw new ConfigError('--report is required (a report file, artifacts folder, or run URL).');
+    // Heals made during the run sit next to the report in the downloaded artifacts.
+    const healedDirs = /^https?:\/\//.test(report) ? [] : [report];
     let setting;
     try {
         setting = frameworkSetting(values.framework ?? env.AUTOHEAL_FRAMEWORK);
@@ -222,12 +235,13 @@ async function cmdHeal(argv) {
     catch (error) {
         throw new ConfigError(error instanceof Error ? error.message : String(error));
     }
-    const cypress = setting === 'cypress' || (setting === 'auto' && (await isCypressProject(projectRoot)));
+    const wdio = setting === 'webdriverio' || (setting === 'auto' && (await isWdioProject(projectRoot)));
+    const cypress = !wdio && (setting === 'cypress' || (setting === 'auto' && (await isCypressProject(projectRoot))));
     let traceDirs;
-    if (cypress) {
-        // Cypress results (JUnit XML, mochawesome or cypress.run() JSON) are found by the Cypress tools.
+    if (cypress || wdio) {
+        // Cypress and WebdriverIO results (JUnit XML or JSON) are found by their tools.
         if (/^https?:\/\//.test(report))
-            throw new ConfigError('For Cypress, download the run\'s artifacts into the project and pass the folder as --report.');
+            throw new ConfigError(`For ${wdio ? 'WebdriverIO' : 'Cypress'}, download the run's artifacts into the project and pass the folder as --report.`);
         const abs = path.resolve(projectRoot, report);
         if (!(await stat(abs).catch(() => null)))
             throw new ConfigError(`Report not found: ${report}`);
@@ -352,11 +366,18 @@ async function cmdHeal(argv) {
             log(`Learned fingerprints: ${note}`);
         learnedDirs.push(fetched);
     }
+    // How often each test failed in earlier AutoHeal runs.
+    const past = env.AUTOHEAL_HISTORY === 'false' ? null : await fetchHistory(ci, env);
+    if (past?.note)
+        log(`Failure history: ${past.note}`);
     const rawSummary = await heal({
         projectRoot,
         report,
+        healedDirs,
+        ...(past ? { history: past.history } : {}),
+        fixFlaky: env.AUTOHEAL_FIX_FLAKY !== 'false',
         ...(traceDirs ? { traceDirs } : {}),
-        framework: cypress ? 'cypress' : setting,
+        framework: wdio ? 'webdriverio' : cypress ? 'cypress' : setting,
         learnedDirs,
         mode,
         maxFailures: limits.maxFailures,
@@ -389,6 +410,13 @@ async function cmdHeal(argv) {
     const summary = redactDeep(rawSummary);
     await mkdir(outDir, { recursive: true });
     await writeFile(path.join(outDir, 'summary.json'), `${JSON.stringify(summary, null, 2)}\n`);
+    if (past) {
+        // The next run reads this (the action uploads it as the autoheal-history artifact).
+        await mkdir(path.join(outDir, 'history'), { recursive: true });
+        await writeFile(path.join(outDir, 'history', HISTORY_FILE), `${JSON.stringify(recordRun(past.history, summary.results, summary.startedAt))}\n`);
+        if (env.AUTOHEAL_HISTORY_FILE)
+            await writeFile(env.AUTOHEAL_HISTORY_FILE, `${JSON.stringify(recordRun(past.history, summary.results, summary.startedAt))}\n`).catch(() => undefined);
+    }
     await writeFile(path.join(outDir, 'job-summary.md'), jobSummary(summary));
     const outputs = {
         outcome: summary.outcome,
@@ -446,6 +474,8 @@ async function detectFramework(projectRoot, value) {
     }
     if (setting !== 'auto')
         return setting;
+    if (await isWdioProject(projectRoot))
+        return 'webdriverio';
     if (await isCypressProject(projectRoot))
         return 'cypress';
     return (await isPytestProject(projectRoot)) ? 'pytest' : 'playwright';
@@ -508,11 +538,15 @@ async function cmdFix(argv) {
         await rm(path.join(projectRoot, rel), { recursive: true, force: true });
         await mkdir(path.join(projectRoot, rel), { recursive: true });
         log(`Running your ${framework} tests…`);
-        const code = runTests(projectRoot, testRun(framework, 'fix', rel));
-        if (code === 0) {
+        const healedDir = path.join(projectRoot, rel, 'autoheal-healed');
+        const code = runTests(projectRoot, { ...testRun(framework, 'fix', rel), env: { ...testRun(framework, 'fix', rel).env, AUTOHEAL_HEALED_DIR: healedDir } });
+        const healedAny = (await readdir(healedDir).catch(() => [])).length > 0;
+        if (code === 0 && !healedAny) {
             log('All tests passed. Nothing to fix.');
             return 0;
         }
+        if (code === 0)
+            log('All tests passed, some only because AutoHeal healed a locator during the run. Writing those heals into the code…');
         report = rel;
     }
     // Your own machine, your own code: the sandbox is for CI.
@@ -680,6 +714,85 @@ async function cmdDashboard(argv) {
     process.on('SIGTERM', stop);
     return await new Promise(() => undefined);
 }
+/** Writes a new, proven test for a flow that has none (needs an AI key; runs on your machine). */
+async function cmdCover(argv) {
+    const { values } = parseArgs({
+        args: argv,
+        options: {
+            flow: { type: 'string' },
+            file: { type: 'string' },
+            url: { type: 'string' },
+            'start-command': { type: 'string' },
+            'start-url': { type: 'string' },
+            runs: { type: 'string' },
+            'max-usd': { type: 'string' },
+            project: { type: 'string' },
+            framework: { type: 'string' },
+        },
+        strict: true,
+    });
+    const log = (line) => process.stderr.write(`[autoheal] ${line}\n`);
+    const env = process.env;
+    const flow = (values.flow ?? '').trim();
+    if (!flow || flow.length > 2000)
+        throw new ConfigError('--flow is required: describe the user flow in plain words (at most 2000 characters).');
+    const projectRoot = path.resolve(values.project ?? '.');
+    const framework = await detectFramework(projectRoot, values.framework);
+    const provider = providerFromEnv(env);
+    if (!provider)
+        throw new ConfigError('autoheal cover needs an AI key: set ANTHROPIC_API_KEY, OPENAI_API_KEY or AUTOHEAL_BASE_URL.');
+    const maxUsd = Number(values['max-usd'] ?? env.AUTOHEAL_MAX_USD ?? 1);
+    if (!Number.isFinite(maxUsd) || maxUsd <= 0)
+        throw new ConfigError('--max-usd must be a positive number.');
+    const runs = Number(values.runs ?? 5);
+    if (!Number.isInteger(runs) || runs < 2 || runs > 20)
+        throw new ConfigError('--runs must be a whole number from 2 to 20.');
+    let app = null;
+    let appUrl = values.url;
+    if (values['start-command']) {
+        const url = values['start-url'] ?? values.url;
+        if (!url)
+            throw new ConfigError('--start-command needs --start-url: the address to wait for.');
+        app = await startApp({ command: values['start-command'], url, cwd: projectRoot, sandbox: null, log });
+        appUrl = app.url;
+    }
+    if (appUrl)
+        checkAppUrl(appUrl);
+    const mcp = framework === 'cypress' ? new CypressTools(projectRoot, { log }) : framework === 'webdriverio' ? new WdioTools(projectRoot, { log }) : await McpTools.start(projectRoot);
+    try {
+        log(`Writing a ${framework} test for: ${flow}`);
+        const result = await cover({
+            projectRoot,
+            flow,
+            ...(values.file ? { file: values.file } : {}),
+            ...(appUrl ? { appUrl } : {}),
+            provider,
+            budget: new Budget({ maxUsd, maxTokens: 2_000_000, maxSteps: 40 }, priceFor(provider.model, env)),
+            mcp,
+            framework,
+            runs,
+            log,
+        });
+        if (result.status === 'written') {
+            log(`Wrote ${result.file}: ${result.explanation}`);
+            log(`It passed ${result.runs} runs in a row and the new-test guard. Review it, then commit it.`);
+            return 0;
+        }
+        log(`No test written (${result.status}): ${result.explanation}${result.findings?.length ? ` [${result.findings.join('; ')}]` : ''}`);
+        return 1;
+    }
+    finally {
+        await mcp.close();
+        await app?.stop().catch(() => undefined);
+    }
+}
+/** AutoHeal as an MCP server on stdio, for AI coding agents. */
+async function cmdMcp(argv) {
+    const { values } = parseArgs({ args: argv, options: { project: { type: 'string' } }, strict: true });
+    const { serveMcp } = await import('./mcp-server.js');
+    await serveMcp({ projectRoot: path.resolve(values.project ?? '.') });
+    return 0;
+}
 export async function main(argv) {
     const [command, ...rest] = argv;
     try {
@@ -701,6 +814,10 @@ export async function main(argv) {
             return await cmdFix(rest);
         if (command === 'learn')
             return await cmdLearn(rest);
+        if (command === 'cover')
+            return await cmdCover(rest);
+        if (command === 'mcp')
+            return await cmdMcp(rest);
         if (command === 'package')
             return await cmdPackage(rest);
         if (command === 'publish')

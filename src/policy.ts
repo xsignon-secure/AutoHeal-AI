@@ -22,8 +22,8 @@ import path from 'node:path';
 export const POLICY_FILE = '.autoheal.yml';
 const MAX_BYTES = 20_000;
 
-export type FixSource = 'rules' | 'fingerprint' | 'same-change' | 'ai';
-export const FIX_SOURCES: FixSource[] = ['rules', 'fingerprint', 'same-change', 'ai'];
+export type FixSource = 'rules' | 'fingerprint' | 'same-change' | 'ai' | 'baseline';
+export const FIX_SOURCES: FixSource[] = ['rules', 'fingerprint', 'same-change', 'ai', 'baseline'];
 export type StrengthName = 'strong' | 'good' | 'fair' | 'weak';
 const STRENGTHS: StrengthName[] = ['strong', 'good', 'fair', 'weak'];
 

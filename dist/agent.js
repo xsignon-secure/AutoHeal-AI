@@ -117,9 +117,19 @@ export const CYPRESS_PROMPT = `
 This is a Cypress test, not Playwright. There is no trace: work from the error message, the spec, the files it imports and the app source (read_file).
 - Fix the selector in cy.get(...), cy.contains(...) or .find(...). Prefer cy.contains('button', 'Save') for visible text, then a data-cy / data-testid / data-test attribute selector, then a stable id; avoid long CSS chains, :nth-child and .eq() unless the old test used them.
 - Never change what .should(...) / .and(...) / expect(...) checks, never add cy.intercept, cy.stub, cy.clock, .invoke, cy.window or cy.on('uncaught:exception'), and never add cy.wait(<milliseconds>), { force: true } or a larger timeout. These are blocked automatically.`;
+export const WDIO_PROMPT = `
+
+This is a WebdriverIO test, not Playwright. There is no trace: work from the error message, the spec, the page objects it imports and the app source (read_file).
+- Fix the selector in $(...), $$(...) or a page object getter. Prefer $('aria/Save') or $('button=Save') for visible text, then a data-testid / data-test attribute selector, then a stable id; avoid long CSS chains and XPath unless the old test used them.
+- Never change what expect(...) checks, never add browser.execute, browser.executeAsync, browser.mock or browser.overwriteCommand, and never add browser.pause(<milliseconds>) or a larger timeout. These are blocked automatically.`;
 /** The system prompt for this framework. */
 export function systemPrompt(framework) {
-    return framework === 'cypress' ? SYSTEM_PROMPT.replace('fixing one failing Playwright test', 'fixing one failing end-to-end test') + CYPRESS_PROMPT : SYSTEM_PROMPT;
+    const generic = SYSTEM_PROMPT.replace('fixing one failing Playwright test', 'fixing one failing end-to-end test');
+    if (framework === 'cypress')
+        return generic + CYPRESS_PROMPT;
+    if (framework === 'webdriverio')
+        return generic + WDIO_PROMPT;
+    return SYSTEM_PROMPT;
 }
 /** Wraps untrusted text in a tag it cannot close early. */
 export function dataBlock(tag, text) {

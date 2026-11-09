@@ -31,3 +31,12 @@ export declare function stripComments(source: string): string;
 export declare function expectations(source: string): string[];
 export declare function assertionSubjects(source: string): string[];
 export declare function scanChange(before: string, after: string, file?: string): CheatReport;
+/**
+ * The guard for a NEW test (`autoheal cover`): there is no "before" to
+ * compare with, so the test itself must be honest. It must declare a test,
+ * make real assertions that can fail, drive the app (an action or a page
+ * load), and use none of the ways to fake a pass: no skips, no faked network
+ * or page, no fixed waits, no forced clicks, no swallowed errors, no
+ * environment, process, file or network access, and no URL outside the app.
+ */
+export declare function scanNewTest(content: string, file: string, appOrigin?: string): CheatReport;

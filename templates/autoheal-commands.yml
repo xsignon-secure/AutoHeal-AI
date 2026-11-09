@@ -1,0 +1,49 @@
+# AutoHeal AI chat commands: save as .github/workflows/autoheal-commands.yml.
+#
+# On the failing PR or on AutoHeal's fix PR, a maintainer comments:
+#   /autoheal apply     add the fix to the failing PR's branch, close the fix PR
+#   /autoheal retry     heal the PR's newest failed run again
+#   /autoheal explain   what AutoHeal changed and why
+#   /autoheal ignore    close the fix PR (AutoHeal will not propose it again)
+#   /autoheal help      the list
+#
+# Only comments by owners, members and collaborators run. The job checks out
+# your default branch and never runs your project's code. `apply` moves only a
+# commit AutoHeal's publish job made (author, subject and paths are checked
+# again), never force-pushes, and never pushes to the default branch or a fork.
+
+name: AutoHeal AI commands
+
+on:
+  issue_comment:
+    types: [created]
+
+permissions: {}
+
+jobs:
+  command:
+    if: >-
+      github.event.issue.pull_request &&
+      startsWith(github.event.comment.body, '/autoheal') &&
+      contains(fromJSON('["OWNER", "MEMBER", "COLLABORATOR"]'), github.event.comment.author_association)
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    concurrency:
+      group: autoheal-command-${{ github.event.issue.number }}
+      cancel-in-progress: false
+    permissions:
+      contents: write
+      pull-requests: write
+      issues: write
+      # /autoheal retry starts the AutoHeal workflow; apply starts your tests.
+      actions: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+      - uses: xsignon-secure/AutoHeal-AI/command@v0.12.0
+        with:
+          # rerun-workflow: playwright.yml
+          # allowed-paths: 'tests/**, e2e/**, pages/**'
+          heal-workflow: autoheal.yml

@@ -27,6 +27,10 @@ function python(): string {
 
 /** The command that runs the tests into `dir` (relative to the project). */
 export function testRun(framework: Framework, purpose: 'fix' | 'learn', dir: string): TestRun {
+  if (framework === 'webdriverio') {
+    // @wdio/junit-reporter writes the XML AutoHeal reads (add it to the project's reporters).
+    return { command: 'npx', args: ['wdio', 'run', process.env.AUTOHEAL_WDIO_CONFIG ?? 'wdio.conf.ts'], env: { AUTOHEAL_REPORT_DIR: dir } };
+  }
   if (framework === 'cypress') {
     const args = ['cypress', 'run'];
     if (purpose === 'fix') args.push('--reporter', 'junit', '--reporter-options', `mochaFile=${dir}/results-[hash].xml`);

@@ -44,6 +44,7 @@ const FIX_BY = {
     rules: 'deterministic, no AI tokens',
     fingerprint: 'element fingerprint, no AI tokens',
     'same-change': 'same UI change as another test, no AI tokens',
+    baseline: 'screenshot baseline updated after an intended UI change, no AI tokens',
     ai: 'AI agent',
 };
 /** Groups fixes by the UI change behind them: one change that broke several tests. */
@@ -80,6 +81,12 @@ function resultBlock(r) {
     out.push(`| File | \`${where}\` |`);
     out.push(`| Triage | **${r.category}** · ${r.rootCause} · confidence ${(r.confidence * 100).toFixed(0)}% |`);
     out.push(`| Why | ${cell(r.reasons.join('; '))} |`);
+    if (r.healed)
+        out.push(`| Healed during the run | the test passed because AutoHeal found the element again while it ran; this PR makes the code match |`);
+    if (r.groupOf)
+        out.push(`| Grouped with | ${cell(r.groupOf)} (same cause) |`);
+    if (r.history)
+        out.push(`| History | failed in ${r.history.failures} earlier AutoHeal run(s) since ${cell(r.history.since)}${r.history.flaky ? `, flaky in ${r.history.flaky}` : ''} |`);
     if (r.guard)
         out.push(`| Anti-cheat | engine heal guard: **${r.guard.engine}**, local scan: **${r.guard.local}** |`);
     if (r.stability)
@@ -102,6 +109,16 @@ function resultBlock(r) {
     }
     else if (r.runtime?.note)
         out.push(`| Runtime guard | ${cell(r.runtime.note)} |`);
+    if (r.visual) {
+        const why = r.visual.commits.length ? `app changes since the baseline: ${r.visual.commits.slice(0, 3).map((c) => `\`${cell(c)}\``).join(', ')}` : 'no app change since the baseline explains it';
+        out.push(`| Visual check | ${r.visual.intended ? 'intended UI change' : 'unexplained visual difference'} (${why}) |`);
+        if (r.visual.baselines.length)
+            out.push(`| Baselines updated | ${r.visual.baselines.map((b) => `\`${cell(b)}\``).join(', ')} |`);
+        const ev = r.visual.evidence;
+        if (ev && (ev.before || ev.after) && !evidenceMarkers.has(r)) {
+            evidenceMarkers.set(r, `<!-- autoheal-evidence${ev.before && /^[\w.-]{1,40}$/.test(ev.before) ? ` before="${ev.before}"` : ''}${ev.after && /^[\w.-]{1,40}$/.test(ev.after) ? ` after="${ev.after}"` : ''} -->`);
+        }
+    }
     if (r.cause)
         out.push(`| Likely cause | ${causeText(r.cause, repoUrl())} |`);
     if (r.quarantine)
@@ -212,7 +229,7 @@ export function commentBody(summary) {
     return fitGithub([
         '## AutoHeal AI report',
         '',
-        `Outcome: **${summary.outcome}** · ${summary.results.length} of ${summary.totalFailures} failure(s) analysed`,
+        `Outcome: **${summary.outcome}** · ${summary.results.length} of ${summary.totalFailures} failure(s) analysed${summary.groups && summary.groups < summary.totalFailures ? ` · ${summary.groups} distinct cause(s)` : ''}`,
         '',
         ...summary.results.map(resultBlock),
         totals(summary),

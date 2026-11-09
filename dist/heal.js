@@ -25,6 +25,7 @@ import { ciInfo } from './ci.js';
 import { loadLearned } from './learned.js';
 import { CYPRESS_DOM_DIR, cypressPattern, cypressSelectorFor, domFor, loadCypressDoms, replaceCypressSelector } from './cypress-dom.js';
 import { CypressTools, isCypressProject } from './cypress.js';
+import { isWdioProject, WdioTools } from './wdio.js';
 import { findReport } from './report-files.js';
 import { loadMemory, memoryEntryPath, memoryText, relevantMemory, remember } from './memory.js';
 import { triage as triageFailure } from './triage.js';
@@ -38,6 +39,8 @@ import { findCause, termsFromLocators, termsFromValues } from './cause.js';
 import { rejected, reviewText } from './reviews.js';
 import { isProtected, skipRule, tooWeak, POLICY_FILE } from './policy.js';
 import { locatorChanges, locatorFor, parseSelector, rankOf, renderLocator, sourcePattern } from './locators.js';
+import { HEALED_DIR, loadHealed } from './runtime-heal.js';
+import { historyOf } from './history.js';
 const run = promisify(execFile);
 const NEW_FILE = '\u0000AUTOHEAL_NEW_FILE';
 /** The publish job accepts up to 60 fingerprint files per PR. */
@@ -209,6 +212,48 @@ export function evidenceText(detail) {
     const cut = detail.search(/^### (Diagnosis|Next steps|All failures in this run|Run context)\b/m);
     return (cut >= 0 ? detail.slice(0, cut) : detail).slice(0, 20_000);
 }
+/** A Playwright screenshot comparison failure (toHaveScreenshot / toMatchSnapshot on an image). */
+export function isVisualFailure(f) {
+    return /toHaveScreenshot|Screenshot comparison failed|\b\d{1,12} pixels? \(ratio [\d.]{1,20} of all image pixels\) (?:are|is) different/i.test(f.message.slice(0, 50_000));
+}
+const TEST_PATH = /(?:^|\/)(?:tests?|e2e|__tests__|playwright|cypress|spec)\/|\.(?:spec|test|cy)\.[cm]?[jt]sx?$|-snapshots\/|^\.autoheal|\.md$|^\.github\/|(?:^|\/)(?:package-lock\.json|yarn\.lock|pnpm-lock\.yaml)$/;
+/** Did app files change since the baseline was last committed? Then the visual change was intended. */
+export async function visualIntent(root, snapDir) {
+    try {
+        const { stdout: base } = await run('git', ['-c', 'core.hooksPath=/dev/null', 'log', '-1', '--format=%H', '--', snapDir], { cwd: root });
+        const commit = base.trim();
+        if (!/^[0-9a-f]{40}$/.test(commit))
+            return { intended: false, commits: [], note: 'the baseline is not in git history, so no app change can explain the difference' };
+        const { stdout: files } = await run('git', ['-c', 'core.hooksPath=/dev/null', 'diff', '--name-only', `${commit}..HEAD`, '--', '.'], { cwd: root, maxBuffer: 16 * 1024 * 1024 });
+        const app = files.split('\n').filter((f) => f && !TEST_PATH.test(f));
+        if (!app.length)
+            return { intended: false, commits: [], note: `no app file changed since the baseline (${commit.slice(0, 7)})` };
+        const { stdout: log } = await run('git', ['-c', 'core.hooksPath=/dev/null', 'log', '--format=%h %s', '-n', '5', `${commit}..HEAD`, '--', ...app.slice(0, 200)], { cwd: root });
+        const commits = log.split('\n').filter(Boolean).map((l) => l.slice(0, 120));
+        return { intended: commits.length > 0, commits, note: commits.length ? `${app.length} app file(s) changed since the baseline` : 'no app commit since the baseline' };
+    }
+    catch {
+        return { intended: false, commits: [], note: 'git history is not available, so no app change can explain the difference' };
+    }
+}
+/** The folders that may hold heals from the run: next to the report, the project, and any given. */
+export function healedFolders(root, report, extra = []) {
+    const out = [path.join(root, HEALED_DIR), ...extra.map((d) => path.resolve(root, d))];
+    if (report && !/^https?:\/\//.test(report)) {
+        // A report folder (downloaded artifacts) is searched for autoheal-healed/ inside it.
+        const abs = path.resolve(root, report);
+        out.push(path.join(path.dirname(abs), HEALED_DIR), abs === root ? path.join(abs, HEALED_DIR) : abs);
+    }
+    return [...new Set(out)];
+}
+/** What makes two failures one problem: the same broken locator, or the same wrong value. */
+export function failureGroup(f, brokenSelector) {
+    if (brokenSelector)
+        return `locator:${brokenSelector}`;
+    if (f.expected !== undefined && f.actual !== undefined && f.kind !== 'timeout')
+        return `value:${f.expected}\u0000${f.actual}`;
+    return `one:${f.index}`;
+}
 function lastTitle(title) {
     const parts = title.split(' › ');
     return parts[parts.length - 1] ?? title;
@@ -255,11 +300,13 @@ export async function heal(options) {
     let traceDirs = options.traceDirs;
     const framework = options.framework && options.framework !== 'auto'
         ? options.framework
-        : (await isCypressProject(root))
-            ? 'cypress'
-            : (await isPytestProject(root))
-                ? 'pytest'
-                : 'playwright';
+        : (await isWdioProject(root))
+            ? 'webdriverio'
+            : (await isCypressProject(root))
+                ? 'cypress'
+                : (await isPytestProject(root))
+                    ? 'pytest'
+                    : 'playwright';
     summary.framework = framework;
     if (framework !== 'playwright')
         log(`Framework: ${framework}`);
@@ -275,9 +322,15 @@ export async function heal(options) {
         traceDirs = local.traceDirs;
     }
     const mcp = options.mcp ??
-        (framework === 'cypress' ? new CypressTools(root, { sandbox: options.sandbox ?? null, log }) : await McpTools.start(root, { sandbox: options.sandbox ?? null }));
+        (framework === 'cypress'
+            ? new CypressTools(root, { sandbox: options.sandbox ?? null, log })
+            : framework === 'webdriverio'
+                ? new WdioTools(root, { sandbox: options.sandbox ?? null, log })
+                : await McpTools.start(root, { sandbox: options.sandbox ?? null }));
     /** Original content of every file this job wrote, to revert on demand. */
     const originals = new Map();
+    /** Binary files (screenshot baselines) this job rewrote: their original bytes. */
+    const binaryOriginals = new Map();
     /** pytest and Cypress: no Playwright traces and no --repeat-each, so stability is separate runs and the runtime guard is off. */
     const traceless = framework !== 'playwright';
     async function writeTracked(rel, content) {
@@ -288,6 +341,12 @@ export async function heal(options) {
         await writeFile(abs, content);
     }
     async function revertAll(only) {
+        for (const [rel, bytes] of [...binaryOriginals]) {
+            if (only && !only(rel))
+                continue;
+            await writeFile(path.join(root, rel), bytes);
+            binaryOriginals.delete(rel);
+        }
         for (const [rel, original] of [...originals]) {
             if (only && !only(rel))
                 continue;
@@ -305,13 +364,17 @@ export async function heal(options) {
         // 1. Load the failed run.
         log(`Loading report ${reportRef}`);
         const loaded = await mcp.call('load-report', { report: reportRef, ...(traceDirs?.length ? { traceDirs } : {}), record: false }, 300_000);
-        if (!loaded.ok) {
+        // Heals the runtime fixture made during the run: the run may be green, but the code is still stale.
+        const healedEntries = framework === 'playwright' ? await loadHealed(healedFolders(root, reportRef, options.healedDirs)) : [];
+        if (healedEntries.length)
+            log(`Healed during the run: ${healedEntries.length} locator(s)`);
+        if (!loaded.ok && !healedEntries.length) {
             summary.outcome = 'error';
             summary.error = `Could not load the report: ${loaded.text.split('\n').slice(0, 3).join(' ')}`;
             return summary;
         }
         const failures = [];
-        for (let index = 1; index <= 200; index++) {
+        for (let index = 1; loaded.ok && index <= 200; index++) {
             const res = await mcp.call('get-failure', { index }, 120_000);
             const info = res.ok || res.data.failure ? failureFrom(index, res.data, res.text) : null;
             if (!info)
@@ -322,7 +385,7 @@ export async function heal(options) {
                 break;
         }
         summary.totalFailures = failures.length;
-        if (!failures.length) {
+        if (!failures.length && !healedEntries.length) {
             summary.outcome = 'nothing-to-do';
             return summary;
         }
@@ -348,8 +411,6 @@ export async function heal(options) {
             });
             return false;
         });
-        const work = eligible.slice(0, Math.max(1, options.maxFailures));
-        summary.skippedFailures = eligible.length - work.length;
         const failingTitlesByFile = new Map();
         for (const f of failures) {
             const set = failingTitlesByFile.get(f.file) ?? new Set();
@@ -387,6 +448,21 @@ export async function heal(options) {
             log(cyDoms.length ? `Cypress page snapshots: ${cyDoms.length} test(s)` : 'Cypress page snapshots: none (add the xsignon-autoheal/cypress plugin for fixes without AI)');
         }
         const moves = new Map();
+        // One cause, one group: failures with the same broken locator, or the same
+        // wrong value, are one problem. The first of each group goes first, so
+        // max-failures counts problems, not tests.
+        const groupOf = (f) => failureGroup(f, doms.get(f.index)?.failedCall?.selector);
+        const leaders = new Map();
+        for (const f of eligible)
+            if (!leaders.has(groupOf(f)))
+                leaders.set(groupOf(f), f);
+        const ordered = [...leaders.values(), ...eligible.filter((f) => leaders.get(groupOf(f)) !== f)];
+        const work = ordered.slice(0, Math.max(1, options.maxFailures));
+        summary.skippedFailures = ordered.length - work.length;
+        if (eligible.length)
+            summary.groups = leaders.size;
+        if (leaders.size < eligible.length)
+            log(`${eligible.length} failure(s) in ${leaders.size} group(s) by cause`);
         // 2. Deterministic fixes, read before any rerun changes the engine's "last run".
         const dryFixes = new Map();
         for (const f of work) {
@@ -451,6 +527,8 @@ export async function heal(options) {
             log(`  runtime guard: ${findings.length ? `${findings.length} problem(s)` : `ok (${checks} assertion(s) ran, all ${repeated} from the failed run repeated)`}`);
             return { findings, info };
         }
+        /** More stability runs while proving a flaky test's fix. */
+        let repeatOverride;
         let shotCount = 0;
         /** Saves the failed run's screenshot and the fixed run's screenshot at the same step. */
         async function saveEvidence(oldTrace, newTrace, end) {
@@ -533,7 +611,8 @@ export async function heal(options) {
         async function stableRuns(failure, grep) {
             let passed = false;
             let detail = '';
-            const runs = traceless ? Math.min(3, options.repeatEach) : options.repeatEach;
+            const want = repeatOverride ?? options.repeatEach;
+            const runs = traceless ? Math.min(repeatOverride ? 5 : 3, want) : want;
             if (traceless) {
                 passed = true;
                 for (let i = 0; i < runs && passed; i++) {
@@ -770,6 +849,7 @@ export async function heal(options) {
             fingerprint: "Fixed by finding the element again from its saved fingerprint; no AI tokens used.",
             'same-change': 'Fixed by the same change as another test that this UI change broke; no AI tokens used.',
             ai: 'Fixed by the AI agent and proven by the stability rerun.',
+            baseline: 'Screenshot baseline updated after an intended UI change; no AI tokens used.',
         };
         /** Verifies one proposal and fills in the result. True when it was kept. */
         /** Why the policy does not allow another fix of this kind, if it doesn't. */
@@ -901,6 +981,228 @@ export async function heal(options) {
             return true;
         }
         const proposals = new Map();
+        /**
+         * A screenshot comparison failed. If app files changed since the baseline
+         * was last committed, the UI changed on purpose: update the baseline and
+         * prove the test now passes repeatedly. Otherwise it is an unexplained
+         * visual difference: an app bug, with no change to the test.
+         */
+        async function visualCheck(failure, result) {
+            const snapDir = `${failure.file}-snapshots`;
+            const snapAbs = safePath(root, snapDir);
+            const names = snapAbs ? (await readdir(snapAbs).catch(() => [])).filter((n) => n.endsWith('.png')).slice(0, 200) : [];
+            const why = await visualIntent(root, snapDir);
+            result.visual = { intended: why.intended, commits: why.commits, baselines: [] };
+            if (!why.intended || !names.length || !snapAbs) {
+                result.category = 'APP_BUG';
+                result.rootCause = 'REGRESSION';
+                result.status = 'APP_BUG';
+                result.reasons = [...result.reasons, why.note];
+                result.summary = `The page looks different from the screenshot baseline, and ${why.note}. The baseline was not changed; an issue with the evidence is opened instead.`;
+                return false;
+            }
+            result.category = 'TEST_BUG';
+            result.rootCause = 'VISUAL_CHANGE';
+            result.reasons = [...result.reasons, `app changes since the baseline: ${why.commits.slice(0, 3).join('; ')}`];
+            const denied = notAllowed('baseline');
+            if (denied || options.mode === 'comment') {
+                result.summary = `The UI changed on purpose (${why.commits[0]}), so the screenshot baseline is out of date. ${denied ? `Not updated: ${denied}.` : 'Comment mode: run `npx playwright test --update-snapshots ' + failure.file + '` to update it.'}`;
+                if (denied)
+                    result.reasons = [...result.reasons, denied];
+                return false;
+            }
+            const before = new Map();
+            for (const n of names) {
+                const b = await readFile(path.join(snapAbs, n)).catch(() => null);
+                if (b)
+                    before.set(n, b);
+            }
+            const grep = escapeRegex(lastTitle(failure.title));
+            log(`  visual: intended UI change (${why.commits[0]}); updating the baseline`);
+            await mcp.call('run-test', { testFiles: [failure.file], grep, args: ['--update-snapshots'], retries: 0, retryOnFailure: false, timeoutMs: 600_000 }, 660_000);
+            const changed = [];
+            for (const n of (await readdir(snapAbs).catch(() => [])).filter((x) => x.endsWith('.png'))) {
+                const now = await readFile(path.join(snapAbs, n)).catch(() => null);
+                const old = before.get(n);
+                if (!old) {
+                    await rm(path.join(snapAbs, n), { force: true }); // only existing baselines are updated
+                    continue;
+                }
+                if (now && !now.equals(old))
+                    changed.push(n);
+            }
+            const restore = async () => {
+                for (const [n, b] of before)
+                    await writeFile(path.join(snapAbs, n), b);
+            };
+            if (!changed.length) {
+                await restore();
+                result.summary = 'The UI changed on purpose, but updating the baseline changed nothing, so nothing was kept.';
+                return false;
+            }
+            const st = await stableRuns(failure, grep);
+            result.stability = st;
+            if (!st.passed) {
+                await restore();
+                result.summary = `The UI changed on purpose, but the test still fails with an updated baseline:\n${st.detail}`;
+                return false;
+            }
+            for (const n of changed)
+                binaryOriginals.set(`${snapDir}/${n}`, before.get(n));
+            result.visual.baselines = changed.map((n) => `${snapDir}/${n}`);
+            // The old and new baseline, side by side in the PR.
+            if (options.evidenceDir && shotCount < 20) {
+                const first = changed[0];
+                const now = await readFile(path.join(snapAbs, first)).catch(() => null);
+                const old = before.get(first);
+                if (now && old && now.length <= 1_500_000 && old.length <= 1_500_000) {
+                    const n = ++shotCount;
+                    await mkdir(options.evidenceDir, { recursive: true });
+                    await writeFile(path.join(options.evidenceDir, `${n}-before.png`), old, { flag: 'wx' });
+                    await writeFile(path.join(options.evidenceDir, `${n}-after.png`), now, { flag: 'wx' });
+                    result.visual.evidence = { before: `${n}-before.png`, after: `${n}-after.png` };
+                }
+            }
+            result.status = 'FIXED';
+            result.fix = {
+                by: 'baseline',
+                file: `${snapDir}/${changed[0]}`,
+                explanation: `The app changed on purpose since this baseline was saved (${why.commits.slice(0, 3).join('; ')}). The baseline was updated and the test passed ${st.runs} times in a row with it.`,
+                diff: changed.map((n) => `Binary: ${snapDir}/${n} (updated)`).join('\n'),
+            };
+            result.summary = 'Screenshot baseline updated after an intended UI change; proven by the stability rerun. No AI tokens used.';
+            return true;
+        }
+        /**
+         * A flaky test: ask the AI for the race and a deterministic fix, proven by
+         * twice the usual stability runs (at least 10). Otherwise it is quarantined.
+         */
+        async function flakyFix(failure, result, t) {
+            if (!provider || options.mode === 'comment' || options.fixFlaky === false || notAllowed('ai'))
+                return false;
+            log('  flaky: asking the AI for a deterministic fix before quarantining');
+            repeatOverride = Math.max(options.repeatEach * 2, 10);
+            try {
+                const agent = await aiFix({
+                    mcp,
+                    provider,
+                    projectRoot: root,
+                    failure,
+                    triage: t,
+                    memory: [
+                        'This test is FLAKY: it passes and fails on the same code. Find the race (an action before the page is ready, timing, animation, test order or shared data) and make the test deterministic by waiting for the right state with web-first assertions. Never add retries, sleeps, longer timeouts or skips, and never loosen an assertion.',
+                        memoryText(relevantMemory(memory, failure.file)),
+                        policy?.protect.length ? `${POLICY_FILE} protects these paths (relative to the repository root); never change files there: ${policy.protect.join(', ')}` : '',
+                    ].filter(Boolean).join('\n'),
+                    budget,
+                    ...(options.appUrl ? { appUrl: options.appUrl } : {}),
+                    screenshot: null,
+                    framework,
+                    verify: (file, content) => verify(failure, file, content),
+                });
+                if (agent.guard)
+                    result.guard = agent.guard;
+                if (agent.stability)
+                    result.stability = agent.stability;
+                if (agent.runtime)
+                    result.runtime = agent.runtime;
+                if (agent.result === 'fixed' && agent.file && agent.before !== undefined && agent.after !== undefined) {
+                    result.status = 'FIXED';
+                    result.rootCause = 'TIMING';
+                    result.fix = { by: 'ai', file: agent.file, explanation: agent.explanation, diff: shortDiff(agent.file, agent.before, agent.after) };
+                    const locs = locatorChanges(agent.before, agent.after);
+                    if (locs.length)
+                        result.fix.locators = locs;
+                    result.summary = `Flaky test fixed, not quarantined: the fix passed ${result.stability?.runs ?? repeatOverride} runs in a row and the anti-cheat guard.`;
+                    return true;
+                }
+                result.reasons = [...result.reasons, `AI flaky fix: ${agent.explanation || agent.result}`];
+                return false;
+            }
+            finally {
+                repeatOverride = undefined;
+            }
+        }
+        const canFixFlaky = () => Boolean(provider) && options.mode !== 'comment' && options.fixFlaky !== false && !notAllowed('ai');
+        const deferredFlaky = [];
+        /** A flaky test with no deterministic fix: quarantined (or only reported). */
+        async function quarantineFlaky(failure, result, t) {
+            if (options.mode === 'comment') {
+                result.status = 'FLAKY';
+                result.summary = 'Flaky: passes and fails on the same code. Comment mode, so it was not quarantined.';
+            }
+            else if (policy && !policy.quarantine.enabled) {
+                result.status = 'FLAKY';
+                result.summary = `Flaky: passes and fails on the same code. ${POLICY_FILE} turns quarantine off, so it was not quarantined.`;
+            }
+            else {
+                const before = (await exists(path.join(root, 'playwright-quarantine.json'))) ? await readFile(path.join(root, 'playwright-quarantine.json'), 'utf8') : null;
+                const q = await mcp.call('quarantine', {
+                    action: 'add',
+                    file: failure.file,
+                    title: failure.title,
+                    days: options.quarantineDays,
+                    owner: options.owner ?? 'AutoHeal AI (unassigned)',
+                    reason: `AutoHeal: ${t.reasons.join('; ')}`.slice(0, 300),
+                });
+                if (q.ok) {
+                    if (!originals.has('playwright-quarantine.json'))
+                        originals.set('playwright-quarantine.json', before ?? NEW_FILE);
+                    result.status = 'QUARANTINED';
+                    result.quarantine = { days: options.quarantineDays };
+                    result.summary = `Flaky, so it was quarantined for ${options.quarantineDays} days: it still runs, but its failures do not fail the build until the entry expires.`;
+                }
+                else {
+                    result.status = 'FLAKY';
+                    result.summary = `Flaky, but quarantining failed: ${q.text.split('\n')[0]}`;
+                }
+            }
+        }
+        /** One heal from the run, as a proven change to the code. */
+        async function healedFix(entry, index) {
+            const old = parseSelector(entry.selector);
+            const failure = { index, file: entry.file, title: entry.title, kind: 'healed', message: `healed during the run: ${entry.code}`, detail: '' };
+            const { detail: _d, ...lite } = failure;
+            const result = {
+                failure: lite,
+                category: 'TEST_BUG',
+                rootCause: 'LOCATOR_DRIFT',
+                confidence: entry.score,
+                reasons: [`healed during the run (${entry.action}, match ${Math.round(entry.score * 100)}%: ${entry.signals.join(', ') || 'role and position'})`],
+                status: 'UNFIXED',
+                summary: '',
+                spend: EMPTY_SNAPSHOT,
+                healed: true,
+            };
+            if (!old || !safePath(root, entry.file))
+                return;
+            const at = await findLocator(failure, old);
+            const change = at ? replaceLocator(at, entry.locator) : null;
+            if (!at || !change) {
+                log(`Healed locator in ${entry.file} › ${entry.title}: the old locator is not written in one place, so no code change`);
+                return;
+            }
+            log(`Healed during the run: ${entry.file} › ${entry.title}: ${change.before} → ${change.after}`);
+            const kept = await attempt(failure, result, {
+                by: 'fingerprint',
+                file: at.file,
+                current: at.source,
+                next: change.next,
+                before: change.before,
+                after: change.after,
+                why: `The test passed only because AutoHeal found this element again during the run (match ${Math.round(entry.score * 100)}%). This writes the healed locator into the code, so the next run passes without healing.`,
+                match: { score: entry.score, signals: entry.signals },
+                locator: entry.locator,
+            });
+            if (kept) {
+                result.summary = 'Healed during the run, and now fixed in the code; proven with runtime healing off. No AI tokens used.';
+                fixedTitles.add(failure.title);
+            }
+            else if (result.status !== 'BLOCKED_CHEATING') {
+                result.summary = result.summary || 'Healed during the run, but the healed locator did not pass every check on its own, so the code was not changed.';
+            }
+            summary.results.push(result);
+        }
         // 3–5. One failure at a time.
         for (const [position, failure] of work.entries()) {
             budget.share(work.length - position);
@@ -957,7 +1259,14 @@ export async function heal(options) {
                 summary: '',
                 spend: EMPTY_SNAPSHOT,
             };
-            if (t.category === 'TEST_BUG') {
+            const past = historyOf(options.history, failure.file, failure.title);
+            if (past)
+                result.history = past;
+            if (framework === 'playwright' && isVisualFailure(failure)) {
+                if (await visualCheck(failure, result))
+                    fixedTitles.add(failure.title);
+            }
+            else if (t.category === 'TEST_BUG') {
                 let fixed = false;
                 const dom = doms.get(failure.index);
                 const broken = dom?.failedCall?.selector;
@@ -1060,37 +1369,12 @@ export async function heal(options) {
                     }
                 }
             }
+            else if (t.category === 'FLAKY' && canFixFlaky()) {
+                // Fixed after the other failures, so the AI budget goes to real breaks first.
+                deferredFlaky.push({ failure, result, t });
+            }
             else if (t.category === 'FLAKY') {
-                if (options.mode === 'comment') {
-                    result.status = 'FLAKY';
-                    result.summary = 'Flaky: passes and fails on the same code. Comment mode, so it was not quarantined.';
-                }
-                else if (policy && !policy.quarantine.enabled) {
-                    result.status = 'FLAKY';
-                    result.summary = `Flaky: passes and fails on the same code. ${POLICY_FILE} turns quarantine off, so it was not quarantined.`;
-                }
-                else {
-                    const before = (await exists(path.join(root, 'playwright-quarantine.json'))) ? await readFile(path.join(root, 'playwright-quarantine.json'), 'utf8') : null;
-                    const q = await mcp.call('quarantine', {
-                        action: 'add',
-                        file: failure.file,
-                        title: failure.title,
-                        days: options.quarantineDays,
-                        owner: options.owner ?? 'AutoHeal AI (unassigned)',
-                        reason: `AutoHeal: ${t.reasons.join('; ')}`.slice(0, 300),
-                    });
-                    if (q.ok) {
-                        if (!originals.has('playwright-quarantine.json'))
-                            originals.set('playwright-quarantine.json', before ?? NEW_FILE);
-                        result.status = 'QUARANTINED';
-                        result.quarantine = { days: options.quarantineDays };
-                        result.summary = `Flaky, so it was quarantined for ${options.quarantineDays} days: it still runs, but its failures do not fail the build until the entry expires.`;
-                    }
-                    else {
-                        result.status = 'FLAKY';
-                        result.summary = `Flaky, but quarantining failed: ${q.text.split('\n')[0]}`;
-                    }
-                }
+                await quarantineFlaky(failure, result, t);
             }
             else if (t.category === 'APP_BUG') {
                 result.status = 'APP_BUG';
@@ -1108,13 +1392,41 @@ export async function heal(options) {
             result.spend = deltaSnapshot(budget.snapshot(), spentBefore);
             summary.results.push(result);
         }
+        for (const { failure, result, t } of deferredFlaky) {
+            log(`Failure ${failure.index}: ${failure.file} › ${failure.title} (flaky)`);
+            const spentBefore = budget.snapshot();
+            if (await flakyFix(failure, result, t))
+                fixedTitles.add(failure.title);
+            else
+                await quarantineFlaky(failure, result, t);
+            result.spend = deltaSnapshot(budget.snapshot(), spentBefore);
+        }
         // One UI change, one fix: failures past max-failures that the same broken
         // locator caused get the kept fix too (no AI tokens, still proven by reruns).
-        for (const failure of eligible.slice(work.length)) {
+        for (const failure of ordered.slice(work.length)) {
             const broken = doms.get(failure.index)?.failedCall?.selector;
             const move = broken ? moves.get(broken) : undefined;
-            if (!move)
+            if (!move) {
+                // The same wrong value as an app bug already found: the same bug, no tokens spent.
+                const leader = leaders.get(groupOf(failure));
+                const led = leader && leader !== failure ? summary.results.find((r) => r.failure.index === leader.index) : undefined;
+                if (leader && led?.status === 'APP_BUG' && groupOf(failure).startsWith('value:')) {
+                    const { detail: _x, ...lite } = failure;
+                    summary.results.push({
+                        failure: lite,
+                        category: 'APP_BUG',
+                        rootCause: led.rootCause,
+                        confidence: led.confidence,
+                        reasons: [`the same wrong value as "${leader.title}"`],
+                        status: 'APP_BUG',
+                        summary: `The same app bug as "${leader.title}" (same expected and received values), so it was not looked at again.`,
+                        spend: EMPTY_SNAPSHOT,
+                        groupOf: leader.title,
+                    });
+                    summary.skippedFailures--;
+                }
                 continue;
+            }
             log(`Failure ${failure.index}: ${failure.file} › ${failure.title} (same broken locator as "${move.title}")`);
             const spentBefore = budget.snapshot();
             const { detail: _d, ...failureLite } = failure;
@@ -1134,6 +1446,13 @@ export async function heal(options) {
                 summary.results.push(result);
                 summary.skippedFailures--;
             }
+        }
+        // Heals made during the run become code fixes, proven like any other fix:
+        // with runtime healing off, the new locator must pass on its own.
+        for (const [i, entry] of healedEntries.slice(0, 50).entries()) {
+            if (options.mode === 'comment' && i >= 20)
+                break;
+            await healedFix(entry, 1000 + i);
         }
         // 6. Whole-tree heal guard over everything this job changed.
         const specFiles = [...originals.keys()].filter((f) => f !== 'playwright-quarantine.json');
@@ -1221,7 +1540,7 @@ export async function heal(options) {
         // Comment mode never leaves changes behind; the diffs are in the comment.
         if (options.mode === 'comment')
             await revertAll();
-        summary.changedFiles = [...originals.keys()].sort();
+        summary.changedFiles = [...originals.keys(), ...binaryOriginals.keys()].sort();
         summary.changes = options.mode !== 'comment' && summary.changedFiles.length > 0;
         summary.outcome = outcomeOf(summary.results);
     }

@@ -73,7 +73,7 @@ test('ciInfo reads GitLab, CircleCI and GitHub variables, and checks every value
 
 test('engineEnv drops GitLab and CircleCI tokens from what tests can see', () => {
   const env = engineEnv({ PATH: '/bin', CI_JOB_TOKEN: 'j', AUTOHEAL_GITLAB_TOKEN: 'g', AUTOHEAL_GITHUB_TOKEN: 'h', CIRCLE_TOKEN: 'c', CI_REPOSITORY_URL: 'https://gitlab-ci-token:x@gitlab.com/a/b.git', CI_REGISTRY_PASSWORD: 'r', CI: 'true' }, false);
-  assert.deepEqual(Object.keys(env).sort(), ['CI', 'PATH']);
+  assert.deepEqual(Object.keys(env).sort(), ['AUTOHEAL_RUNTIME', 'CI', 'PATH']);
 });
 
 function mockServer(handler) {

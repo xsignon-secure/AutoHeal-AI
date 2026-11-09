@@ -98,6 +98,15 @@ export const CASES = [
     expect: 'Save draft',
   },
   {
+    id: 'title-changed',
+    kind: 'fix',
+    what: 'icon button title changed',
+    before: `<button title="Delete item" onclick="${set('Deleted')}">×</button>`,
+    after: `<button title="Remove item" onclick="${set('Deleted')}">×</button>`,
+    test: `await page.getByTitle('Delete item').click();\n  await expect(page.getByRole('status')).toHaveText('Deleted');`,
+    expect: ['Remove item', "getByRole('button', { name: '×' })"],
+  },
+  {
     id: 'price-changed',
     kind: 'trap',
     what: 'price changed ($10 → $12)',
@@ -128,5 +137,13 @@ export const CASES = [
     before: `<button onclick="${set('Subscribed')}">Subscribe</button>`,
     after: `<button onclick="${set('Error: try later')}">Subscribe</button>`,
     test: `await page.getByRole('button', { name: 'Subscribe' }).click();\n  await expect(page.getByRole('status')).toHaveText('Subscribed');`,
+  },
+  {
+    id: 'count-changed',
+    kind: 'trap',
+    what: 'list lost an item (3 → 2)',
+    before: `<ul><li>Shoes</li><li>Socks</li><li>Hat</li></ul>`,
+    after: `<ul><li>Shoes</li><li>Socks</li></ul>`,
+    test: `await expect(page.getByRole('listitem')).toHaveCount(3);`,
   },
 ];

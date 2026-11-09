@@ -90,6 +90,8 @@ const CYPRESS = /\bcy\s*\.\s*(?:get|contains|visit|find|request|intercept)\s*\(/
 const CY_ASSERTION = /\.\s*(?:should|and)\s*\(/;
 /** Cypress commands that fake the app or its time, or change the page instead of testing it. */
 const CY_TAMPER = /\bcy\s*\.\s*(?:intercept|stub|clock|tick|window|document|server|route)\s*\(|\.\s*invoke\s*\(/;
+/** WebdriverIO commands that run code in the page, fake the network or rewrite commands. */
+const WDIO_TAMPER = /\bbrowser\s*\.\s*(?:execute|executeAsync|executeScript|mock|mockClearAll|mockRestoreAll|overwriteCommand|addCommand|throttle|throttleNetwork|emulate)\s*\(/;
 /** Hiding failures: an uncaught-exception or fail handler that swallows errors. */
 const CY_SWALLOW = /\b(?:cy|Cypress)\s*\.\s*on\s*\(\s*['"`](?:uncaught:exception|fail)['"`]/;
 /** Things a test fix never needs, and an exfiltration attempt does. */
@@ -325,6 +327,9 @@ export function scanChange(before: string, after: string, file?: string): CheatR
   if (count(b, CY_TAMPER) > count(a, CY_TAMPER) || count(after, CY_TAMPER) > count(before, CY_TAMPER)) {
     block('app-tampered', 'the change adds cy.intercept, cy.stub, cy.clock, cy.window or .invoke, which fake or edit the app instead of testing it');
   }
+  if (count(b, WDIO_TAMPER) > count(a, WDIO_TAMPER) || count(after, WDIO_TAMPER) > count(before, WDIO_TAMPER)) {
+    block('app-tampered', 'the change adds browser.execute, browser.mock or a command override, which fake or edit the app instead of testing it');
+  }
   if (count(b, CY_SWALLOW) > count(a, CY_SWALLOW) || count(after, CY_SWALLOW) > count(before, CY_SWALLOW)) block('swallowed-error', "an uncaught:exception or fail handler was added, which hides the app's errors");
   if (count(b, /\bCypress\s*\.\s*config\s*\(/) > count(a, /\bCypress\s*\.\s*config\s*\(/)) block('config-changed', 'Cypress.config(...) was added, which changes timeouts or settings for the run');
 
@@ -337,7 +342,7 @@ export function scanChange(before: string, after: string, file?: string): CheatR
   const timeoutAfter = maxNumber(b.replace(/_/g, ''), timeoutPattern);
   if (timeoutAfter > timeoutBefore) warn('timeout-raised', `a timeout was raised to ${timeoutAfter} ms`);
   if (count(b, /setTimeout\s*\(|\.slow\s*\(/) > count(a, /setTimeout\s*\(|\.slow\s*\(/)) warn('timeout-raised', 'test.setTimeout or test.slow was added');
-  const FIXED_WAIT = /waitForTimeout\s*\(|time\.sleep\s*\(|wait_for_timeout\s*\(|\bcy\s*\.\s*wait\s*\(\s*[\d_]/;
+  const FIXED_WAIT = /waitForTimeout\s*\(|time\.sleep\s*\(|wait_for_timeout\s*\(|\bcy\s*\.\s*wait\s*\(\s*[\d_]|\bbrowser\s*\.\s*pause\s*\(/;
   if (count(b, FIXED_WAIT) > count(a, FIXED_WAIT)) {
     warn('fixed-wait', 'a fixed wait (waitForTimeout / sleep / cy.wait(ms)) was added');
   }
@@ -347,5 +352,39 @@ export function scanChange(before: string, after: string, file?: string): CheatR
   if (count(b, /retries\s*[:=]\s*[1-9]/) > count(a, /retries\s*[:=]\s*[1-9]/)) warn('retries-added', 'retries were added');
 
   const verdict: Verdict = findings.some((f) => f.severity === 'BLOCK') ? 'BLOCK' : findings.length ? 'WARN' : 'PASS';
+  return { verdict, findings };
+}
+
+/**
+ * The guard for a NEW test (`autoheal cover`): there is no "before" to
+ * compare with, so the test itself must be honest. It must declare a test,
+ * make real assertions that can fail, drive the app (an action or a page
+ * load), and use none of the ways to fake a pass: no skips, no faked network
+ * or page, no fixed waits, no forced clicks, no swallowed errors, no
+ * environment, process, file or network access, and no URL outside the app.
+ */
+export function scanNewTest(content: string, file: string, appOrigin?: string): CheatReport {
+  const findings: CheatFinding[] = [];
+  const block = (rule: string, message: string) => findings.push({ severity: 'BLOCK', rule, message });
+  const code = stripComments(content);
+  const n = (re: RegExp) => count(code, re);
+  if (!n(TEST_DECL)) block('no-test', 'the file declares no test');
+  const assertions = n(new RegExp(ASSERTION.source, 'g')) + n(new RegExp(CY_ASSERTION.source, 'g'));
+  if (!assertions) block('no-assertion', 'the test makes no assertion, so it cannot fail');
+  if (n(TRIVIAL)) block('trivial-assertion', 'an assertion that cannot fail');
+  if (!n(ACTION) && !/\.(?:goto|visit|url)\s*\(/.test(code)) block('no-action', 'the test never opens a page or acts on it');
+  if (n(SKIP) || n(COMPUTED_TEST)) block('skipped', 'the test is skipped, focused or marked to fail');
+  if (n(TAMPER) || n(CY_TAMPER) || n(WDIO_TAMPER)) block('app-tampered', 'the test fakes network answers, injects scripts or edits the page');
+  if (n(CY_SWALLOW) || /catch\s*(\(\s*\w*\s*\))?\s*\{\s*\}/.test(code) || /\.catch\s*\(\s*\(\s*\)\s*=>/.test(code)) block('swallowed-error', 'errors are swallowed');
+  if (/waitForTimeout\s*\(|time\.sleep\s*\(|wait_for_timeout\s*\(|\bcy\s*\.\s*wait\s*\(\s*[\d_]|\bbrowser\s*\.\s*pause\s*\(/.test(code)) block('fixed-wait', 'a fixed wait; wait for the real condition instead');
+  if (/force\s*[:=]\s*(true|True)/.test(code)) block('force-action', 'force: true skips the checks a user would hit');
+  if (/retries\s*[:=]\s*[1-9]|\.slow\s*\(|setTimeout\s*\(/.test(code)) block('retries-added', 'retries or longer timeouts');
+  for (const [pattern, what] of ESCAPE) if (pattern.test(code)) block('unsafe-code', `the test ${what}`);
+  for (const m of code.matchAll(URL_LITERAL)) {
+    const url = m[0].slice(1, -1).trim();
+    if (!appOrigin || !url.startsWith(appOrigin)) block('foreign-url', `the test names a URL outside the app (${url.slice(0, 80)}); use paths such as '/login'`);
+  }
+  void file;
+  const verdict: Verdict = findings.length ? 'BLOCK' : 'PASS';
   return { verdict, findings };
 }

@@ -26,6 +26,8 @@ export function engineEnv(env, keepGithubToken) {
             continue;
         out[key] = value;
     }
+    // Reruns must prove the code itself: the runtime healing fixture never heals inside the engine.
+    out.AUTOHEAL_RUNTIME = 'off';
     return out;
 }
 export class McpTools {

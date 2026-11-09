@@ -39,6 +39,8 @@ export function engineEnv(env: NodeJS.ProcessEnv, keepGithubToken: boolean): Rec
     if (!keepGithubToken && GITHUB_ENV.test(key)) continue;
     out[key] = value;
   }
+  // Reruns must prove the code itself: the runtime healing fixture never heals inside the engine.
+  out.AUTOHEAL_RUNTIME = 'off';
   return out;
 }
 

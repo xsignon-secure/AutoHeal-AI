@@ -15,10 +15,11 @@ import { type BudgetLimits } from './budget.js';
 import { type ToolCaller } from './mcp.js';
 import { type Framework } from './cypress.js';
 import type { Provider } from './providers/types.js';
-import { type FailureResult, type HealSummary, type Mode, type Outcome } from './types.js';
+import { type FailureInfo, type FailureResult, type HealSummary, type Mode, type Outcome } from './types.js';
 import type { Sandbox } from './sandbox.js';
 import { type ReviewHistory } from './reviews.js';
 import { type Policy } from './policy.js';
+import { type History } from './history.js';
 export interface HealOptions {
     projectRoot: string;
     /** JSON report, blob-report folder, or a GitHub Actions / GitLab run URL. */
@@ -61,6 +62,12 @@ export interface HealOptions {
     repoPrefix?: string;
     /** What the policy changed, for the PR. */
     policyNote?: string;
+    /** Folders holding heals recorded during the run (autoheal-healed/), turned into code fixes. */
+    healedDirs?: string[];
+    /** Earlier runs' results per test (see history.ts), shown with flaky tests. */
+    history?: History;
+    /** Try an AI fix for flaky tests before quarantining them (default true; needs a provider). */
+    fixFlaky?: boolean;
 }
 export declare function escapeRegex(text: string): string;
 /** Spec files that import `rel` (relative imports, or Python module imports). */
@@ -74,5 +81,17 @@ export declare function isPytestProject(root: string): Promise<boolean>;
  * that follow it, so triage patterns only see real evidence.
  */
 export declare function evidenceText(detail: string): string;
+/** A Playwright screenshot comparison failure (toHaveScreenshot / toMatchSnapshot on an image). */
+export declare function isVisualFailure(f: Pick<FailureInfo, 'message'>): boolean;
+/** Did app files change since the baseline was last committed? Then the visual change was intended. */
+export declare function visualIntent(root: string, snapDir: string): Promise<{
+    intended: boolean;
+    commits: string[];
+    note: string;
+}>;
+/** The folders that may hold heals from the run: next to the report, the project, and any given. */
+export declare function healedFolders(root: string, report: string, extra?: string[]): string[];
+/** What makes two failures one problem: the same broken locator, or the same wrong value. */
+export declare function failureGroup(f: Pick<FailureInfo, 'index' | 'expected' | 'actual' | 'kind'>, brokenSelector?: string): string;
 export declare function heal(options: HealOptions): Promise<HealSummary>;
 export declare function outcomeOf(results: FailureResult[]): Outcome;

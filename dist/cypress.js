@@ -53,14 +53,16 @@ export async function isCypressProject(root) {
             return true;
     return false;
 }
-/** AUTOHEAL_FRAMEWORK / --framework: auto, playwright, pytest or cypress. */
+/** AUTOHEAL_FRAMEWORK / --framework: auto, playwright, pytest, cypress or webdriverio (wdio). */
 export function frameworkSetting(value) {
     const v = (value ?? 'auto').trim().toLowerCase();
     if (v === '' || v === 'auto')
         return 'auto';
-    if (v === 'playwright' || v === 'pytest' || v === 'cypress')
+    if (v === 'playwright' || v === 'pytest' || v === 'cypress' || v === 'webdriverio')
         return v;
-    throw new Error(`framework must be auto, playwright, pytest or cypress (got "${value}")`);
+    if (v === 'wdio')
+        return 'webdriverio';
+    throw new Error(`framework must be auto, playwright, pytest, cypress or webdriverio (got "${value}")`);
 }
 // ---------------------------------------------------------------------------
 // Report parsing
@@ -475,15 +477,22 @@ export class CypressTools {
                 case 'quarantine':
                     return await this.quarantine(args);
                 case 'validate-selector':
-                    return notOk('validate_selector checks Playwright locators. For Cypress, read the app source or use inspect_page, then propose the cy.get / cy.contains selector.');
+                    return notOk(this.validateNote());
                 default:
-                    return notOk(`${name} is not available for Cypress projects.`);
+                    return notOk(`${name} is not available for ${this.label} projects.`);
             }
         }
         catch (error) {
             const message = error instanceof Error ? error.message : String(error);
             return notOk(`Tool ${name} failed: ${message}`, 'CALL_FAILED');
         }
+    }
+    label = 'Cypress';
+    validateNote() {
+        return 'validate_selector checks Playwright locators. For Cypress, read the app source or use inspect_page, then propose the cy.get / cy.contains selector.';
+    }
+    inspectNote() {
+        return "This is a Cypress project: the locators above are Playwright's. Write the Cypress equivalent, for example cy.get('[data-cy=\"save\"]'), cy.get('#email') or cy.contains('button', 'Save').";
     }
     /**
      * Adds a quarantine entry to playwright-quarantine.json (the same file and
@@ -600,6 +609,9 @@ export class CypressTools {
         const passed = tests.filter((t) => t.state === 'passed').length;
         return ok(`Loaded a Cypress run: ${tests.length} tests, ${this.failures.length} failed, ${passed} passed.`, { framework: 'cypress', total: this.failures.length });
     }
+    markdown(f) {
+        return failureMarkdown(f);
+    }
     getFailure(index) {
         const f = this.failures[index - 1];
         if (!f)
@@ -608,10 +620,11 @@ export class CypressTools {
         for (const k of ['line', 'expected', 'actual', 'screenshotPath'])
             if (f[k] !== undefined)
                 failure[k] = f[k];
-        return ok(failureMarkdown(f), { failure, total: this.failures.length });
+        return ok(this.markdown(f), { failure, total: this.failures.length });
     }
     /** Runs specs through the runner script (as the sandbox user when there is one). */
-    async runSpecs(specs, timeoutMs) {
+    // eslint-disable-next-line @typescript-eslint/no-unused-vars
+    async runSpecs(specs, timeoutMs, _grep) {
         const safe = specs.map((s) => s.replace(/:\d+$/, '')).filter((s) => insideRoot(this.root, path.resolve(this.root, s)));
         if (!safe.length)
             return { tests: [], error: 'no spec inside the project' };
@@ -667,7 +680,7 @@ export class CypressTools {
         const failed = tests.filter((t) => t.state === 'failed');
         const passed = tests.filter((t) => t.state === 'passed').length;
         const lines = [
-            `Cypress: ${passed} passed, ${failed.length} failed${run.error ? ` (${run.error.slice(0, 300)})` : ''}`,
+            `${this.label}: ${passed} passed, ${failed.length} failed${run.error ? ` (${run.error.slice(0, 300)})` : ''}`,
             ...failed.slice(0, 10).map((t) => `✘ ${t.file} › ${t.title}\n  ${(t.message ?? '').split('\n').slice(0, 4).join('\n  ')}`),
         ];
         const data = { run: { passed, failed: failed.length, flaky: 0, failures: failed.map((t) => ({ title: t.title, file: t.file, message: t.message ?? '' })) } };
@@ -742,7 +755,7 @@ export class CypressTools {
             return res;
         return {
             ...res,
-            text: `${res.text}\n\nThis is a Cypress project: the locators above are Playwright's. Write the Cypress equivalent, for example cy.get('[data-cy="save"]'), cy.get('#email') or cy.contains('button', 'Save').`,
+            text: `${res.text}\n\n${this.inspectNote()}`,
         };
     }
 }

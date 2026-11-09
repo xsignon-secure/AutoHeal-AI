@@ -18,6 +18,10 @@ function python() {
 }
 /** The command that runs the tests into `dir` (relative to the project). */
 export function testRun(framework, purpose, dir) {
+    if (framework === 'webdriverio') {
+        // @wdio/junit-reporter writes the XML AutoHeal reads (add it to the project's reporters).
+        return { command: 'npx', args: ['wdio', 'run', process.env.AUTOHEAL_WDIO_CONFIG ?? 'wdio.conf.ts'], env: { AUTOHEAL_REPORT_DIR: dir } };
+    }
     if (framework === 'cypress') {
         const args = ['cypress', 'run'];
         if (purpose === 'fix')

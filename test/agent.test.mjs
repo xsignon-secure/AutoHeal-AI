@@ -126,7 +126,7 @@ test('aiFix: live page tools only open the app, not other sites', async () => {
 test('engineEnv: tests never see the AI key, dashboard secret or runner tokens', async () => {
   const { engineEnv } = await import('../dist/index.js');
   const env = { PATH: '/bin', CI: '1', ANTHROPIC_API_KEY: 'a', OPENAI_API_KEY: 'o', AUTOHEAL_DASHBOARD_SECRET: 's', GITHUB_TOKEN: 'g', GH_TOKEN: 'h', ACTIONS_RUNTIME_TOKEN: 'r', ACTIONS_ID_TOKEN_REQUEST_TOKEN: 'i', BASE_URL: 'http://app' };
-  assert.deepEqual(Object.keys(engineEnv(env, false)).sort(), ['BASE_URL', 'CI', 'PATH']);
+  assert.deepEqual(Object.keys(engineEnv(env, false)).sort(), ['AUTOHEAL_RUNTIME', 'BASE_URL', 'CI', 'PATH']);
   assert.ok('GITHUB_TOKEN' in engineEnv(env, true), 'kept only to download a CI run by URL');
   assert.ok(!('ANTHROPIC_API_KEY' in engineEnv(env, true)));
 });

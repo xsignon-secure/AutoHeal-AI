@@ -19,10 +19,10 @@
  */
 import { type ToolCaller, type ToolResult } from './mcp.js';
 import { type Sandbox } from './sandbox.js';
-export type Framework = 'playwright' | 'pytest' | 'cypress';
+export type Framework = 'playwright' | 'pytest' | 'cypress' | 'webdriverio';
 /** A Cypress project: a Cypress config and no Playwright config. */
 export declare function isCypressProject(root: string): Promise<boolean>;
-/** AUTOHEAL_FRAMEWORK / --framework: auto, playwright, pytest or cypress. */
+/** AUTOHEAL_FRAMEWORK / --framework: auto, playwright, pytest, cypress or webdriverio (wdio). */
 export declare function frameworkSetting(value: string | undefined): Framework | 'auto';
 /** One test in a Cypress run. `title` is the full title: describe and it titles joined by spaces, as Cypress prints it. */
 export interface CypressTest {
@@ -118,13 +118,16 @@ interface RunOutcome {
 }
 export declare function runnerScript(): string;
 export declare class CypressTools implements ToolCaller {
-    private readonly root;
-    private readonly options;
-    private failures;
+    protected readonly root: string;
+    protected readonly options: CypressToolsOptions;
+    protected failures: CypressFailure[];
     private engine;
-    private readonly env;
+    protected readonly env: NodeJS.ProcessEnv;
     constructor(root: string, options?: CypressToolsOptions);
     call(name: string, args: Record<string, unknown>, timeoutMs?: number): Promise<ToolResult>;
+    protected readonly label: string;
+    protected validateNote(): string;
+    protected inspectNote(): string;
     /**
      * Adds a quarantine entry to playwright-quarantine.json (the same file and
      * format as Playwright projects). The xsignon-autoheal/cypress plugin reads it:
@@ -132,10 +135,11 @@ export declare class CypressTools implements ToolCaller {
      */
     private quarantine;
     close(): Promise<void>;
-    private loadReport;
-    private getFailure;
+    protected loadReport(report: string): Promise<ToolResult>;
+    protected markdown(f: CypressFailure): string;
+    protected getFailure(index: number): ToolResult;
     /** Runs specs through the runner script (as the sandbox user when there is one). */
-    runSpecs(specs: string[], timeoutMs: number): Promise<RunOutcome>;
+    runSpecs(specs: string[], timeoutMs: number, _grep?: string): Promise<RunOutcome>;
     private runTest;
     private diagnoseFlaky;
     /** Per-file checks are the strict local scan's job; the whole-tree check compares each file with git HEAD. */
