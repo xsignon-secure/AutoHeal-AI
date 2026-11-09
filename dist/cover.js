@@ -97,7 +97,8 @@ export async function cover(options) {
     const runs = Math.max(2, Math.min(20, options.runs ?? 5));
     if (!abs)
         return { status: 'error', file, explanation: 'That path is outside the project or not allowed.', attempts: 0 };
-    if (await stat(abs).catch(() => null))
+    // Early, cheap answer before any AI spend; the write itself uses 'wx', so nothing is ever overwritten.
+    if ((await readdir(path.dirname(abs)).catch(() => [])).includes(path.basename(abs)))
         return { status: 'error', file, explanation: `${file} already exists; pick another --file.`, attempts: 0 };
     const origin = options.appUrl ? new URL(options.appUrl).origin : undefined;
     const specs = tools(options.appUrl);
