@@ -749,7 +749,7 @@ const scenarios = {
 };
 
 const wanted = process.argv.slice(2);
-const order = wanted.length ? wanted : ['rules', 'ai', 'cheat', 'comment', 'fingerprint', 'reviews', 'policy', 'metrics', 'cypress', 'action', 'dashboard'];
+const order = wanted.length ? wanted : ['rules', 'ai', 'cheat', 'comment', 'fingerprint', 'runtime', 'reviews', 'policy', 'metrics', 'cypress', 'wdio', 'action', 'dashboard'];
 let aiResult;
 for (const name of order) {
   if (!scenarios[name]) {
