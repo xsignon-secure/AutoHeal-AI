@@ -1,5 +1,5 @@
 name: AutoHeal AI publish
-description: Second job of AutoHeal AI. Checks the heal job's patch in a fresh checkout and opens the fix PR, app-bug issues and comment. Never runs your project's code.
+description: Second job of AutoHeal AI. Checks the heal job's patch in a fresh checkout, opens the fix PR (with before/after screenshots), app-bug issues and comment, and starts your CI on the PR. Never runs your project's code.
 author: xsignon-secure
 branding:
   icon: git-pull-request
@@ -31,7 +31,7 @@ inputs:
     description: Open issues for confident app bugs. Set false to skip them.
     default: 'true'
   github-token:
-    description: Token for pushing the fix branch and opening PRs and issues. A PAT or GitHub App token also lets your CI run on the fix PR.
+    description: Token for pushing the fix branch and opening PRs and issues. The default token works; CI on the fix PR is started through rerun-workflow.
     default: ${{ github.token }}
   allowed-paths:
     description: "Globs (comma or newline separated) of files a fix may change. Default: **/tests/**, **/test/**, **/e2e/**, **/playwright/**, **/*.spec.*, **/*.test.*, **/*.cy.*, **/test_*.py, **/*_test.py. Set it if your page objects live elsewhere."
@@ -42,6 +42,9 @@ inputs:
   quarantine-days:
     description: Longest quarantine a patch may set (days, at most 90). Keep it the same as the heal action's quarantine-days.
     default: '14'
+  rerun-workflow:
+    description: "File name of your test workflow (e.g. playwright.yml). The publish job starts it on the fix branch with workflow_dispatch, so the PR gets its CI checks even with the default token. Needs `actions: write` and `workflow_dispatch:` in that workflow. Empty: skip."
+    default: ''
   dashboard-url:
     description: Your self-hosted AutoHeal dashboard (optional).
     default: ''
@@ -75,4 +78,5 @@ runs:
         ALLOWED_PATHS: ${{ inputs.allowed-paths }}
         ALLOW_WARN: ${{ inputs.allow-warn }}
         QUARANTINE_DAYS: ${{ inputs.quarantine-days }}
+        RERUN_WORKFLOW: ${{ inputs.rerun-workflow }}
       run: node "$GITHUB_ACTION_PATH/../scripts/publish.mjs"

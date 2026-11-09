@@ -1,0 +1,14 @@
+{
+  "name": "autoheal-demo-shop",
+  "private": true,
+  "version": "1.0.0",
+  "description": "A tiny shop with Playwright tests and AutoHeal AI set up. Push a UI change and watch AutoHeal open the fix PR.",
+  "type": "module",
+  "scripts": {
+    "start": "node app/server.mjs",
+    "test": "playwright test"
+  },
+  "devDependencies": {
+    "@playwright/test": "1.63.0"
+  }
+}

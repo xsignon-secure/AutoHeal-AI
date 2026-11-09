@@ -1,6 +1,12 @@
 # AutoHeal AI
 
-**A free, self-hosted AI agent that fixes failing Playwright and Cypress tests in your own CI, with your own AI key, and refuses to cheat.**
+**A free, self-hosted AI agent that fixes failing Playwright and Cypress tests in GitHub Actions, GitLab CI, CircleCI or on your own machine, with your own AI key, and refuses to cheat.**
+
+```bash
+npx xsignon-autoheal init     # writes the workflow for your CI and checks your setup
+```
+
+> **Names:** the npm package is `xsignon-autoheal`, the command it installs is `autoheal` (or `xsignon-autoheal`), and the code lives in the GitHub repo `xsignon-secure/AutoHeal-AI`. They are all the same tool.
 
 Think of it as autonomous quality maintenance: your suite keeps itself green between releases, and every change still comes to you as a reviewable PR with proof.
 
@@ -13,7 +19,16 @@ When your Playwright (or Cypress) workflow fails, AutoHeal reads the report and 
 | **Flaky test** (passes and fails on the same code) | Quarantines it with an owner and an expiry date, so it stops blocking merges without disappearing |
 | **Environment** (browser crash, server down, bad config, or a failure it cannot reproduce) | Reports it and changes nothing |
 
-It is MIT licensed and runs entirely on your GitHub runner. No AutoHeal server, no account, no telemetry. The only network calls are to the AI provider you choose.
+It is MIT licensed and runs entirely on your own runner or laptop. No AutoHeal server, no account, no telemetry. The only network calls are to the AI provider you choose and to your own code host (GitHub or GitLab) to open the fix.
+
+| Where | How | Fix arrives as |
+|---|---|---|
+| GitHub Actions | [`templates/autoheal.yml`](templates/autoheal.yml) | draft pull request, with your CI started on it |
+| GitLab CI | [`templates/gitlab-ci.yml`](templates/gitlab-ci.yml) | draft merge request (the MR pipeline runs on it) |
+| CircleCI | [`templates/circleci-config.yml`](templates/circleci-config.yml) | pull request (GitHub) or merge request (GitLab) |
+| Your machine | `npx xsignon-autoheal fix` | changes in your working tree, nothing committed |
+
+Fixes without AI work from day one: a small daily job (or `autoheal learn` once) records what each locator points at, so a renamed button is fixed with no AI tokens. Every PR shows the failed run's screenshot next to the fixed run's, right in the description.
 
 ## Why it is different
 
@@ -55,7 +70,20 @@ It is MIT licensed and runs entirely on your GitHub runner. No AutoHeal server, 
 
 It is built on [playwright-e2e-mcp](https://www.npmjs.com/package/playwright-e2e-mcp), which does the report reading, trace analysis, heal guard, flaky detection and quarantine.
 
-## Setup in 5 minutes
+## Setup in 2 minutes
+
+In your project:
+
+```bash
+npx xsignon-autoheal init
+```
+
+`init` finds your test framework (Playwright, pytest-playwright or Cypress), your CI (from `.github/`, `.gitlab-ci.yml` or `.circleci/`, or `--ci github|gitlab|circleci`) and your package manager, and writes the AutoHeal workflow with your Node or Python version and install command already filled in. It adds AutoHeal's working folders to `.gitignore`, then checks your test config and prints exactly what is missing (for example "set `trace: 'retain-on-failure'` in playwright.config.ts") and the two or three clicks left: the AI key secret and, on GitHub, letting Actions open PRs, each with a direct link to the settings page. Run `npx xsignon-autoheal doctor` any time to check again.
+
+What `init` cannot know is your test environment: if your tests need services, a database, environment variables or test data, copy those steps from your test job into the AutoHeal workflow. AutoHeal reruns your tests there; if it cannot reproduce a failure, it says so and changes nothing. The written workflow marks the place for those steps.
+
+<details>
+<summary>Setting it up by hand (GitHub Actions)</summary>
 
 **1. Keep the report and traces from your test workflow.** In `playwright.config.ts`:
 
@@ -76,17 +104,21 @@ and at the end of your test job:
       test-results/
 ```
 
-(The blob reporter works too.)
+(The blob reporter works too.) Add `workflow_dispatch:` to the `on:` of your test workflow, so AutoHeal can start it on the fix branch.
 
-**2. Add the AutoHeal workflow.** Copy [`templates/autoheal.yml`](templates/autoheal.yml) to `.github/workflows/autoheal.yml`. Under `workflows:`, put the `name:` of your test workflow. Then make its install steps match your test job: the same Node or Python version, browsers, environment variables, secrets, services and test data. AutoHeal reruns your tests there; if it cannot reproduce a failure, it says so and changes nothing.
+**2. Add the AutoHeal workflow.** Copy [`templates/autoheal.yml`](templates/autoheal.yml) to `.github/workflows/autoheal.yml`. Under `workflows:`, put the `name:` of your test workflow, and make its install steps match your test job.
 
 **3. Add your AI key** as a repository secret named `ANTHROPIC_API_KEY`, or `OPENAI_API_KEY` (see below). Use a key with a spend limit.
 
 **4. Let Actions open pull requests.** In **Settings → Actions → General → Workflow permissions**, tick **Allow GitHub Actions to create and approve pull requests**. Without it, opening the fix PR fails with "GitHub Actions is not permitted to create or approve pull requests". (Organization settings can turn this off for every repo; ask an owner if the box is greyed out.)
 
+</details>
+
 That is it. The next failed run gets healed. You can also start it by hand from the Actions tab (**AutoHeal AI → Run workflow**, with the failed run's ID); AutoHeal looks the run up and heals that run's commit and branch.
 
 > `workflow_run` only fires from the workflow file on your default branch, so merge the file there first.
+
+**Try it first:** [`examples/demo`](examples/demo) is a tiny shop with Playwright tests and the workflow already set up. Copy it into a new repository, add your key, and push the commit that renames a button to watch AutoHeal open its first fix PR.
 
 ### How the two jobs work
 
@@ -97,9 +129,11 @@ That is it. The next failed run gets healed. You can also start it by hand from 
 
 So a proposed fix that tries something nasty while your tests run never shares a job with a token that can push.
 
-### Let your CI run on the fix PR
+### Your CI runs on the fix PR
 
-PRs opened with the default `GITHUB_TOKEN` do not start other workflows; GitHub does this to prevent loops. If you want your tests to run on AutoHeal's PR, give the **publish** step a token from a GitHub App. Install the App on this one repository only, with *contents* and *pull requests* write access. Its tokens expire after an hour:
+PRs opened with the default `GITHUB_TOKEN` do not start other workflows; GitHub does this to prevent loops. So after opening the PR, the publish job starts your test workflow on the fix branch itself (`workflow_dispatch`, which the default token may do; the template gives the publish job `actions: write` and passes `rerun-workflow`). The run shows up on the PR as a check. Your test workflow needs `workflow_dispatch:` in its `on:` list; if it is missing, the PR says so.
+
+To have every normal `pull_request` workflow run as well, give the **publish** step a token from a GitHub App instead. Install the App on this one repository only, with *contents*, *pull requests* and *issues* write access. Its tokens expire after an hour:
 
 ```yaml
 - uses: actions/create-github-app-token@v1
@@ -107,13 +141,65 @@ PRs opened with the default `GITHUB_TOKEN` do not start other workflows; GitHub 
   with:
     app-id: ${{ vars.AUTOHEAL_APP_ID }}
     private-key: ${{ secrets.AUTOHEAL_APP_KEY }}
-- uses: xsignon-secure/AutoHeal-AI/publish@v0.10.0
+- uses: xsignon-secure/AutoHeal-AI/publish@v0.11.0
   with:
     github-token: ${{ steps.app-token.outputs.token }}
     # ...the other inputs from the template
 ```
 
 A fine-grained PAT limited to this repository works too, but it lives longer, so prefer the App. Either way the token only exists in the publish job.
+
+### Screenshots in the PR
+
+When the runtime guard runs, the PR shows the failed run's screenshot next to the fixed run's at the same step, inside the description. On GitHub the images are committed to a separate `autoheal-evidence` branch (images only, never merged, linked by commit so they can't change later); on GitLab they are uploaded to the project. Turn it off with `screenshots: false`.
+
+## GitLab CI
+
+```bash
+npx xsignon-autoheal init --ci gitlab
+```
+
+This writes `.gitlab/autoheal.yml` and includes it from your `.gitlab-ci.yml`. It adds three jobs:
+
+| Job | When | What it does |
+|---|---|---|
+| `autoheal-heal` | in the `.post` stage, only when an earlier job failed | Reads the report and traces your test job saved as artifacts, heals in the sandbox, and saves a patch. No write token. |
+| `autoheal-publish` | after a heal | Checks the patch and opens a **draft merge request** (or a comment), and issues for app bugs. Runs in the `autoheal-publish` environment, so only it sees the write token. |
+| `autoheal-learn` | on a schedule | Runs the tests once with traces on and saves element fingerprints as an artifact for the next heal. |
+
+Your test job must keep its results as artifacts when it fails (`artifacts: when: always` with `playwright-report/` and `test-results/`, or Cypress's `cypress/results/` and `cypress/autoheal/`); `init` checks for this. Then:
+
+1. Add `ANTHROPIC_API_KEY` as a masked CI/CD variable.
+2. Create a project access token (role Developer, scopes `api` and `write_repository`) and add it as the masked variable `AUTOHEAL_GITLAB_TOKEN`, **scoped to the environment `autoheal-publish`**, so the heal job never has it.
+3. Optional: a daily pipeline schedule on your default branch, for learned fingerprints.
+
+The fix MR runs your normal merge-request pipeline. AutoHeal never runs on its own `autoheal/*` branches, on schedules, or for MRs from forks. Self-managed GitLab works: the address comes from `CI_SERVER_URL`. The jobs use the `mcr.microsoft.com/playwright` image; change it to your own if your tests need one (it needs Node 22.13+, and `sudo` or root for the sandbox).
+
+## CircleCI
+
+```bash
+npx xsignon-autoheal init --ci circleci
+```
+
+CircleCI reads one file, so `init` writes `.circleci/autoheal.yml` for you to copy into `.circleci/config.yml`. Your test job persists its results to the workspace, and AutoHeal's jobs run after it fails (`requires: [e2e: failed]`). Create two contexts: `autoheal-ai` with `ANTHROPIC_API_KEY`, and `autoheal-publish` with `AUTOHEAL_GITHUB_TOKEN` (a fine-grained token with Contents, Pull requests and Issues read and write) or `AUTOHEAL_GITLAB_TOKEN`, depending on where your code lives. Restrict `autoheal-publish` to your default branch's pipelines with a security group if you can. The learn job saves fingerprints to the CircleCI cache on a daily schedule.
+
+## On your machine
+
+```bash
+export ANTHROPIC_API_KEY=...        # optional: without it, only fixes without AI run
+npx xsignon-autoheal fix
+```
+
+`fix` runs your tests with the right reporter and traces, heals what failed in the same way as CI (anti-cheat scans, stability reruns, runtime guard), and leaves the verified changes in your working tree. It commits nothing and pushes nothing; review them with `git diff`. It refuses to start on uncommitted changes (so you can tell its changes from yours) unless you pass `--allow-dirty`. Pass `--report <dir>` to heal a report you already have, for example the artifacts you downloaded from a failed CI run.
+
+## Learned fingerprints
+
+A fix without AI needs to know what the broken locator pointed at when it still worked. AutoHeal learns that from traces of passing tests:
+
+- **Automatically:** the `learn` job in each CI template runs your suite once a day with traces on and saves the fingerprints as an artifact (`autoheal-fingerprints`) or cache. The heal job downloads the newest one. Nothing is committed.
+- **By hand:** `npx xsignon-autoheal learn` runs your tests once and saves fingerprints to `.autoheal-learned/` (or `fingerprint --traces <dir>` to save them from a run you already made into `.autoheal/fingerprints/`, to commit).
+
+Fingerprints are only hints: a fix found with one still goes through every scan, the stability rerun and the runtime guard. Fingerprints committed in `.autoheal/fingerprints/` win over learned ones. Set `AUTOHEAL_LEARNED=false` to ignore the learned ones.
 
 ## Modes
 
@@ -160,7 +246,7 @@ issues:
 
 ## Inputs
 
-**Heal action** (`xsignon-secure/AutoHeal-AI@v0.10.0`):
+**Heal action** (`xsignon-secure/AutoHeal-AI@v0.11.0`):
 
 | Input | Default | |
 |---|---|---|
@@ -196,7 +282,7 @@ issues:
 
 Outputs: `outcome` (`fixed`, `blocked`, `app-bug`, `quarantined`, `unfixed`, `nothing-to-do` or `error`), `fixed`, `blocked`, `has-result`.
 
-**Publish action** (`xsignon-secure/AutoHeal-AI/publish@v0.10.0`): `result-dir`, `mode`, `base-branch`, `run-id`, `commit`, `pr-number`, `blocked`, `open-issues`, `allowed-paths`, `allow-warn`, `quarantine-days`, `github-token`, `dashboard-url`, `dashboard-secret`. Output: `pr-url`.
+**Publish action** (`xsignon-secure/AutoHeal-AI/publish@v0.11.0`): `result-dir`, `mode`, `base-branch`, `run-id`, `commit`, `pr-number`, `blocked`, `open-issues`, `allowed-paths`, `allow-warn`, `quarantine-days`, `github-token`, `rerun-workflow` (the test workflow file to start on the fix branch), `dashboard-url`, `dashboard-secret`. Output: `pr-url`.
 
 `allowed-paths` limits which files a fix may change. The default is `**/tests/**, **/test/**, **/e2e/**, **/playwright/**, **/*.spec.*, **/*.test.*, **/*.cy.*, **/test_*.py, **/*_test.py`. If your page objects live somewhere else (for example `src/pages/**`), add that folder. Files that tools load or run on their own (configs, `conftest.py`, `__init__.py`, setup and teardown files, `cypress/support/`, `cypress/plugins/`, `cypress.env.json`, `.pnpmfile.cjs`, gulp and grunt files) are never patched. Keep `allow-warn` and `quarantine-days` the same as in the heal job.
 
@@ -238,17 +324,49 @@ A project with a `cypress.config.*` (and no `playwright.config.*`) is healed thr
 
 mochawesome JSON and the JSON from `cypress.run()` work too. In the AutoHeal workflow, install with `npm ci` (which downloads the Cypress binary); see the comment in the template.
 
+**Add the plugin** for fixes without AI and quarantine. In `cypress/support/e2e.js`:
+
+```js
+import 'xsignon-autoheal/cypress';
+```
+
+and in `cypress.config.js`:
+
+```js
+const { defineConfig } = require('cypress');
+const autoheal = require('xsignon-autoheal/cypress/plugin');
+
+module.exports = defineConfig({
+  e2e: {
+    setupNodeEvents(on, config) {
+      autoheal(on, config);
+      return config;
+    },
+  },
+});
+```
+
+(`import autoheal from 'xsignon-autoheal/cypress/plugin'` in an ES module config.) The plugin records, for each test, what its `cy.get` and `.find` calls found, and when a query finds nothing, the page at that moment. It saves this to `cypress/autoheal/`; keep that folder in your failure artifacts. It also skips tests listed in `playwright-quarantine.json` (the same file Playwright projects use) until their entry expires. It never changes what a test does.
+
 **What is the same:** triage (a missing element is a test bug; `expected '<p>' to have text '$10', but the text was '$12'` is an app bug), the AI fix, the policy file, budgets, the sandbox (the setup step copies the Cypress binary into the sandbox user's home), "find the cause", reviews and metrics. Every fix must pass 3 separate Cypress runs of the spec, and the rest of the spec must not get worse. The AI sees Cypress's failure screenshot.
 
 **The anti-cheat scan knows Cypress.** On top of the rules above, a fix may not change or remove a `.should(...)`, `.and(...)` or chai `expect(...)`, change the text of a `cy.contains(...)` that is asserted, change `cy.visit(...)`, add `cy.intercept`, `cy.stub`, `cy.clock`, `cy.window`, `.invoke(...)`, `cy.exec`, `cy.task`, `cy.request`, `Cypress.env`, `Cypress.config` or an `uncaught:exception` handler, or add `it.skip`, `xit`, `this.skip()`, `cy.wait(<ms>)` or `{ force: true }`. Cypress has no engine heal guard, so every Cypress fix gets the strict local scan: a WARN finding blocks it even with `allow-warn`.
 
-**What needs Playwright:** fixes without AI (rule-based locators, element fingerprints and "one UI change, one fix") and the runtime guard read Playwright traces, and quarantine writes `playwright-quarantine.json`. On Cypress, healing a broken selector needs an AI key, and a flaky test is reported but not quarantined. `start-command` works, and the AI can open pages of your app; it then writes the Cypress selector itself.
+**With the plugin, Cypress also gets:** element fingerprints (a renamed button is fixed with no AI tokens, with the strongest selector Cypress recommends: `data-cy`, `data-test` or `data-testid` first, then a stable id, then `name` or `aria-label`), learned fingerprints, "one UI change, one fix", and quarantine for flaky tests. Without the plugin, healing a broken selector needs an AI key and a flaky test is reported but not quarantined.
+
+**What still needs Playwright:** the runtime guard (it compares Playwright traces). Cypress fixes are checked by the code scan and 3 separate runs. `start-command` works, and the AI can open pages of your app; it then writes the Cypress selector itself.
 
 ## Command line
 
 ```bash
+npx xsignon-autoheal init       # write the CI workflow, check the setup
+npx xsignon-autoheal doctor     # check this project and machine
+npx xsignon-autoheal fix        # heal on your machine, changes left in the working tree
+npx xsignon-autoheal learn      # save fingerprints from a green run
 npx xsignon-autoheal heal --report playwright-report/results.json --mode comment
 ```
+
+Installed (`npm i -D xsignon-autoheal`), the command is just `autoheal`.
 
 Save element fingerprints from a green run (traces recorded with `trace: 'on'`), then commit `.autoheal/fingerprints/`:
 
@@ -303,7 +421,7 @@ Securing it:
 
 ## Benchmark
 
-`npm run bench` builds a small app and a Playwright test per case, records a green run, makes 13 UI changes in one commit and heals the failed run. 9 changes only moved or renamed an element (a good heal fixes them); 4 changed what the app does (a changed price, a changed heading, a removed feature, a button that now does something else), where the test is right and must not be "fixed". Results for 0.10.0, with no AI key:
+`npm run bench` builds a small app and a Playwright test per case, records a green run, makes 13 UI changes in one commit and heals the failed run. 9 changes only moved or renamed an element (a good heal fixes them); 4 changed what the app does (a changed price, a changed heading, a removed feature, a button that now does something else), where the test is right and must not be "fixed". Results with no AI key (unchanged since 0.10.0):
 
 | Setup | Fixed | Wrong fixes | False fixes on traps | AI tokens |
 |---|---|---|---|---|
@@ -325,7 +443,7 @@ npm run simulate    # end-to-end runs against a dummy shop app with real Playwri
 npm run bench       # the benchmark below
 ```
 
-The simulation copies `simulation/fixture` (a small shop app with a renamed button, a moved element, a changed price and a flaky badge). It runs the real suite, heals it, and checks every outcome. That includes a scripted AI that tries to cheat, and both jobs of the GitHub Action run against a local git remote and a fake `gh`, including eight tampered patches the publish job must refuse. See [CONTRIBUTING.md](CONTRIBUTING.md).
+The simulation copies `simulation/fixture` (a small shop app with a renamed button, a moved element, a changed price and a flaky badge). It runs the real suite, heals it, and checks every outcome. That includes a scripted AI that tries to cheat, and both jobs of the GitHub Action run against a local git remote and a fake GitHub API, including eight tampered patches the publish job must refuse. See [CONTRIBUTING.md](CONTRIBUTING.md).
 
 **Releases** are published by [`.github/workflows/release.yml`](.github/workflows/release.yml) when a `vX.Y.Z` tag is pushed after the release PR is merged. It checks that the tag matches `package.json` and is on `main`, runs the tests, then publishes to npm through npm trusted publishing (no token) with [provenance](https://docs.npmjs.com/generating-provenance-statements), and creates the GitHub release. `npm view xsignon-autoheal --json` shows the provenance attestation.
 

@@ -2,6 +2,24 @@
 
 All notable changes to AutoHeal AI. Versions follow [semantic versioning](https://semver.org/).
 
+## 0.11.0 (2026-11-08)
+
+### Added
+- **GitLab CI and CircleCI.** New templates `templates/gitlab-ci.yml` (jobs `autoheal-heal` in `.post` on failure, `autoheal-publish` in the `autoheal-publish` environment, and a scheduled `autoheal-learn`) and `templates/circleci-config.yml` (heal after `e2e: failed`, publish in the `autoheal-publish` context, daily learn). Fixes arrive as a draft merge request on GitLab (self-managed too) and as a PR or MR from CircleCI. New command `autoheal publish`, which the templates call. The heal job prepares the sandbox user itself outside GitHub Actions (`--setup-sandbox`, automatic on GitLab and CircleCI).
+- **Runs on your machine.** `autoheal fix` runs your tests with the right reporter and traces, heals what failed with the same checks as CI, and leaves verified changes in the working tree. Nothing is committed or pushed.
+- **`autoheal init` and `autoheal doctor`.** `init` detects your framework, CI and package manager, writes the workflow with your Node or Python version and install command filled in, adds AutoHeal's folders to `.gitignore`, checks your test config (report, traces, artifacts, `workflow_dispatch`, the Cypress plugin) and prints the steps left with direct links. `doctor` runs the same checks plus Node, git remote, AI key, fingerprints and sandbox.
+- **CI runs on the fix PR.** The publish job starts your test workflow on the fix branch with `workflow_dispatch` (new publish input `rerun-workflow`; the template passes it and gives the publish job `actions: write`). No personal token or GitHub App needed.
+- **Learned fingerprints.** `autoheal learn` runs the suite once with traces on and saves fingerprints. Each template has a daily learn job that saves them as an artifact or cache, and the heal job downloads the newest one, so fixes without AI work from the first broken locator. Set `AUTOHEAL_LEARNED=false` to skip them.
+- **Cypress plugin.** `import 'xsignon-autoheal/cypress'` in the support file and `require('xsignon-autoheal/cypress/plugin')(on, config)` in the config record what each `cy.get`/`.find` found and the page when a query fails. Cypress now gets element-fingerprint fixes with no AI tokens (writing `data-cy`/`data-test`/`data-testid`, stable id, `name` or `aria-label` selectors), learned fingerprints, "one UI change, one fix" and quarantine of flaky tests.
+- **Screenshots inside the PR.** The before/after screenshots of each kept fix are shown in the PR or MR description (GitHub: committed to the `autoheal-evidence` branch and linked by commit; GitLab: project uploads).
+- **Demo project** in `examples/demo`: a small shop with Playwright tests and AutoHeal set up, plus a commit script that renames a button, to see a fix PR in a few minutes.
+- The command is also installed as `xsignon-autoheal`, matching the package name.
+
+### Changed
+- The publish step uses the GitHub and GitLab REST APIs directly instead of the `gh` CLI.
+- Commit links, run links and the PR footer follow the CI the run came from.
+- Run ids may contain letters and dashes (CircleCI workflow ids).
+
 ## 0.10.0 (2026-11-05)
 
 ### Added

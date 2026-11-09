@@ -5,7 +5,9 @@
  * untrusted: the patch is checked file by file before it is applied with git
  * hooks off. Then it pushes the fix branch, opens or updates the PR, opens
  * issues for confident app bugs, posts the comment (comment mode) and sends
- * the results to your dashboard. No dependencies; needs git and the gh CLI.
+ * the results to your dashboard. No dependencies; needs git and Node. It
+ * works the same in GitHub Actions, GitLab CI and CircleCI (scripts/forge.mjs
+ * talks to GitHub or GitLab).
  *
  * Nothing from the heal job is trusted. Here, on the trusted checkout, the
  * job checks four things:
@@ -15,10 +17,13 @@
  *     only for tests the result reports as flaky;
  *   - memory files have exactly AutoHeal's shape and name.
  *
- * Settings come from the environment (publish/action.yml sets them):
+ * Settings come from the environment (publish/action.yml or `autoheal
+ * publish` sets them):
  *   RESULT_DIR, MODE, BASE_BRANCH, RUN_ID, COMMIT, PR_NUMBER, BLOCKED,
  *   OPEN_ISSUES, GH_TOKEN, DASHBOARD_URL, DASHBOARD_SECRET, ALLOWED_PATHS,
- *   ALLOW_WARN, QUARANTINE_DAYS
+ *   ALLOW_WARN, QUARANTINE_DAYS, RERUN_WORKFLOW
+ * and, outside GitHub Actions, from the CI's own variables (src/ci.ts) and
+ * AUTOHEAL_GITLAB_TOKEN or AUTOHEAL_GITHUB_TOKEN.
  *
  * The repository's .autoheal.yml (read from this checkout, which the patch
  * can never change) is enforced again here: protected paths, quarantine,
@@ -27,11 +32,13 @@
 
 import { execFileSync } from 'node:child_process';
 import { createHash, createHmac } from 'node:crypto';
-import { appendFileSync, closeSync, constants, fstatSync, lstatSync, mkdtempSync, openSync, readFileSync, realpathSync, writeFileSync } from 'node:fs';
+import { appendFileSync, closeSync, constants, fstatSync, lstatSync, mkdtempSync, openSync, readdirSync, readFileSync, realpathSync, writeFileSync } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { isProtected, loadPolicy, PolicyError, POLICY_FILE } from '../dist/policy.js';
+import { ciInfo, isAutohealBranch } from '../dist/ci.js';
+import { forgeFor, ForgeError } from './forge.mjs';
 
 const env = process.env;
 const SAFE = ['-c', 'core.hooksPath=/dev/null', '-c', 'core.fsmonitor=false', '-c', 'core.attributesFile=/dev/null', '-c', 'commit.gpgsign=false'];
@@ -293,7 +300,9 @@ export function checkQuarantine(root, rel, beforeText, results, days = Number(en
     // Result titles are the full path ("file.spec.ts › describe › test"); the entry keeps the test's own title.
     const sameTest = (k) => {
       const [file, title] = k.split('\n');
-      return (file === e.file || file.endsWith(`/${e.file}`)) && (title === e.title || title.endsWith(` › ${e.title}`));
+      // Cypress joins describe and it titles with spaces.
+      const cypressTitle = /\.cy\.[cm]?[jt]sx?$/.test(e.file) && title.endsWith(` ${e.title}`);
+      return (file === e.file || file.endsWith(`/${e.file}`)) && (title === e.title || title.endsWith(` › ${e.title}`) || cypressTitle);
     };
     if (![...flaky].some(sameTest)) {
       throw new Refused(`${rel}: ${e.file} › ${e.title} is not a test this run found flaky`);
@@ -358,18 +367,107 @@ function lstatOrNull(p) {
 }
 
 const git = (args, opts = {}) => execFileSync('git', [...SAFE, ...args], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'], ...opts });
-const gh = (...args) => execFileSync('gh', args, { encoding: 'utf8', stdio: ['ignore', 'pipe', 'inherit'] }).trim();
 
-function pushAuth() {
-  if (!env.GH_TOKEN) return [];
-  const server = env.GITHUB_SERVER_URL || 'https://github.com';
-  const basic = Buffer.from(`x-access-token:${env.GH_TOKEN}`).toString('base64');
-  console.log(`::add-mask::${basic}`);
-  return ['-c', `http.${server}/.extraheader=`, '-c', `http.${server}/.extraheader=AUTHORIZATION: basic ${basic}`];
+/** git -c options that send the forge token to its own server only (never written to .git/config). */
+function pushAuth(forge) {
+  if (!forge?.pushHeader) return [];
+  if (env.GITHUB_ACTIONS === 'true') console.log(`::add-mask::${forge.pushHeader.slice(forge.pushHeader.indexOf('basic ') + 6)}`);
+  let server = forge.server;
+  while (server.endsWith('/')) server = server.slice(0, -1);
+  return ['-c', `http.${server}/.extraheader=`, '-c', `http.${server}/.extraheader=${forge.pushHeader}`];
+}
+
+const EVIDENCE_NAME = /^\d{1,3}-(?:before|after)\.(?:png|jpeg)$/;
+const MAX_EVIDENCE = 20;
+const MAX_EVIDENCE_BYTES = 1_500_000;
+const EVIDENCE_MARKER = /<!-- autoheal-evidence(?: before="([^"]{1,40})")?(?: after="([^"]{1,40})")? -->/g;
+
+/** The heal job's before/after screenshots that are real PNG or JPEG files of a sane size. */
+export function evidenceImages(dir) {
+  const out = new Map();
+  const folder = path.join(dir, 'evidence');
+  let names = [];
+  try {
+    names = readdirSync(folder);
+  } catch {
+    return out;
+  }
+  for (const name of names.filter((n) => EVIDENCE_NAME.test(n)).sort().slice(0, MAX_EVIDENCE)) {
+    let fd;
+    try {
+      fd = openSync(path.join(folder, name), constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0));
+    } catch {
+      continue;
+    }
+    try {
+      const st = fstatSync(fd);
+      if (!st.isFile() || st.size > MAX_EVIDENCE_BYTES || st.size < 8) continue;
+      const buf = readFileSync(fd);
+      const png = buf.subarray(0, 8).equals(Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]));
+      const jpeg = buf[0] === 0xff && buf[1] === 0xd8 && buf[2] === 0xff;
+      if ((name.endsWith('.png') && png) || (name.endsWith('.jpeg') && jpeg)) out.set(name, buf);
+    } finally {
+      closeSync(fd);
+    }
+  }
+  return out;
+}
+
+/** Replaces the evidence markers in a PR body with images; markers without images are removed. */
+export function placeEvidence(body, urls) {
+  return body.replace(EVIDENCE_MARKER, (_m, before, after) => {
+    const b = before && urls.get(before);
+    const a = after && urls.get(after);
+    if (!b && !a) return '';
+    return ['| Before | After |', '|---|---|', `| ${b ? `![before](${b})` : '(none)'} | ${a ? `![after](${a})` : '(none)'} |`].join('\n');
+  });
+}
+
+/**
+ * Puts the screenshots where the PR can show them. GitLab: the project's
+ * uploads. GitHub: a commit on the autoheal-evidence branch (images only,
+ * never merged), linked by commit SHA so later runs cannot change them.
+ */
+export async function hostEvidence({ forge, root, dir, runId }) {
+  const urls = new Map();
+  const images = evidenceImages(dir);
+  if (!images.size) return urls;
+  try {
+    if (forge.uploadImage) {
+      for (const [name, buf] of images) urls.set(name, await forge.uploadImage(name, buf, name.endsWith('.png') ? 'image/png' : 'image/jpeg'));
+      return urls;
+    }
+    if (!forge.imageUrl) return urls;
+    const tmp = mkdtempSync(path.join(os.tmpdir(), 'autoheal-ev-'));
+    const genv = { ...process.env, GIT_INDEX_FILE: path.join(tmp, 'index') };
+    const auth = pushAuth(forge);
+    let parent = '';
+    try {
+      git([...auth, 'fetch', '-q', '--depth=1', forge.pushUrl, '+refs/heads/autoheal-evidence:refs/autoheal/evidence'], { cwd: root });
+      parent = git(['rev-parse', '--verify', '-q', 'refs/autoheal/evidence^{commit}'], { cwd: root }).trim();
+    } catch {
+      parent = '';
+    }
+    if (parent) git(['read-tree', `${parent}^{tree}`], { cwd: root, env: genv });
+    else git(['read-tree', '--empty'], { cwd: root, env: genv });
+    for (const [name, buf] of images) {
+      const blob = execFileSync('git', [...SAFE, 'hash-object', '-w', '--stdin'], { cwd: root, input: buf, encoding: 'utf8' }).trim();
+      git(['update-index', '--add', '--cacheinfo', `100644,${blob},${runId}/${name}`], { cwd: root, env: genv });
+    }
+    const tree = git(['write-tree'], { cwd: root, env: genv }).trim();
+    const who = ['-c', 'user.name=autoheal-ai[bot]', '-c', 'user.email=autoheal-ai@users.noreply.github.com'];
+    const commit = git([...who, 'commit-tree', tree, ...(parent ? ['-p', parent] : []), '-m', `AutoHeal screenshots for run ${runId}`], { cwd: root }).trim();
+    git([...auth, 'push', '-q', forge.pushUrl, `${commit}:refs/heads/autoheal-evidence`], { cwd: root, stdio: ['ignore', 'pipe', 'pipe'] });
+    for (const name of images.keys()) urls.set(name, forge.imageUrl(commit, `${runId}/${name}`));
+  } catch (err) {
+    // Screenshots are a help: without them the PR still links the run's artifacts.
+    console.log(`Screenshots not shown in the ${forge.label}: ${err instanceof Error ? err.message.split('\n')[0] : String(err)}`);
+  }
+  return urls;
 }
 
 /** Applies the checked patch on a fresh branch and opens or updates the PR. */
-export function publishPatch({ root, dir, mode, base, runId, fixed }) {
+export async function publishPatch({ root, dir, mode, base, runId, fixed, forge, rerun }) {
   const patchFile = path.join(dir, 'patch.diff');
   const patch = readRegular(patchFile, MAX_PATCH_BYTES);
   if (!patch?.trim()) return null;
@@ -424,38 +522,49 @@ export function publishPatch({ root, dir, mode, base, runId, fixed }) {
   const expected = files.map((f) => f.path).sort();
   if (JSON.stringify(staged) !== JSON.stringify(expected)) throw new Refused(`staged files differ from the patch (${staged.join(', ')})`);
   git(['-c', 'user.name=autoheal-ai[bot]', '-c', 'user.email=autoheal-ai@users.noreply.github.com', 'commit', '-q', '--no-verify', '-m', `test: AutoHeal fixes for failed run ${runId}`, '-m', 'Verified by the AutoHeal anti-cheat guard and a stability rerun.'], { cwd: root });
-  git([...pushAuth(), 'push', '--force', 'origin', `HEAD:refs/heads/${branch}`], { cwd: root, stdio: ['ignore', 'pipe', 'inherit'] });
+  git([...pushAuth(forge), 'push', '--force', forge.pushUrl, `HEAD:refs/heads/${branch}`], { cwd: root, stdio: ['ignore', 'pipe', 'inherit'] });
 
-  const bodyFile = path.join(dir, 'pr-body.md');
-  const body = neutralize(readText(dir, 'pr-body.md') ?? `AutoHeal fixes for failed run ${runId}.`);
-  writeFileSync(bodyFile, body);
-  const existing = (() => {
-    try {
-      return gh('pr', 'list', '--head', branch, '--state', 'open', '--json', 'url', '--jq', '.[0].url');
-    } catch {
-      return '';
-    }
-  })();
+  const urls = await hostEvidence({ forge, root, dir, runId });
+  const body = placeEvidence(neutralize(readText(dir, 'pr-body.md') ?? `AutoHeal fixes for failed run ${runId}.`), urls).slice(0, 65_000);
+  const existing = await forge.findPr(branch).catch(() => null);
+  let pr;
   if (existing) {
-    gh('pr', 'edit', existing, '--body-file', bodyFile);
-    return existing;
+    await forge.editPr(existing, body);
+    pr = existing;
+  } else {
+    pr = await forge.createPr({ base, head: branch, title: `AutoHeal: ${fixed} test fix(es) for run ${runId}`, body, draft: mode === 'draft-pr' });
   }
-  const args = ['pr', 'create', '--base', base, '--head', branch, '--title', `AutoHeal: ${fixed} test fix(es) for run ${runId}`, '--body-file', bodyFile];
-  if (mode === 'draft-pr') args.push('--draft');
-  return gh(...args);
+  if (rerun) await rerunTests(forge, rerun, branch);
+  return pr.url;
 }
 
-export function publishIssues(dir) {
+/**
+ * A push made with GitHub's default token starts no workflows, so CI would
+ * never run on the fix PR. A workflow_dispatch is the exception GitHub allows:
+ * start the test workflow on the fix branch, so the PR gets its checks.
+ */
+export async function rerunTests(forge, workflow, branch) {
+  if (!forge.dispatch || !/^[\w.-]{1,100}\.ya?ml$/.test(workflow)) return false;
+  try {
+    await forge.dispatch(workflow, branch);
+    summaryLine(`Started ${workflow} on ${branch}, so the ${forge.label} gets its CI checks.`);
+    return true;
+  } catch (err) {
+    const why = err instanceof Error ? err.message : String(err);
+    summaryLine(
+      /HTTP 422/.test(why)
+        ? `CI was not started on the fix ${forge.label}: add \`workflow_dispatch:\` to the \`on:\` list of ${workflow} (or pass a PAT or App token as github-token).`
+        : `CI was not started on the fix ${forge.label} (${why}). The publish job needs \`actions: write\`.`,
+    );
+    return false;
+  }
+}
+
+export async function publishIssues(dir, forge) {
   const list = readJson(dir, 'issues.json');
   if (!Array.isArray(list)) return [];
   let open = [];
-  if (list.length) {
-    try {
-      open = JSON.parse(gh('issue', 'list', '--state', 'open', '--limit', '200', '--search', 'AutoHeal in:title', '--json', 'title,url'));
-    } catch {
-      open = [];
-    }
-  }
+  if (list.length) open = await forge.openIssues().catch(() => []);
   const done = [];
   for (const issue of list.slice(0, 10)) {
     if (typeof issue?.title !== 'string' || !issue.title.startsWith('AutoHeal') || issue.title.length > 200) continue;
@@ -463,15 +572,13 @@ export function publishIssues(dir) {
     const raw = readText(dir, issue.file);
     if (raw === null) continue;
     const text = neutralize(raw);
-    const bodyFile = path.join(dir, issue.file);
-    writeFileSync(bodyFile, text);
     const existing = open.find((o) => o.title === issue.title);
     let url;
     if (existing) {
-      gh('issue', 'comment', existing.url, '--body-file', bodyFile);
+      await forge.commentIssue(existing, text);
       url = existing.url;
     } else {
-      url = gh('issue', 'create', '--title', issue.title, '--body-file', bodyFile);
+      url = (await forge.createIssue(issue.title, text)).url;
     }
     summaryLine(`App bug issue: ${url}`);
     done.push({ test: typeof issue.test === 'string' ? issue.test : '', url });
@@ -479,14 +586,12 @@ export function publishIssues(dir) {
   return done;
 }
 
-export function publishComment(dir) {
+export async function publishComment(dir, forge, { pr, commit } = { pr: env.PR_NUMBER, commit: env.COMMIT }) {
   const raw = readText(dir, 'comment.md');
   const text = raw && neutralize(raw);
   if (!text) return;
-  const file = path.join(dir, 'comment.md');
-  writeFileSync(file, text);
-  if (/^\d+$/.test(env.PR_NUMBER ?? '')) gh('pr', 'comment', env.PR_NUMBER, '--body-file', file);
-  else if (/^[0-9a-f]{40}$/.test(env.COMMIT ?? '')) gh('api', `repos/${env.GITHUB_REPOSITORY}/commits/${env.COMMIT}/comments`, '-F', `body=@${file}`);
+  if (/^\d+$/.test(pr ?? '')) await forge.commentPr(pr, text);
+  else if (/^[0-9a-f]{40}$/.test(commit ?? '')) await forge.commentCommit(commit, text);
   else console.log('No PR or commit to comment on.');
 }
 
@@ -502,7 +607,7 @@ export async function uploadDashboard(dir, prUrl, issues) {
   const clean = events.slice(0, 200).filter((e) => e && typeof e === 'object').map((e) => {
     const out = {
       id: str(e.id, 64),
-      repo: env.GITHUB_REPOSITORY ?? '',
+      repo: ciInfo(env).repo ?? env.GITHUB_REPOSITORY ?? '',
       run_id: str(e.run_id, 40),
       run_url: str(e.run_url, 500),
       commit_sha: str(e.commit_sha, 64),
@@ -542,13 +647,33 @@ export async function uploadDashboard(dir, prUrl, issues) {
   }
 }
 
-async function main() {
-  const dir = path.resolve(env.RESULT_DIR || 'autoheal-result');
+/**
+ * Settings for one publish, from the environment: the publish action's
+ * variables first, then the CI's own (GitLab and CircleCI need no extra
+ * settings), then the heal result's meta.json for what only the heal job knew.
+ */
+export function settings(env = process.env) {
+  const info = ciInfo(env);
+  return {
+    info,
+    dir: path.resolve(env.RESULT_DIR || env.AUTOHEAL_RESULT_DIR || 'autoheal-result'),
+    mode: env.MODE || env.AUTOHEAL_MODE || 'draft-pr',
+    runId: env.RUN_ID || info.runId || '',
+    base: env.BASE_BRANCH || info.branch || '',
+    commit: env.COMMIT || info.commit || '',
+    pr: env.PR_NUMBER || info.pr || '',
+    rerun: env.RERUN_WORKFLOW || env.AUTOHEAL_RERUN_WORKFLOW || '',
+    openIssues: (env.OPEN_ISSUES ?? env.AUTOHEAL_OPEN_ISSUES) !== 'false',
+  };
+}
+
+export async function main(env = process.env) {
+  const s = settings(env);
+  const { dir, mode } = s;
   const root = process.cwd();
-  const mode = env.MODE || 'draft-pr';
   if (!['comment', 'draft-pr', 'pr'].includes(mode)) throw new Refused(`mode must be comment, draft-pr or pr (got "${mode}")`);
-  const runId = env.RUN_ID ?? '';
-  if (!/^\d{1,20}$/.test(runId)) throw new Refused('RUN_ID must be the numeric id of the failed run');
+  const runId = s.runId;
+  if (!/^[A-Za-z0-9-]{1,64}$/.test(runId)) throw new Refused('RUN_ID must be the id of the failed run (letters, digits and dashes)');
   const meta = readJson(dir, 'meta.json');
   if (!meta) {
     console.log('No AutoHeal result to publish.');
@@ -556,32 +681,43 @@ async function main() {
   }
   const blocked = Math.max(Number(env.BLOCKED) || 0, Number(meta.blocked) || 0);
   const fixed = Math.min(Math.max(Number(meta.fixed) || 0, 0), 999);
+  const forge = forgeFor(s.info, env);
   let prUrl = null;
   let issues = [];
   if (mode === 'comment') {
-    publishComment(dir);
+    await publishComment(dir, forge, { pr: s.pr, commit: s.commit });
   } else {
-    const base = env.BASE_BRANCH ?? '';
+    const base = s.base;
     if (!/^[\w./-]{1,200}$/.test(base) || base.includes('..') || base.startsWith('-')) throw new Refused(`bad base branch "${base}"`);
-    prUrl = publishPatch({ root, dir, mode, base, runId, fixed });
-    if (prUrl) summaryLine(`Fix PR: ${prUrl}`);
-    if (env.OPEN_ISSUES !== 'false' && readPolicy(root)?.issues.enabled !== false) issues = publishIssues(dir);
+    if (isAutohealBranch(base)) {
+      console.log('The failed run is on an AutoHeal branch; nothing to publish.');
+      return 0;
+    }
+    prUrl = await publishPatch({ root, dir, mode, base, runId, fixed, forge, rerun: s.rerun });
+    if (prUrl) summaryLine(`Fix ${forge.label}: ${prUrl}`);
+    if (s.openIssues && readPolicy(root)?.issues.enabled !== false) issues = await publishIssues(dir, forge);
   }
   if (env.GITHUB_OUTPUT) appendFileSync(env.GITHUB_OUTPUT, `pr-url=${prUrl ?? ''}\n`);
   await uploadDashboard(dir, prUrl, issues);
   return blocked > 0 ? 3 : 0;
 }
 
-if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
-  main().then(
+/** Exit code for a finished publish: 0 done, 1 refused or blocked. */
+export function report(promise) {
+  return promise.then(
     (code) => {
       if (code === 3) console.log('::error title=AutoHeal blocked a fix::A proposed fix tried to weaken a test (BLOCKED_CHEATING). See the heal job summary.');
-      process.exit(code === 3 ? 1 : code);
+      return code === 3 ? 1 : code;
     },
     (err) => {
       const message = err instanceof Error ? err.message : String(err);
-      console.log(`::error title=AutoHeal publish refused::${message.replace(/\n/g, ' ')}`);
-      process.exit(1);
+      const kind = err instanceof ForgeError ? 'AutoHeal could not reach the code host' : 'AutoHeal publish refused';
+      console.log(`::error title=${kind}::${message.replace(/\n/g, ' ')}`);
+      return 1;
     },
   );
+}
+
+if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
+  report(main()).then((code) => process.exit(code));
 }

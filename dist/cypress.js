@@ -19,12 +19,13 @@
  */
 import { execFile, spawn } from 'node:child_process';
 import { constants } from 'node:fs';
-import { chmod, mkdtemp, open, readdir, readFile, rm, stat } from 'node:fs/promises';
+import { chmod, mkdtemp, open, readdir, readFile, rm, stat, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { promisify } from 'node:util';
 import { scanChange } from './cheat.js';
+import { ownTitle } from './cypress-dom.js';
 import { engineEnv, McpTools } from './mcp.js';
 import { wrapCommand } from './sandbox.js';
 const execFileP = promisify(execFile);
@@ -472,7 +473,7 @@ export class CypressTools {
                 case 'inspect-page':
                     return await this.inspect(args, timeoutMs);
                 case 'quarantine':
-                    return notOk('Quarantine writes playwright-quarantine.json, which Cypress does not read. The flaky test is reported, not quarantined.');
+                    return await this.quarantine(args);
                 case 'validate-selector':
                     return notOk('validate_selector checks Playwright locators. For Cypress, read the app source or use inspect_page, then propose the cy.get / cy.contains selector.');
                 default:
@@ -483,6 +484,53 @@ export class CypressTools {
             const message = error instanceof Error ? error.message : String(error);
             return notOk(`Tool ${name} failed: ${message}`, 'CALL_FAILED');
         }
+    }
+    /**
+     * Adds a quarantine entry to playwright-quarantine.json (the same file and
+     * format as Playwright projects). The xsignon-autoheal/cypress plugin reads it:
+     * the test still runs, but its failures do not fail the build until `until`.
+     */
+    async quarantine(args) {
+        if (args.action !== 'add')
+            return notOk('Only adding a quarantine entry is supported here.');
+        const file = String(args.file ?? '').replace(/\\/g, '/');
+        const full = String(args.title ?? '');
+        const days = Math.min(Math.max(Math.floor(Number(args.days) || 14), 1), 90);
+        if (!file || !full || file.startsWith('/') || file.split('/').includes('..'))
+            return notOk('quarantine needs the spec file and test title.');
+        const source = await readFile(path.join(this.root, file), 'utf8').catch(() => null);
+        if (source === null)
+            return notOk(`${file} was not found.`);
+        const title = ownTitle(full, source);
+        if (!title)
+            return notOk(`Could not find the it(...) title of "${full}" in ${file}, so it was not quarantined.`);
+        const target = path.join(this.root, 'playwright-quarantine.json');
+        let q = { version: 1, entries: [] };
+        try {
+            const parsed = JSON.parse(await readFile(target, 'utf8'));
+            if (parsed && parsed.version === 1 && Array.isArray(parsed.entries))
+                q = parsed;
+        }
+        catch {
+            // new file
+        }
+        const today = new Date();
+        const until = new Date(today.getTime() + days * 86_400_000).toISOString().slice(0, 10);
+        const entry = {
+            file,
+            title,
+            owner: String(args.owner ?? 'AutoHeal AI (unassigned)').slice(0, 200),
+            reason: String(args.reason ?? 'AutoHeal: flaky').slice(0, 500),
+            until,
+            added: today.toISOString().slice(0, 10),
+        };
+        const at = q.entries.findIndex((e) => e.file === file && e.title === title);
+        if (at >= 0)
+            q.entries[at] = { ...q.entries[at], until, reason: entry.reason };
+        else
+            q.entries.push(entry);
+        await writeFile(target, `${JSON.stringify(q, null, 2)}\n`);
+        return ok(`Quarantined ${file} › ${title} until ${until}. The xsignon-autoheal/cypress plugin lets it run without failing the build.`, { entry });
     }
     async close() {
         await this.engine?.close();

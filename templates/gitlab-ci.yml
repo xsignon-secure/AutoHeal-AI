@@ -1,0 +1,103 @@
+# AutoHeal AI for GitLab CI. `npx xsignon-autoheal init --ci gitlab` writes this
+# file to .gitlab/autoheal.yml and adds it to your .gitlab-ci.yml:
+#
+#   include:
+#     - local: .gitlab/autoheal.yml
+#
+# It runs at the end of a pipeline whose tests failed, on your own runners,
+# with your own AI key, and opens a merge request with the fix.
+#
+#   autoheal-heal     reruns your tests and the AI's proposed fixes as a separate
+#                     user that cannot read the AI key, and saves a patch.
+#   autoheal-publish  never runs your project's code: it checks the patch in a
+#                     fresh checkout and opens the merge request and issues.
+#   autoheal-learn    (scheduled pipelines) records what each locator points at,
+#                     so the next broken locator is fixed without AI.
+#
+# Settings > CI/CD > Variables:
+#   ANTHROPIC_API_KEY      your AI key (masked). Or OPENAI_API_KEY + AUTOHEAL_MODEL.
+#   AUTOHEAL_GITLAB_TOKEN  a project access token (role Developer, scopes api and
+#                          write_repository), masked. Give it the environment scope
+#                          "autoheal-publish" so only the publish job can read it.
+#
+# Your test job must keep its results when it fails, for example:
+#   e2e:
+#     script: npx playwright test
+#     artifacts:
+#       when: always
+#       paths: [playwright-report/, test-results/]
+# with the json reporter and traces on in playwright.config:
+#   reporter: [['list'], ['json', { outputFile: 'playwright-report/results.json' }]]
+#   use: { trace: 'retain-on-failure' }
+# Cypress: junit reporter into cypress/results/, keep cypress/screenshots/ and
+# cypress/autoheal/ (see the README). pytest: keep the JUnit XML and test-results/.
+
+variables:
+  AUTOHEAL_VERSION: "0.11.0"
+  # Where the failed test job's artifacts are (a folder in the project).
+  AUTOHEAL_REPORT: "."
+  # draft-pr (default), pr or comment. GitLab calls them merge requests.
+  AUTOHEAL_MODE: "draft-pr"
+  AUTOHEAL_MAX_USD: "1.00"
+
+.autoheal-image:
+  # Use the image your tests run in, so AutoHeal reruns them the same way.
+  image: mcr.microsoft.com/playwright:v1.56.1-noble
+
+autoheal-heal:
+  extends: .autoheal-image
+  stage: .post
+  rules:
+    # Never heal AutoHeal's own branches (no loops) or merge requests from forks.
+    - if: $CI_COMMIT_BRANCH =~ /^autoheal\//
+      when: never
+    - if: $CI_MERGE_REQUEST_SOURCE_PROJECT_ID && $CI_MERGE_REQUEST_SOURCE_PROJECT_ID != $CI_PROJECT_ID
+      when: never
+    - if: $CI_PIPELINE_SOURCE == "schedule"
+      when: never
+    - when: on_failure
+  variables:
+    GIT_DEPTH: "200"
+  script:
+    - npm ci
+    - npx -y "xsignon-autoheal@${AUTOHEAL_VERSION}" heal --report "$AUTOHEAL_REPORT" --out .autoheal-out
+    - npx -y "xsignon-autoheal@${AUTOHEAL_VERSION}" package .autoheal-out autoheal-result
+  artifacts:
+    when: always
+    expire_in: 3 days
+    paths:
+      - autoheal-result/
+      - .autoheal-out/evidence/
+
+autoheal-publish:
+  image: node:22
+  stage: .post
+  needs: [autoheal-heal]
+  rules:
+    - if: $CI_COMMIT_BRANCH =~ /^autoheal\//
+      when: never
+    - if: $CI_PIPELINE_SOURCE == "schedule"
+      when: never
+    - when: on_success
+  environment:
+    name: autoheal-publish
+    action: access
+  variables:
+    GIT_STRATEGY: clone
+  script:
+    - npx -y "xsignon-autoheal@${AUTOHEAL_VERSION}" publish --result autoheal-result
+
+autoheal-learn:
+  extends: .autoheal-image
+  stage: .post
+  rules:
+    # A daily scheduled pipeline (CI/CD > Schedules) is enough.
+    - if: $CI_PIPELINE_SOURCE == "schedule" && $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
+  allow_failure: true
+  script:
+    - npm ci
+    - npx -y "xsignon-autoheal@${AUTOHEAL_VERSION}" learn --out .autoheal-learned
+  artifacts:
+    expire_in: 30 days
+    paths:
+      - .autoheal-learned/

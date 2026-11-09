@@ -11,7 +11,7 @@
  */
 
 import { execFileSync } from 'node:child_process';
-import { copyFileSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { copyFileSync, lstatSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
 
 const [outDir, resultDir] = process.argv.slice(2);
@@ -58,6 +58,21 @@ try {
   names = [];
 }
 for (const name of names) if (keep.test(name)) copyFileSync(path.join(outDir, name), path.join(resultDir, name));
+
+// Before/after screenshots, so the publish job can show them inside the PR.
+// The publish job checks each one again (name, size, PNG or JPEG header).
+let shots = [];
+try {
+  shots = readdirSync(path.join(outDir, 'evidence')).filter((n) => /^\d{1,3}-(?:before|after)\.(?:png|jpeg)$/.test(n)).sort().slice(0, 20);
+} catch {
+  shots = [];
+}
+if (shots.length) mkdirSync(path.join(resultDir, 'evidence'), { recursive: true });
+for (const name of shots) {
+  const from = path.join(outDir, 'evidence', name);
+  const st = lstatSync(from);
+  if (st.isFile() && st.size <= 1_500_000) copyFileSync(from, path.join(resultDir, 'evidence', name));
+}
 
 const count = (status) => results.filter((r) => r.status === status).length;
 const meta = {

@@ -21,11 +21,21 @@ skip() {
 
 [ "$MODE" = "off" ] && exit 0
 [ "$(uname -s)" = "Linux" ] || skip "only Linux runners are supported"
-sudo -n true 2>/dev/null || skip "needs passwordless sudo to create the sandbox user"
+# CI containers (GitLab, CircleCI docker images) often run as root without sudo.
+if [ "$(id -u)" = 0 ] && ! command -v sudo >/dev/null 2>&1; then
+  { command -v apt-get >/dev/null 2>&1 && apt-get install -y -qq sudo >/dev/null 2>&1; } \
+    || { command -v apt-get >/dev/null 2>&1 && apt-get update -qq >/dev/null 2>&1 && apt-get install -y -qq sudo >/dev/null 2>&1; } \
+    || { command -v apk >/dev/null 2>&1 && apk add --quiet sudo >/dev/null 2>&1; } \
+    || true
+fi
+sudo -n true 2>/dev/null || skip "needs passwordless sudo (or root) to create the sandbox user"
 [ -n "${PROJECT:-}" ] && [ -d "$PROJECT" ] || skip "project folder not found"
 
 if ! command -v setfacl >/dev/null 2>&1; then
-  sudo -n apt-get install -y -qq acl >/dev/null 2>&1 || skip "setfacl is missing and the acl package could not be installed"
+  sudo -n apt-get install -y -qq acl >/dev/null 2>&1 \
+    || { sudo -n apt-get update -qq >/dev/null 2>&1 && sudo -n apt-get install -y -qq acl >/dev/null 2>&1; } \
+    || sudo -n apk add --quiet acl >/dev/null 2>&1 \
+    || skip "setfacl is missing and the acl package could not be installed"
 fi
 
 if ! id "$SB_USER" >/dev/null 2>&1; then
