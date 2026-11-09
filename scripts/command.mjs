@@ -71,7 +71,13 @@ export function explainText(body, url) {
     out.push('');
   } else {
     // An older fix PR without the record: its own text, without hidden markers.
-    const prose = neutralize(text.replace(/<!--[\s\S]*?-->/g, '').replace(/</g, '&lt;')).trim().slice(0, 20_000);
+    const prose = neutralize(
+      text
+        .split('\n')
+        .filter((line) => !line.trimStart().startsWith('<!--'))
+        .join('\n')
+        .replace(/</g, '&lt;'),
+    ).trim().slice(0, 20_000);
     if (prose) out.push('<details><summary>Fix details</summary>', '', prose, '', '</details>', '');
   }
   out.push('Each fix was triaged as a test problem (not an app bug), passed the anti-cheat checks, and passed every stability rerun before the PR was opened.');
