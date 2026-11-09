@@ -24,6 +24,12 @@
 #        - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
 #          if: failure()
 #          with: { name: playwright-results, path: "playwright-report/\ntest-results/" }
+#      Optional, heal during the run (Playwright Test): import `test` from
+#      'xsignon-autoheal/playwright' and also upload what it healed, even on a
+#      green run, so AutoHeal turns each heal into a code fix:
+#        - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+#          if: always()
+#          with: { name: autoheal-healed, path: autoheal-healed/, if-no-files-found: ignore }
 #   3. Add your AI key as a repository secret named ANTHROPIC_API_KEY
 #      (or OPENAI_API_KEY; see the README for local models).
 #   4. Settings > Actions > General > Workflow permissions: tick
@@ -75,11 +81,12 @@ concurrency:
 
 jobs:
   heal:
-    # Only failed runs, never AutoHeal's own branches (no loops), and never
-    # runs from forks (their code would run with your AI key).
+    # Only failed runs (or green runs that healed during the run), never
+    # AutoHeal's own branches (no loops), and never runs from forks (their
+    # code would run with your AI key).
     if: >-
       github.event_name == 'workflow_dispatch' ||
-      (github.event.workflow_run.conclusion == 'failure' &&
+      ((github.event.workflow_run.conclusion == 'failure' || github.event.workflow_run.conclusion == 'success') &&
        !startsWith(github.event.workflow_run.head_branch, 'autoheal/') &&
        github.event.workflow_run.head_repository.full_name == github.repository)
     runs-on: ubuntu-latest
@@ -113,7 +120,14 @@ jobs:
           branch="$(jq -r '.head_branch' <<< "$info")"
           if [ "$head_repo" != "$GITHUB_REPOSITORY" ]; then echo "::error::Run ${RUN_ID} is from a fork (${head_repo}); AutoHeal only heals runs from this repo."; exit 1; fi
           if [[ "$branch" == autoheal/* ]]; then echo "::error::Run ${RUN_ID} is on an AutoHeal branch."; exit 1; fi
+          # A green run is only worth healing when it healed locators during the run.
+          skip=false
+          if [ "$(jq -r '.conclusion' <<< "$info")" = "success" ]; then
+            healed="$(gh api "repos/${GITHUB_REPOSITORY}/actions/runs/${RUN_ID}/artifacts" --jq '[.artifacts[] | select(.name == "autoheal-healed" and .expired == false)] | length')"
+            if [ "$healed" = "0" ]; then skip=true; echo "Green run with nothing healed: nothing to do."; fi
+          fi
           {
+            echo "skip=${skip}"
             echo "id=${RUN_ID}"
             echo "sha=$(jq -r '.head_sha' <<< "$info")"
             echo "branch=${branch}"
@@ -121,7 +135,8 @@ jobs:
             echo "workflow=$(jq -r '.path // ""' <<< "$info" | sed 's|.*/||; s|@.*||')"
           } >> "$GITHUB_OUTPUT"
 
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - if: steps.run.outputs.skip != 'true'
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ steps.run.outputs.sha }}
           # History, so AutoHeal can name the app commit that broke a test.
@@ -129,7 +144,8 @@ jobs:
           # No token on disk while tests and proposed fixes run.
           persist-credentials: false
 
-      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+      - if: steps.run.outputs.skip != 'true'
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: 22
           # No dependency cache here: this job runs proposed fixes, and a cache it
@@ -137,6 +153,7 @@ jobs:
           cache: ''
 
       - name: Install dependencies and browsers
+        if: steps.run.outputs.skip != 'true'
         run: |
           npm ci
           npx playwright install --with-deps chromium
@@ -157,6 +174,7 @@ jobs:
       #     python -m playwright install --with-deps chromium
 
       - name: Download the failed run's report and traces
+        if: steps.run.outputs.skip != 'true'
         uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           run-id: ${{ steps.run.outputs.id }}
@@ -165,6 +183,7 @@ jobs:
 
       - name: AutoHeal
         id: autoheal
+        if: steps.run.outputs.skip != 'true'
         # Pin this (and publish below) to a commit SHA if your policy requires it.
         uses: xsignon-secure/AutoHeal-AI@v0.11.0
         with:

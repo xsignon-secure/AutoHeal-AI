@@ -89,6 +89,10 @@ export interface FailureResult {
   skipped?: true;
   /** The app commit that most likely caused this failure. */
   cause?: Cause;
+  /** The test passed only because AutoHeal healed a locator during the run. */
+  healed?: true;
+  /** Grouped with this test's failure (same cause), so not worked on again. */
+  groupOf?: string;
   spend: BudgetSnapshot;
 }
 
@@ -122,6 +126,8 @@ export interface HealSummary {
   app?: string;
   /** Element fingerprints saved with this change. */
   fingerprints?: number;
+  /** Distinct problems among the failures (same broken locator or same wrong value = one). */
+  groups?: number;
   /** What the repository's .autoheal.yml changed. */
   policy?: string;
   /** What earlier AutoHeal PRs taught this run. */

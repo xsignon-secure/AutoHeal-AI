@@ -6,21 +6,68 @@
   "license": "MIT",
   "type": "module",
   "homepage": "https://github.com/xsignon-secure/AutoHeal-AI",
-  "repository": { "type": "git", "url": "git+https://github.com/xsignon-secure/AutoHeal-AI.git" },
-  "bugs": { "url": "https://github.com/xsignon-secure/AutoHeal-AI/issues" },
-  "keywords": ["playwright", "cypress", "pytest", "e2e", "gitlab-ci", "circleci", "self-healing", "ai-agent", "flaky-tests", "github-action", "mcp", "test-automation", "free", "open-source"],
-  "bin": { "autoheal": "dist/cli.js", "xsignon-autoheal": "dist/cli.js" },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/xsignon-secure/AutoHeal-AI.git"
+  },
+  "bugs": {
+    "url": "https://github.com/xsignon-secure/AutoHeal-AI/issues"
+  },
+  "keywords": [
+    "playwright",
+    "cypress",
+    "pytest",
+    "e2e",
+    "gitlab-ci",
+    "circleci",
+    "self-healing",
+    "ai-agent",
+    "flaky-tests",
+    "github-action",
+    "mcp",
+    "test-automation",
+    "free",
+    "open-source"
+  ],
+  "bin": {
+    "autoheal": "dist/cli.js",
+    "xsignon-autoheal": "dist/cli.js"
+  },
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",
   "exports": {
-    ".": { "types": "./dist/index.d.ts", "import": "./dist/index.js" },
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    },
     "./cypress": "./cypress/support.js",
     "./cypress/support": "./cypress/support.js",
-    "./cypress/plugin": { "require": "./cypress/plugin.cjs", "import": "./cypress/plugin.mjs" },
+    "./cypress/plugin": {
+      "require": "./cypress/plugin.cjs",
+      "import": "./cypress/plugin.mjs"
+    },
+    "./playwright": {
+      "types": "./playwright/index.d.ts",
+      "import": "./playwright/index.mjs"
+    },
     "./package.json": "./package.json"
   },
-  "files": ["dist", "templates", "scripts", "publish", "cypress", "action.yml", "README.md", "LICENSE", "SECURITY.md", "CHANGELOG.md"],
-  "engines": { "node": ">=22.13" },
+  "files": [
+    "dist",
+    "templates",
+    "scripts",
+    "publish",
+    "cypress",
+    "action.yml",
+    "README.md",
+    "LICENSE",
+    "SECURITY.md",
+    "CHANGELOG.md",
+    "playwright"
+  ],
+  "engines": {
+    "node": ">=22.13"
+  },
   "scripts": {
     "clean": "node -e \"require('fs').rmSync('dist',{recursive:true,force:true})\"",
     "build": "npm run clean && tsc -p tsconfig.json",
@@ -39,5 +86,13 @@
   "devDependencies": {
     "@types/node": "^22.10.0",
     "typescript": "^5.7.0"
+  },
+  "peerDependencies": {
+    "@playwright/test": ">=1.45"
+  },
+  "peerDependenciesMeta": {
+    "@playwright/test": {
+      "optional": true
+    }
   }
 }

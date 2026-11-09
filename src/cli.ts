@@ -5,7 +5,7 @@
  */
 
 import { realpathSync } from 'node:fs';
-import { appendFile, mkdir, mkdtemp, readFile, rm, stat, writeFile } from 'node:fs/promises';
+import { appendFile, mkdir, mkdtemp, readdir, readFile, rm, stat, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
@@ -207,6 +207,8 @@ async function cmdHeal(argv: string[]): Promise<number> {
   if (!['comment', 'draft-pr', 'pr'].includes(mode)) throw new ConfigError('--mode must be comment, draft-pr or pr.');
   let report = values.report ?? env.AUTOHEAL_REPORT;
   if (!report) throw new ConfigError('--report is required (a report file, artifacts folder, or run URL).');
+  // Heals made during the run sit next to the report in the downloaded artifacts.
+  const healedDirs = /^https?:\/\//.test(report) ? [] : [report];
   let setting: ReturnType<typeof frameworkSetting>;
   try {
     setting = frameworkSetting(values.framework ?? env.AUTOHEAL_FRAMEWORK);
@@ -335,6 +337,7 @@ async function cmdHeal(argv: string[]): Promise<number> {
   const rawSummary = await heal({
     projectRoot,
     report,
+    healedDirs,
     ...(traceDirs ? { traceDirs } : {}),
     framework: cypress ? 'cypress' : setting,
     learnedDirs,
@@ -484,11 +487,14 @@ async function cmdFix(argv: string[]): Promise<number> {
     await rm(path.join(projectRoot, rel), { recursive: true, force: true });
     await mkdir(path.join(projectRoot, rel), { recursive: true });
     log(`Running your ${framework} tests…`);
-    const code = runTests(projectRoot, testRun(framework, 'fix', rel));
-    if (code === 0) {
+    const healedDir = path.join(projectRoot, rel, 'autoheal-healed');
+    const code = runTests(projectRoot, { ...testRun(framework, 'fix', rel), env: { ...testRun(framework, 'fix', rel).env, AUTOHEAL_HEALED_DIR: healedDir } });
+    const healedAny = (await readdir(healedDir).catch(() => [] as string[])).length > 0;
+    if (code === 0 && !healedAny) {
       log('All tests passed. Nothing to fix.');
       return 0;
     }
+    if (code === 0) log('All tests passed, some only because AutoHeal healed a locator during the run. Writing those heals into the code…');
     report = rel;
   }
   // Your own machine, your own code: the sandbox is for CI.

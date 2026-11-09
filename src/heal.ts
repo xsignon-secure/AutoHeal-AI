@@ -41,6 +41,7 @@ import { findCause, termsFromLocators, termsFromValues, type Cause, type CauseQu
 import { rejected, reviewText, type ReviewHistory } from './reviews.js';
 import { isProtected, skipRule, tooWeak, POLICY_FILE, type Policy } from './policy.js';
 import { locatorChanges, locatorFor, parseSelector, rankOf, renderLocator, sourcePattern, type ParsedLocator } from './locators.js';
+import { HEALED_DIR, loadHealed, type HealedEntry } from './runtime-heal.js';
 
 const run = promisify(execFile);
 
@@ -86,6 +87,8 @@ export interface HealOptions {
   repoPrefix?: string;
   /** What the policy changed, for the PR. */
   policyNote?: string;
+  /** Folders holding heals recorded during the run (autoheal-healed/), turned into code fixes. */
+  healedDirs?: string[];
 }
 
 interface DryFix {
@@ -283,6 +286,24 @@ export function evidenceText(detail: string): string {
   return (cut >= 0 ? detail.slice(0, cut) : detail).slice(0, 20_000);
 }
 
+/** The folders that may hold heals from the run: next to the report, the project, and any given. */
+export function healedFolders(root: string, report: string, extra: string[] = []): string[] {
+  const out = [path.join(root, HEALED_DIR), ...extra.map((d) => path.resolve(root, d))];
+  if (report && !/^https?:\/\//.test(report)) {
+    // A report folder (downloaded artifacts) is searched for autoheal-healed/ inside it.
+    const abs = path.resolve(root, report);
+    out.push(path.join(path.dirname(abs), HEALED_DIR), abs === root ? path.join(abs, HEALED_DIR) : abs);
+  }
+  return [...new Set(out)];
+}
+
+/** What makes two failures one problem: the same broken locator, or the same wrong value. */
+export function failureGroup(f: Pick<FailureInfo, 'index' | 'expected' | 'actual' | 'kind'>, brokenSelector?: string): string {
+  if (brokenSelector) return `locator:${brokenSelector}`;
+  if (f.expected !== undefined && f.actual !== undefined && f.kind !== 'timeout') return `value:${f.expected}\u0000${f.actual}`;
+  return `one:${f.index}`;
+}
+
 function lastTitle(title: string): string {
   const parts = title.split(' › ');
   return parts[parts.length - 1] ?? title;
@@ -386,14 +407,17 @@ export async function heal(options: HealOptions): Promise<HealSummary> {
       { report: reportRef, ...(traceDirs?.length ? { traceDirs } : {}), record: false },
       300_000,
     );
-    if (!loaded.ok) {
+    // Heals the runtime fixture made during the run: the run may be green, but the code is still stale.
+    const healedEntries = framework === 'playwright' ? await loadHealed(healedFolders(root, reportRef, options.healedDirs)) : [];
+    if (healedEntries.length) log(`Healed during the run: ${healedEntries.length} locator(s)`);
+    if (!loaded.ok && !healedEntries.length) {
       summary.outcome = 'error';
       summary.error = `Could not load the report: ${loaded.text.split('\n').slice(0, 3).join(' ')}`;
       return summary;
     }
 
     const failures: FailureInfo[] = [];
-    for (let index = 1; index <= 200; index++) {
+    for (let index = 1; loaded.ok && index <= 200; index++) {
       const res = await mcp.call('get-failure', { index }, 120_000);
       const info = res.ok || res.data.failure ? failureFrom(index, res.data, res.text) : null;
       if (!info) break;
@@ -402,7 +426,7 @@ export async function heal(options: HealOptions): Promise<HealSummary> {
       if (total !== undefined && index >= total) break;
     }
     summary.totalFailures = failures.length;
-    if (!failures.length) {
+    if (!failures.length && !healedEntries.length) {
       summary.outcome = 'nothing-to-do';
       return summary;
     }
@@ -427,8 +451,6 @@ export async function heal(options: HealOptions): Promise<HealSummary> {
       });
       return false;
     });
-    const work = eligible.slice(0, Math.max(1, options.maxFailures));
-    summary.skippedFailures = eligible.length - work.length;
     const failingTitlesByFile = new Map<string, Set<string>>();
     for (const f of failures) {
       const set = failingTitlesByFile.get(f.file) ?? new Set<string>();
@@ -461,6 +483,18 @@ export async function heal(options: HealOptions): Promise<HealSummary> {
       log(cyDoms.length ? `Cypress page snapshots: ${cyDoms.length} test(s)` : 'Cypress page snapshots: none (add the xsignon-autoheal/cypress plugin for fixes without AI)');
     }
     const moves = new Map<string, Move>();
+
+    // One cause, one group: failures with the same broken locator, or the same
+    // wrong value, are one problem. The first of each group goes first, so
+    // max-failures counts problems, not tests.
+    const groupOf = (f: FailureInfo): string => failureGroup(f, doms.get(f.index)?.failedCall?.selector);
+    const leaders = new Map<string, FailureInfo>();
+    for (const f of eligible) if (!leaders.has(groupOf(f))) leaders.set(groupOf(f), f);
+    const ordered = [...leaders.values(), ...eligible.filter((f) => leaders.get(groupOf(f)) !== f)];
+    const work = ordered.slice(0, Math.max(1, options.maxFailures));
+    summary.skippedFailures = ordered.length - work.length;
+    if (eligible.length) summary.groups = leaders.size;
+    if (leaders.size < eligible.length) log(`${eligible.length} failure(s) in ${leaders.size} group(s) by cause`);
 
     // 2. Deterministic fixes, read before any rerun changes the engine's "last run".
     const dryFixes = new Map<number, DryFix>();
@@ -940,6 +974,50 @@ export async function heal(options: HealOptions): Promise<HealSummary> {
 
     const proposals = new Map<number, Proposal>();
 
+    /** One heal from the run, as a proven change to the code. */
+    async function healedFix(entry: HealedEntry, index: number): Promise<void> {
+      const old = parseSelector(entry.selector);
+      const failure: FailureInfo = { index, file: entry.file, title: entry.title, kind: 'healed', message: `healed during the run: ${entry.code}`, detail: '' };
+      const { detail: _d, ...lite } = failure;
+      const result: FailureResult = {
+        failure: lite,
+        category: 'TEST_BUG',
+        rootCause: 'LOCATOR_DRIFT',
+        confidence: entry.score,
+        reasons: [`healed during the run (${entry.action}, match ${Math.round(entry.score * 100)}%: ${entry.signals.join(', ') || 'role and position'})`],
+        status: 'UNFIXED',
+        summary: '',
+        spend: EMPTY_SNAPSHOT,
+        healed: true,
+      };
+      if (!old || !safePath(root, entry.file)) return;
+      const at = await findLocator(failure, old);
+      const change = at ? replaceLocator(at, entry.locator) : null;
+      if (!at || !change) {
+        log(`Healed locator in ${entry.file} › ${entry.title}: the old locator is not written in one place, so no code change`);
+        return;
+      }
+      log(`Healed during the run: ${entry.file} › ${entry.title}: ${change.before} → ${change.after}`);
+      const kept = await attempt(failure, result, {
+        by: 'fingerprint',
+        file: at.file,
+        current: at.source,
+        next: change.next,
+        before: change.before,
+        after: change.after,
+        why: `The test passed only because AutoHeal found this element again during the run (match ${Math.round(entry.score * 100)}%). This writes the healed locator into the code, so the next run passes without healing.`,
+        match: { score: entry.score, signals: entry.signals },
+        locator: entry.locator,
+      });
+      if (kept) {
+        result.summary = 'Healed during the run, and now fixed in the code; proven with runtime healing off. No AI tokens used.';
+        fixedTitles.add(failure.title);
+      } else if (result.status !== 'BLOCKED_CHEATING') {
+        result.summary = result.summary || 'Healed during the run, but the healed locator did not pass every check on its own, so the code was not changed.';
+      }
+      summary.results.push(result);
+    }
+
     // 3–5. One failure at a time.
     for (const [position, failure] of work.entries()) {
       budget.share(work.length - position);
@@ -1127,10 +1205,30 @@ export async function heal(options: HealOptions): Promise<HealSummary> {
 
     // One UI change, one fix: failures past max-failures that the same broken
     // locator caused get the kept fix too (no AI tokens, still proven by reruns).
-    for (const failure of eligible.slice(work.length)) {
+    for (const failure of ordered.slice(work.length)) {
       const broken = doms.get(failure.index)?.failedCall?.selector;
       const move = broken ? moves.get(broken) : undefined;
-      if (!move) continue;
+      if (!move) {
+        // The same wrong value as an app bug already found: the same bug, no tokens spent.
+        const leader = leaders.get(groupOf(failure));
+        const led = leader && leader !== failure ? summary.results.find((r) => r.failure.index === leader.index) : undefined;
+        if (leader && led?.status === 'APP_BUG' && groupOf(failure).startsWith('value:')) {
+          const { detail: _x, ...lite } = failure;
+          summary.results.push({
+            failure: lite,
+            category: 'APP_BUG',
+            rootCause: led.rootCause,
+            confidence: led.confidence,
+            reasons: [`the same wrong value as "${leader.title}"`],
+            status: 'APP_BUG',
+            summary: `The same app bug as "${leader.title}" (same expected and received values), so it was not looked at again.`,
+            spend: EMPTY_SNAPSHOT,
+            groupOf: leader.title,
+          });
+          summary.skippedFailures--;
+        }
+        continue;
+      }
       log(`Failure ${failure.index}: ${failure.file} › ${failure.title} (same broken locator as "${move.title}")`);
       const spentBefore = budget.snapshot();
       const { detail: _d, ...failureLite } = failure;
@@ -1150,6 +1248,13 @@ export async function heal(options: HealOptions): Promise<HealSummary> {
         summary.results.push(result);
         summary.skippedFailures--;
       }
+    }
+
+    // Heals made during the run become code fixes, proven like any other fix:
+    // with runtime healing off, the new locator must pass on its own.
+    for (const [i, entry] of healedEntries.slice(0, 50).entries()) {
+      if (options.mode === 'comment' && i >= 20) break;
+      await healedFix(entry, 1000 + i);
     }
 
     // 6. Whole-tree heal guard over everything this job changed.

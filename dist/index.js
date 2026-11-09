@@ -1,4 +1,5 @@
-export { heal, outcomeOf, isPytestProject } from './heal.js';
+export { heal, outcomeOf, isPytestProject, failureGroup, healedFolders } from './heal.js';
+export { withAutoHeal, loadHealed, runtimeMode, healOnPage, HEALED_DIR } from './runtime-heal.js';
 export { triage } from './triage.js';
 export { checkAllowlist, tokenizeJs, tokenizePy } from './allowlist.js';
 export { scanChange, stripComments } from './cheat.js';

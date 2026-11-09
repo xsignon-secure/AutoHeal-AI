@@ -89,6 +89,8 @@ function resultBlock(r: FailureResult): string {
   out.push(`| File | \`${where}\` |`);
   out.push(`| Triage | **${r.category}** · ${r.rootCause} · confidence ${(r.confidence * 100).toFixed(0)}% |`);
   out.push(`| Why | ${cell(r.reasons.join('; '))} |`);
+  if (r.healed) out.push(`| Healed during the run | the test passed because AutoHeal found the element again while it ran; this PR makes the code match |`);
+  if (r.groupOf) out.push(`| Grouped with | ${cell(r.groupOf)} (same cause) |`);
   if (r.guard) out.push(`| Anti-cheat | engine heal guard: **${r.guard.engine}**, local scan: **${r.guard.local}** |`);
   if (r.stability) out.push(`| Stability proof | ${r.stability.passed ? 'passed' : 'failed'} ${r.stability.runs}× in a row |`);
   if (r.runtime?.checked) {
@@ -213,7 +215,7 @@ export function commentBody(summary: HealSummary): string {
   return fitGithub([
     '## AutoHeal AI report',
     '',
-    `Outcome: **${summary.outcome}** · ${summary.results.length} of ${summary.totalFailures} failure(s) analysed`,
+    `Outcome: **${summary.outcome}** · ${summary.results.length} of ${summary.totalFailures} failure(s) analysed${summary.groups && summary.groups < summary.totalFailures ? ` · ${summary.groups} distinct cause(s)` : ''}`,
     '',
     ...summary.results.map(resultBlock),
     totals(summary),

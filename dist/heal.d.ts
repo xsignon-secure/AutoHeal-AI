@@ -15,7 +15,7 @@ import { type BudgetLimits } from './budget.js';
 import { type ToolCaller } from './mcp.js';
 import { type Framework } from './cypress.js';
 import type { Provider } from './providers/types.js';
-import { type FailureResult, type HealSummary, type Mode, type Outcome } from './types.js';
+import { type FailureInfo, type FailureResult, type HealSummary, type Mode, type Outcome } from './types.js';
 import type { Sandbox } from './sandbox.js';
 import { type ReviewHistory } from './reviews.js';
 import { type Policy } from './policy.js';
@@ -61,6 +61,8 @@ export interface HealOptions {
     repoPrefix?: string;
     /** What the policy changed, for the PR. */
     policyNote?: string;
+    /** Folders holding heals recorded during the run (autoheal-healed/), turned into code fixes. */
+    healedDirs?: string[];
 }
 export declare function escapeRegex(text: string): string;
 /** Spec files that import `rel` (relative imports, or Python module imports). */
@@ -74,5 +76,9 @@ export declare function isPytestProject(root: string): Promise<boolean>;
  * that follow it, so triage patterns only see real evidence.
  */
 export declare function evidenceText(detail: string): string;
+/** The folders that may hold heals from the run: next to the report, the project, and any given. */
+export declare function healedFolders(root: string, report: string, extra?: string[]): string[];
+/** What makes two failures one problem: the same broken locator, or the same wrong value. */
+export declare function failureGroup(f: Pick<FailureInfo, 'index' | 'expected' | 'actual' | 'kind'>, brokenSelector?: string): string;
 export declare function heal(options: HealOptions): Promise<HealSummary>;
 export declare function outcomeOf(results: FailureResult[]): Outcome;
