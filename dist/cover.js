@@ -182,7 +182,13 @@ export async function cover(options) {
                     }
                     else {
                         await mkdir(path.dirname(abs), { recursive: true });
-                        await writeFile(abs, content, { flag: 'wx' }).catch(async () => writeFile(abs, content));
+                        // 'wx': never overwrite a file that appeared after the start (a failed attempt removes its own file).
+                        const wrote = await writeFile(abs, content, { flag: 'wx' }).then(() => true, () => false);
+                        if (!wrote) {
+                            done = { status: 'error', file, explanation: `${file} appeared while the test was being written; nothing was overwritten.`, attempts };
+                            reply('The file already exists; stopping.', true);
+                            continue;
+                        }
                         const proof = await prove(options.mcp, framework, file, runs);
                         if (proof.passed) {
                             log(`  kept: passed ${runs} runs in a row`);

@@ -347,19 +347,25 @@ function validHealed(x: unknown): x is HealedEntry {
 
 /** Every heal recorded under these folders (any `autoheal-healed/` inside them, or the folder itself). */
 export async function loadHealed(dirs: string[]): Promise<HealedEntry[]> {
-  const { readdir, readFile, lstat } = await import('node:fs/promises');
+  const { readdir, open, lstat } = await import('node:fs/promises');
+  const { constants } = await import('node:fs');
   const out = new Map<string, HealedEntry>();
   const read = async (dir: string) => {
     for (const name of (await readdir(dir).catch(() => [] as string[])).slice(0, 500)) {
       if (!/^[0-9a-f]{16}\.json$/.test(name)) continue;
       const p = path.join(dir, name);
-      const st = await lstat(p).catch(() => null);
-      if (!st || !st.isFile() || st.size > 64 * 1024) continue;
+      // One open (no symlinks), then every check on that same descriptor.
+      const fh = await open(p, constants.O_RDONLY | constants.O_NOFOLLOW).catch(() => null);
+      if (!fh) continue;
       try {
-        const e = JSON.parse(await readFile(p, 'utf8')) as unknown;
+        const st = await fh.stat();
+        if (!st.isFile() || st.size > 64 * 1024) continue;
+        const e = JSON.parse(await fh.readFile('utf8')) as unknown;
         if (validHealed(e)) out.set(`${e.file}\n${e.title}\n${e.selector}`, e);
       } catch {
         // skip
+      } finally {
+        await fh.close().catch(() => undefined);
       }
     }
   };

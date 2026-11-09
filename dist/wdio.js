@@ -99,7 +99,7 @@ export function wdioKind(message) {
         return 'browser-crash';
     if (/element \(".*"\) still not (?:displayed|existing|clickable|enabled)|wasn't found|can't call \w+ on element with selector|no such element|element not interactable/i.test(m))
         return 'timeout';
-    if (/^\s*Expected[\s\S]{0,400}Received|Expect \$|AssertionError|expected .{0,200} to /im.test(m))
+    if (/(?:^[ \t]*Expected[\s\S]{0,400}Received)|(?:Expect \$)|(?:AssertionError)|(?:expected .{0,200} to )/im.test(m))
         return 'assertion';
     if (/timed? ?out|timeout of \d+ms exceeded/i.test(m))
         return 'timeout';
@@ -114,8 +114,8 @@ export function wdioFailure(test) {
     if (line)
         f.line = Number(line);
     const values = cypressValues(message);
-    const exp = /^\s*Expected:?\s*(.+)$/m.exec(f.message)?.[1];
-    const rec = /^\s*Received:?\s*(.+)$/m.exec(f.message)?.[1];
+    const exp = /^[ \t]*Expected:?[ \t]*(\S.*)$/m.exec(f.message)?.[1];
+    const rec = /^[ \t]*Received:?[ \t]*(\S.*)$/m.exec(f.message)?.[1];
     if (f.kind === 'assertion') {
         if (exp !== undefined && rec !== undefined) {
             f.expected = exp.trim();

@@ -294,7 +294,7 @@ export function evidenceText(detail: string): string {
 
 /** A Playwright screenshot comparison failure (toHaveScreenshot / toMatchSnapshot on an image). */
 export function isVisualFailure(f: Pick<FailureInfo, 'message'>): boolean {
-  return /toHaveScreenshot|Screenshot comparison failed|\d+ pixels? \(ratio [\d.]+ of all image pixels\) (?:are|is) different/i.test(f.message);
+  return /toHaveScreenshot|Screenshot comparison failed|\b\d{1,12} pixels? \(ratio [\d.]{1,20} of all image pixels\) (?:are|is) different/i.test(f.message.slice(0, 50_000));
 }
 
 const TEST_PATH = /(?:^|\/)(?:tests?|e2e|__tests__|playwright|cypress|spec)\/|\.(?:spec|test|cy)\.[cm]?[jt]sx?$|-snapshots\/|^\.autoheal|\.md$|^\.github\/|(?:^|\/)(?:package-lock\.json|yarn\.lock|pnpm-lock\.yaml)$/;
