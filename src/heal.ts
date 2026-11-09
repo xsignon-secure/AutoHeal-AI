@@ -1361,7 +1361,10 @@ export async function heal(options: HealOptions): Promise<HealSummary> {
             result.summary = result.summary || `No fix was kept: ${agent.explanation}`;
           }
         } else if (!fixed && result.status !== 'BLOCKED_CHEATING') {
-          result.summary = 'This looks like a test problem, but no deterministic fix applied and no AI key is set (ANTHROPIC_API_KEY, OPENAI_API_KEY or AUTOHEAL_BASE_URL).';
+          const declined = result.reasons.find((r) => r.includes('was closed without merging in PR #'));
+          result.summary = declined
+            ? 'A fix was found, but reviewers already closed the same change once, so it was not proposed again. Fix the test by hand, or reopen that PR if closing it was a mistake.'
+            : 'This looks like a test problem, but no deterministic fix applied and no AI key is set (ANTHROPIC_API_KEY, OPENAI_API_KEY or AUTOHEAL_BASE_URL).';
         }
         if (fixed) {
           fixedTitles.add(failure.title);

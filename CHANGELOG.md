@@ -10,9 +10,11 @@ Fixes found by running 0.12.0 for real: a real WebdriverIO project and a public 
 - **WebdriverIO results were never read.** `@wdio/junit-reporter` writes `wdio-<id>-junit-reporter.log` files by default, not `.xml`, so AutoHeal found no failures. Those files are read now, spec paths given as `file://` URLs are resolved, and quoted expected/actual values are unquoted, so a wrong price is reported as `$10` vs `$12`.
 - **"One UI change, one fix" grouped different changes.** Two UI changes made in the same commit (a renamed label and a renamed test id) were shown as one change. Fixes are now grouped by the locator change itself.
 - **`/autoheal apply` left the PR without test results.** A push made with the workflow token starts no workflows, so the applied fix was never tested on the PR. Apply now starts the test workflow on the PR branch (the `rerun-workflow` input, or the workflow of the failed run, found automatically) and says so in its reply.
-- **An applied fix was learned as rejected.** `/autoheal apply` closes the fix PR after copying the fix, and the review learner read that as "closed without merging", so the same fix was refused on the next PR. The fix PR is now closed with an `autoheal-applied` marker and counts as accepted.
+- **An applied fix was learned as rejected.** `/autoheal apply` closes the fix PR after copying the fix, and the review learner read that as "closed without merging", so the same fix was refused on the next PR. The fix PR is now closed with an `autoheal-applied` marker and counts as accepted, and fix PRs applied by 0.12.0 are recognized from their "Applied to ..." comment.
 - **`/autoheal explain` pasted the whole fix PR.** It now answers with a short table (test, locator change, how it was fixed) and the tests left alone on purpose, without the PR's hidden markers.
 - **A run that fixed nothing stayed silent.** The failing PR now gets a comment with the reason for each test (for example "the same change was closed without merging in PR #2") and how to retry.
+- A test skipped because reviewers closed the same change before no longer says "no AI key is set"; it says the change was declined and how to undo that.
+- The report footer no longer says "with your own AI key" on runs without one.
 - Spend shows `$0` when no tokens were used, instead of "not priced".
 
 ### Changed

@@ -493,6 +493,7 @@ const scenarios = {
       check(summary?.reviews?.closed === 1 && !summary.reviews.note, `read 1 closed AutoHeal PR (${JSON.stringify(summary?.reviews)})`);
       const r = byTest(summary, 'checkout asks to log in');
       check(r?.fix?.by !== 'fingerprint' && r?.reasons.some((x) => /closed without merging in PR #5/.test(x)), `the change reviewers closed was not proposed again (${r?.status}: ${r?.reasons?.join('; ')})`);
+      check(/reviewers already closed the same change/.test(r?.summary ?? ''), `the summary says why no fix was proposed (${r?.summary})`);
       check(file(dir, 'tests/checkout-login.spec.ts').includes("name: 'Log in'"), 'test file unchanged');
       // Find the cause works for app bugs too: the commit that changed the value.
       const price = byTest(summary, 'pro plan price');
