@@ -57,6 +57,7 @@
     "templates",
     "scripts",
     "publish",
+    "command",
     "cypress",
     "action.yml",
     "README.md",

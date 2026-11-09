@@ -366,10 +366,10 @@ function lstatOrNull(p) {
   }
 }
 
-const git = (args, opts = {}) => execFileSync('git', [...SAFE, ...args], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'], ...opts });
+export const git = (args, opts = {}) => execFileSync('git', [...SAFE, ...args], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'], ...opts });
 
 /** git -c options that send the forge token to its own server only (never written to .git/config). */
-function pushAuth(forge) {
+export function pushAuth(forge) {
   if (!forge?.pushHeader) return [];
   if (env.GITHUB_ACTIONS === 'true') console.log(`::add-mask::${forge.pushHeader.slice(forge.pushHeader.indexOf('basic ') + 6)}`);
   let server = forge.server;

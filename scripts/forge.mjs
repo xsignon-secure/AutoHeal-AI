@@ -104,10 +104,25 @@ export function githubForge({ api, server, repo, token }) {
     },
     async getPr(number) {
       const pr = await call('GET', `${r}/pulls/${number}`);
-      return { number: pr.number, url: pr.html_url, state: pr.state, head: pr.head?.ref, headRepo: pr.head?.repo?.full_name, base: pr.base?.ref, body: pr.body ?? '', title: pr.title ?? '' };
+      return { number: pr.number, url: pr.html_url, state: pr.state, head: pr.head?.ref, headRepo: pr.head?.repo?.full_name, base: pr.base?.ref, sha: pr.head?.sha, body: pr.body ?? '', title: pr.title ?? '' };
     },
     async closePr(number) {
       await call('PATCH', `${r}/pulls/${number}`, { state: 'closed' });
+    },
+    /** Open PRs into a branch, or from a branch (head is a bare branch name in this repository). */
+    async listPrs({ base, head } = {}) {
+      const q = [base ? `base=${encodeURIComponent(base)}` : '', head ? `head=${encodeURIComponent(`${owner}:${head}`)}` : ''].filter(Boolean).join('&');
+      const list = await call('GET', `${r}/pulls?state=open&per_page=50${q ? `&${q}` : ''}`);
+      return (Array.isArray(list) ? list : []).map((pr) => ({ number: pr.number, url: pr.html_url, head: pr.head?.ref, headRepo: pr.head?.repo?.full_name, base: pr.base?.ref, title: pr.title ?? '', body: pr.body ?? '' }));
+    },
+    /** The newest failed run of a commit, for /autoheal retry. */
+    async failedRun(sha) {
+      const data = await call('GET', `${r}/actions/runs?head_sha=${encodeURIComponent(sha)}&status=failure&per_page=5`);
+      const run = Array.isArray(data?.workflow_runs) ? data.workflow_runs.find((x) => !String(x.name ?? '').startsWith('AutoHeal')) : null;
+      return run ? String(run.id) : null;
+    },
+    async dispatchWith(workflow, ref, inputs) {
+      await call('POST', `${r}/actions/workflows/${encodeURIComponent(workflow)}/dispatches`, { ref, inputs });
     },
   };
 }

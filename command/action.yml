@@ -1,0 +1,38 @@
+name: AutoHeal AI commands
+description: "/autoheal apply, retry, explain, ignore and help on pull requests. Maintainers only; never runs your project's code."
+author: xsignon-secure
+branding:
+  icon: message-square
+  color: green
+
+inputs:
+  github-token:
+    description: Token for reading PRs, pushing the fix commit, closing the fix PR and commenting. The default token works.
+    default: ${{ github.token }}
+  heal-workflow:
+    description: File name of the AutoHeal workflow, for /autoheal retry.
+    default: autoheal.yml
+  rerun-workflow:
+    description: File name of your test workflow, started on the PR branch after /autoheal apply (needs workflow_dispatch). Empty to skip.
+    default: ''
+  allowed-paths:
+    description: Same as the publish action's allowed-paths. /autoheal apply refuses fix commits outside them.
+    default: ''
+
+runs:
+  using: composite
+  steps:
+    - name: Run the command
+      shell: bash
+      env:
+        # Passed through the environment, never pasted into the script.
+        COMMENT_BODY: ${{ github.event.comment.body }}
+        PR_NUMBER: ${{ github.event.issue.number }}
+        AUTHOR_ASSOCIATION: ${{ github.event.comment.author_association }}
+        COMMENTER: ${{ github.event.comment.user.login }}
+        DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+        GH_TOKEN: ${{ inputs.github-token }}
+        HEAL_WORKFLOW: ${{ inputs.heal-workflow }}
+        RERUN_WORKFLOW: ${{ inputs.rerun-workflow }}
+        ALLOWED_PATHS: ${{ inputs.allowed-paths }}
+      run: node "$GITHUB_ACTION_PATH/../scripts/command.mjs"

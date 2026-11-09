@@ -6,6 +6,8 @@ import os from 'node:os';
 import path from 'node:path';
 import { test } from 'node:test';
 import { main as publishMain, prBranchTarget, sourceComment } from '../scripts/publish.mjs';
+import { checkFixCommit, parseCommand, runCommand, main as commandMain } from '../scripts/command.mjs';
+import { githubForge } from '../scripts/forge.mjs';
 import { engineEnv, failureGroup, heal, healedFolders, loadHealed, runtimeMode } from '../dist/index.js';
 
 const LOGIN = "test('login', async ({ page }) => {\n  await page.getByRole('button', { name: 'Log in' }).click();\n});\n";
@@ -259,4 +261,96 @@ test('fix-target pr-branch never pushes to the default branch: falls back to a f
   assert.match(execFileSync('git', ['show', 'autoheal/556:tests/login.spec.ts'], { cwd: bare, encoding: 'utf8' }), /Sign in/);
   const note = calls.find((c) => c.method === 'POST' && c.url === '/api/v4/projects/7/merge_requests/4/notes');
   assert.match(JSON.parse(note.body).body, /\/autoheal apply/);
+});
+
+// ---------- /autoheal chat commands ----------
+
+test('parseCommand: first line only, known commands', () => {
+  assert.equal(parseCommand('/autoheal apply'), 'apply');
+  assert.equal(parseCommand('  /autoheal Retry \nplease'), 'retry');
+  assert.equal(parseCommand('/autoheal'), 'help');
+  assert.equal(parseCommand('/autoheal nuke'), 'unknown');
+  assert.equal(parseCommand('please /autoheal apply'), null);
+  assert.equal(parseCommand('/autoheal apply now'), null);
+  assert.equal(parseCommand(undefined), null);
+});
+
+/** A repo with a PR branch and an AutoHeal fix branch on top of it, in a bare remote. */
+function commandRepo({ author = 'autoheal-ai@users.noreply.github.com', file = 'tests/login.spec.ts' } = {}) {
+  const bare = tmp('autoheal-cbare-');
+  git(bare, 'init', '-q', '--bare');
+  const work = tmp('autoheal-cwork-');
+  git(work, 'init', '-q', '-b', 'main');
+  mkdirSync(path.join(work, 'tests'));
+  writeFileSync(path.join(work, 'tests', 'login.spec.ts'), LOGIN);
+  git(work, 'add', '-A');
+  git(work, 'commit', '-qm', 'init');
+  git(work, 'push', '-q', bare, 'HEAD:refs/heads/main');
+  git(work, 'checkout', '-q', '-b', 'feature/x');
+  writeFileSync(path.join(work, 'README.md'), 'hi\n');
+  git(work, 'add', '-A');
+  git(work, 'commit', '-qm', 'feature');
+  git(work, 'push', '-q', bare, 'HEAD:refs/heads/feature/x');
+  git(work, 'checkout', '-q', '-b', 'autoheal/77');
+  mkdirSync(path.dirname(path.join(work, file)), { recursive: true });
+  writeFileSync(path.join(work, file), LOGIN.replace("'Log in'", "'Sign in'"));
+  git(work, 'add', '-A');
+  execFileSync('git', ['-c', 'user.name=autoheal-ai[bot]', '-c', `user.email=${author}`, 'commit', '-qm', 'test: AutoHeal fixes for failed run 77'], { cwd: work });
+  git(work, 'push', '-q', bare, 'HEAD:refs/heads/autoheal/77');
+  // A new commit on the PR branch after the fix was made.
+  execFileSync('git', ['--git-dir', bare, 'update-ref', 'refs/heads/feature/x', git(work, 'rev-parse', 'feature/x')]);
+  const checkout = tmp('autoheal-ccheckout-');
+  execFileSync('git', ['clone', '-q', bare, checkout]);
+  return { bare, checkout, work };
+}
+
+function githubMock() {
+  return mockServer((req) => {
+    const u = req.url;
+    if (req.method === 'GET' && u === '/repos/acme/shop') return [200, { default_branch: 'main' }];
+    if (req.method === 'GET' && u === '/repos/acme/shop/pulls/5') return [200, { number: 5, html_url: 'https://gh/acme/shop/pull/5', state: 'open', head: { ref: 'feature/x', sha: 'abc', repo: { full_name: 'acme/shop' } }, base: { ref: 'main' } }];
+    if (req.method === 'GET' && u.startsWith('/repos/acme/shop/pulls?state=open') && u.includes('base=feature%2Fx')) return [200, [{ number: 6, html_url: 'https://gh/acme/shop/pull/6', head: { ref: 'autoheal/77', repo: { full_name: 'acme/shop' } }, base: { ref: 'feature/x' }, body: 'Changed the login locator because @alice renamed it' }]];
+    if (req.method === 'GET') return [200, []];
+    return [200, {}];
+  });
+}
+
+test('/autoheal apply: cherry-picks the AutoHeal commit onto the PR branch and closes the fix PR', async () => {
+  const { bare, checkout } = commandRepo();
+  const { server, calls, url } = await githubMock();
+  try {
+    const forge = githubForge({ api: url, server: url, repo: 'acme/shop', token: 't' });
+    forge.pushUrl = bare;
+    const reply = await runCommand({ cmd: 'apply', forge, number: '5', commenter: '@​bob', root: checkout, env: {} });
+    assert.match(reply, /Applied the AutoHeal fix/);
+    assert.match(execFileSync('git', ['show', 'feature/x:tests/login.spec.ts'], { cwd: bare, encoding: 'utf8' }), /Sign in/);
+    assert.match(execFileSync('git', ['show', 'feature/x:README.md'], { cwd: bare, encoding: 'utf8' }), /hi/, 'the PR branch keeps its own commits');
+    assert.ok(calls.some((c) => c.method === 'PATCH' && c.url === '/repos/acme/shop/pulls/6' && JSON.parse(c.body).state === 'closed'));
+    const explain = await runCommand({ cmd: 'explain', forge, number: '5', commenter: '', root: checkout, env: {} });
+    assert.match(explain, /@​alice/, 'mentions in the fix PR body are neutralized');
+  } finally {
+    server.close();
+  }
+});
+
+test('/autoheal apply refuses a fix commit AutoHeal did not make, or outside the allowed paths', async () => {
+  const a = commandRepo({ author: 'mallory@example.com' });
+  execFileSync('git', ['fetch', '-q', a.bare, '+refs/heads/autoheal/77:refs/autoheal/fix'], { cwd: a.checkout });
+  assert.throws(() => checkFixCommit(a.checkout, 'refs/autoheal/fix'), /not made by AutoHeal/);
+  const b = commandRepo({ file: 'src/app.ts' });
+  execFileSync('git', ['fetch', '-q', b.bare, '+refs/heads/autoheal/77:refs/autoheal/fix'], { cwd: b.checkout });
+  assert.throws(() => checkFixCommit(b.checkout, 'refs/autoheal/fix'), /outside the allowed paths/);
+});
+
+test('commands from people without write access only get a refusal', async () => {
+  const { server, calls, url } = await githubMock();
+  try {
+    const env = { GITHUB_ACTIONS: 'true', GITHUB_REPOSITORY: 'acme/shop', GITHUB_SERVER_URL: url, GITHUB_API_URL: url, GH_TOKEN: 't', COMMENT_BODY: '/autoheal ignore', PR_NUMBER: '5', AUTHOR_ASSOCIATION: 'NONE', COMMENTER: 'eve' };
+    assert.equal(await commandMain(env), 0);
+    assert.ok(!calls.some((c) => c.method === 'PATCH'));
+    const reply = calls.find((c) => c.method === 'POST' && c.url === '/repos/acme/shop/issues/5/comments');
+    assert.match(JSON.parse(reply.body).body, /Only maintainers/);
+  } finally {
+    server.close();
+  }
 });
