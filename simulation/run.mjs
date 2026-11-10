@@ -166,7 +166,68 @@ function cypressInstalled() {
   return spawnSync('npx', ['cypress', 'verify'], { cwd: cypressFixture, stdio: 'pipe' }).status === 0;
 }
 
+const wdioFixture = path.join(here, 'wdio-fixture');
+
+function wdioInstalled() {
+  return existsSync(path.join(wdioFixture, 'node_modules', '@wdio', 'cli'));
+}
+
 const scenarios = {
+  wdio() {
+    if (!wdioInstalled()) {
+      console.log('  (skipped: run npm install in simulation/wdio-fixture to get WebdriverIO)');
+      return;
+    }
+    const dir = path.join(workRoot, 'wdio');
+    rmSync(dir, { recursive: true, force: true });
+    mkdirSync(dir, { recursive: true });
+    cpSync(wdioFixture, dir, { recursive: true, filter: (src) => !src.includes(`${path.sep}node_modules`) && !src.includes(`${path.sep}reports`) });
+    symlinkSync(path.join(wdioFixture, 'node_modules'), path.join(dir, 'node_modules'), 'dir');
+    mkdirSync(path.join(dir, 'app'));
+    cpSync(path.join(fixture, 'app', 'server.mjs'), path.join(dir, 'app', 'server.mjs'));
+    const git = (...args) => execFileSync('git', args, { cwd: dir, stdio: 'pipe' });
+    git('init', '-q');
+    git('add', '-A');
+    git('-c', 'user.email=sim@example.com', '-c', 'user.name=sim', 'commit', '-qm', 'dummy shop (WebdriverIO)');
+    writeFileSync(path.join(dir, '.git', 'info', 'exclude'), 'reports/\n.autoheal-out/\nscript.json\n');
+    // The "CI run" that failed, with @wdio/junit-reporter (reports/).
+    const env = { ...process.env, PORT: '4321', CI: '1' };
+    const server = spawn(process.execPath, ['app/server.mjs'], { cwd: dir, env, stdio: 'ignore' });
+    try {
+      spawnSync('npx', ['wdio', 'run', 'wdio.conf.mjs'], { cwd: dir, env, stdio: process.env.SIM_VERBOSE ? 'inherit' : 'pipe', timeout: 600_000 });
+    } finally {
+      server.kill();
+    }
+    const xml = existsSync(path.join(dir, 'reports')) ? readdirSync(path.join(dir, 'reports')).filter((f) => f.endsWith('-junit-reporter.log') || f.endsWith('.xml')) : [];
+    check(xml.length >= 2, `WebdriverIO wrote JUnit reports (${xml.join(', ')})`);
+    const login = file(dir, 'test/specs/login.e2e.js');
+    writeFileSync(
+      path.join(dir, 'script.json'),
+      JSON.stringify([
+        { calls: [{ name: 'read_file', input: { path: 'test/specs/login.e2e.js' } }] },
+        { calls: [{ name: 'propose_fix', input: { path: 'test/specs/login.e2e.js', content: login.replace("await expect($('#msg')).toHaveText('Signed in as ada@example.com');", "await browser.pause(500);"), explanation: 'Wait instead of checking.' } }] },
+        { calls: [{ name: 'propose_fix', input: { path: 'test/specs/login.e2e.js', content: login.replace("$('button=Log in')", "$('button=Sign in')"), explanation: 'The submit button now says "Sign in".' } }] },
+      ]),
+    );
+    const res = spawnSync(
+      process.execPath,
+      [cli, 'heal', '--report', 'reports', '--max-failures', '4', '--repeat-each', '3', '--no-flaky-check', '--start-command', 'node app/server.mjs', '--start-url', 'http://127.0.0.1:4321/'],
+      { cwd: dir, encoding: 'utf8', timeout: 1_200_000, env: { ...env, AUTOHEAL_PROVIDER: 'scripted', AUTOHEAL_SCRIPT: path.join(dir, 'script.json'), ANTHROPIC_API_KEY: '', OPENAI_API_KEY: '' } },
+    );
+    if (process.env.SIM_VERBOSE) console.log(res.stderr, res.stdout);
+    const summary = existsSync(path.join(dir, '.autoheal-out', 'summary.json')) ? JSON.parse(readFileSync(path.join(dir, '.autoheal-out', 'summary.json'), 'utf8')) : null;
+    check(summary?.framework === 'webdriverio', `framework detected as webdriverio (${summary?.framework})`);
+    check(summary?.totalFailures === 2, `2 failures read from the JUnit reports (got ${summary?.totalFailures})`);
+    const fixed = byTest(summary, 'user can log in');
+    check(fixed?.status === 'FIXED' && fixed.fix?.by === 'ai', `login → FIXED by the AI (${fixed?.status}: ${fixed?.summary})`);
+    check(fixed?.stability?.runs === 3 && fixed.stability.passed, 'the fix passed 3 real WebdriverIO runs');
+    check(file(dir, 'test/specs/login.e2e.js').includes("$('button=Sign in')") && file(dir, 'test/specs/login.e2e.js').includes('toHaveText('), 'the fix kept the assertion and changed only the button text');
+    const price = byTest(summary, 'pro plan price');
+    check(price?.status === 'APP_BUG' && price.failure.expected === '$10' && price.failure.actual === '$12', `price → APP_BUG with expected $10, actual $12 (${price?.status}: ${price?.failure.expected} / ${price?.failure.actual})`);
+    check(file(dir, 'test/specs/pricing.e2e.js').includes("'$10'"), 'pricing spec unchanged');
+    check(res.status === 0, `exit code 0: the blocked first proposal was followed by a good fix (got ${res.status})`);
+  },
+
   cypress() {
     if (!cypressInstalled()) {
       console.log('  (skipped: run npm install in simulation/cypress-fixture to get Cypress)');
@@ -432,6 +493,7 @@ const scenarios = {
       check(summary?.reviews?.closed === 1 && !summary.reviews.note, `read 1 closed AutoHeal PR (${JSON.stringify(summary?.reviews)})`);
       const r = byTest(summary, 'checkout asks to log in');
       check(r?.fix?.by !== 'fingerprint' && r?.reasons.some((x) => /closed without merging in PR #5/.test(x)), `the change reviewers closed was not proposed again (${r?.status}: ${r?.reasons?.join('; ')})`);
+      check(/reviewers already closed the same change/.test(r?.summary ?? ''), `the summary says why no fix was proposed (${r?.summary})`);
       check(file(dir, 'tests/checkout-login.spec.ts').includes("name: 'Log in'"), 'test file unchanged');
       // Find the cause works for app bugs too: the commit that changed the value.
       const price = byTest(summary, 'pro plan price');
@@ -688,7 +750,7 @@ const scenarios = {
 };
 
 const wanted = process.argv.slice(2);
-const order = wanted.length ? wanted : ['rules', 'ai', 'cheat', 'comment', 'fingerprint', 'reviews', 'policy', 'metrics', 'cypress', 'action', 'dashboard'];
+const order = wanted.length ? wanted : ['rules', 'ai', 'cheat', 'comment', 'fingerprint', 'runtime', 'reviews', 'policy', 'metrics', 'cypress', 'wdio', 'action', 'dashboard'];
 let aiResult;
 for (const name of order) {
   if (!scenarios[name]) {

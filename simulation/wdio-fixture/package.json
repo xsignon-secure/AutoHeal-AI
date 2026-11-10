@@ -1,0 +1,13 @@
+{
+  "name": "autoheal-simulation-wdio-fixture",
+  "private": true,
+  "version": "0.0.0",
+  "type": "module",
+  "description": "The dummy shop's WebdriverIO suite, used by `npm run simulate -- wdio` (needs Chrome; CI installs it).",
+  "devDependencies": {
+    "@wdio/cli": "10.2.0",
+    "@wdio/junit-reporter": "10.2.0",
+    "@wdio/local-runner": "10.2.0",
+    "@wdio/mocha-framework": "10.2.0"
+  }
+}

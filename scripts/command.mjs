@@ -41,6 +41,54 @@ export function parseCommand(body) {
   return COMMANDS.includes(cmd) ? cmd : 'unknown';
 }
 
+const BY = { rules: 'rule', fingerprint: 'saved fingerprint, no AI', 'same-change': 'same UI change, no AI', baseline: 'new screenshot baseline', ai: 'AI agent' };
+
+/**
+ * `/autoheal explain`: a short answer built from the fix PR's own record (the
+ * autoheal-fixes marker and its sections), never its hidden markers, so the
+ * reply stays readable and no metrics marker is copied into a comment.
+ */
+export function explainText(body, url) {
+  const text = String(body);
+  const code = (v) => `\`${neutralize(String(v ?? '')).replace(/`/g, "'").slice(0, 200)}\``;
+  let fixes = [];
+  const m = /<!-- autoheal-fixes:([A-Za-z0-9+/=]{1,40000}) -->/.exec(text);
+  if (m) {
+    try {
+      const parsed = JSON.parse(Buffer.from(m[1], 'base64').toString('utf8'));
+      if (Array.isArray(parsed)) fixes = parsed.slice(0, 20);
+    } catch {
+      fixes = [];
+    }
+  }
+  const out = [`**What AutoHeal changed** in ${url}`, ''];
+  if (fixes.length) {
+    out.push('| Test | Change | How |', '|---|---|---|');
+    for (const f of fixes) {
+      const change = f.before && f.after ? `${code(f.before)} → ${code(f.after)}` : `edited ${code(f.file)}`;
+      out.push(`| ${neutralize(String(f.test ?? f.file ?? '')).replace(/\|/g, '/').slice(0, 200)} | ${change} | ${BY[f.by] ?? neutralize(String(f.by ?? 'fix'))} |`);
+    }
+    out.push('');
+  } else {
+    // An older fix PR without the record: its own text, without hidden markers.
+    const prose = neutralize(
+      text
+        .split('\n')
+        .filter((line) => !line.trimStart().startsWith('<!--'))
+        .join('\n')
+        .replace(/</g, '&lt;'),
+    ).trim().slice(0, 20_000);
+    if (prose) out.push('<details><summary>Fix details</summary>', '', prose, '', '</details>', '');
+  }
+  out.push('Each fix was triaged as a test problem (not an app bug), passed the anti-cheat checks, and passed every stability rerun before the PR was opened.');
+  const kept = /### Not changed in this PR\n+([\s\S]*?)(?:\n\n[A-Z]|\n###|$)/.exec(text)?.[1]?.trim();
+  if (kept) out.push('', '**Left alone on purpose:**', '', neutralize(kept).slice(0, 3000));
+  out.push('', `Screenshots, the diff and the proof for each fix are in ${url}.`);
+  return out.join('\n');
+}
+
+export const APPLIED_MARKER = '<!-- autoheal-applied -->';
+
 export const HELP = [
   '**AutoHeal AI commands** (maintainers only):',
   '',
@@ -87,8 +135,7 @@ export async function runCommand({ cmd, forge, number, commenter, root, env = pr
   }
   if (!fix) return `No open AutoHeal fix ${forge.label} found for this ${here === 'fix' ? 'fix' : forge.label}.`;
   if (cmd === 'explain') {
-    const body = neutralize(fix.body || '').slice(0, 30_000);
-    return [`**What AutoHeal changed** in ${fix.url}:`, '', '<details><summary>Fix details</summary>', '', body, '', '</details>'].join('\n');
+    return explainText(fix.body || '', fix.url);
   }
   if (cmd === 'ignore') {
     await forge.closePr(fix.number);
@@ -111,10 +158,23 @@ export async function runCommand({ cmd, forge, number, commenter, root, env = pr
     return `The fix does not apply cleanly on the newest commit of \`${source.head}\`. Use \`/autoheal retry\`, or merge ${fix.url} by hand.`;
   }
   git([...auth, 'push', forge.pushUrl, `HEAD:refs/heads/${source.head}`], { cwd: root });
-  if (env.RERUN_WORKFLOW && /^[\w.-]{1,100}\.ya?ml$/.test(env.RERUN_WORKFLOW)) await forge.dispatch(env.RERUN_WORKFLOW, source.head).catch(() => undefined);
-  await forge.closePr(fix.number);
+  // A push with the workflow token starts no workflows (or waits for approval),
+  // so start the tests that failed on the PR branch: rerun-workflow, or the
+  // workflow of the failed run the fix was made for.
+  let tests = '';
+  const runId = fix.head.startsWith('autoheal/') ? fix.head.slice('autoheal/'.length) : '';
+  const workflow =
+    env.RERUN_WORKFLOW && /^[\w.-]{1,100}\.ya?ml$/.test(env.RERUN_WORKFLOW) ? env.RERUN_WORKFLOW : forge.runWorkflow && runId ? await forge.runWorkflow(runId).catch(() => null) : null;
+  if (workflow && forge.dispatch) {
+    tests = await forge.dispatch(workflow, source.head).then(
+      () => ` Started \`${workflow}\` on it.`,
+      () => ` Could not start \`${workflow}\` on it: add \`workflow_dispatch:\` to its \`on:\` list, or rerun the tests by hand.`,
+    );
+  }
+  // The marker tells the review learner this fix was accepted, not rejected.
+  await forge.closePr(fix.number, { body: `${String(fix.body ?? '').slice(0, 64_000)}\n\n${APPLIED_MARKER}` });
   await forge.commentPr(fix.number, `Applied to \`${source.head}\` with \`/autoheal apply\`${who}; closing this ${forge.label}.`);
-  return `Applied the AutoHeal fix from ${fix.url} to \`${source.head}\`${who}.`;
+  return `Applied the AutoHeal fix from ${fix.url} to \`${source.head}\`${who}.${tests}`;
 }
 
 export async function main(env = process.env) {

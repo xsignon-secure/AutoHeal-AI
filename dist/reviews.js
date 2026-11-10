@@ -85,9 +85,17 @@ export async function reviewHistory(options) {
         const marked = readMarker(p.body);
         if (!marked.length || typeof p.number !== 'number')
             continue;
-        let outcome = p.merged_at ? 'merged' : 'closed';
+        // `/autoheal apply` copies the fix onto the PR branch and closes the fix PR
+        // with this marker: the fix was accepted, so it counts as merged.
+        let applied = !p.merged_at && typeof p.body === 'string' && p.body.includes('<!-- autoheal-applied -->');
+        if (!p.merged_at && !applied) {
+            // Fix PRs applied before the marker existed (0.12.0) say so in a comment.
+            const comments = (await get(`/issues/${p.number}/comments?per_page=50`).catch(() => []));
+            applied = (Array.isArray(comments) ? comments : []).some((c) => c?.user?.type === 'Bot' && /^Applied to `[^`]+` with `\/autoheal apply`/.test(String(c?.body ?? '')));
+        }
+        let outcome = p.merged_at || applied ? 'merged' : 'closed';
         const edits = new Map();
-        if (outcome === 'merged') {
+        if (outcome === 'merged' && !applied) {
             const commits = (await get(`/pulls/${p.number}/commits?per_page=50`));
             const list = Array.isArray(commits) ? commits : [];
             const first = list.findIndex((c) => String(c?.commit?.message ?? '').startsWith('test: AutoHeal fixes'));

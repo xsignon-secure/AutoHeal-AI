@@ -13,7 +13,7 @@ inputs:
     description: File name of the AutoHeal workflow, for /autoheal retry.
     default: autoheal.yml
   rerun-workflow:
-    description: File name of your test workflow, started on the PR branch after /autoheal apply (needs workflow_dispatch). Empty to skip.
+    description: Test workflow file started on the PR branch after /autoheal apply (needs workflow_dispatch). Empty means the workflow of the failed run the fix was made for.
     default: ''
   allowed-paths:
     description: Same as the publish action's allowed-paths. /autoheal apply refuses fix commits outside them.

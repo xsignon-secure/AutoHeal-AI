@@ -106,8 +106,9 @@ export function githubForge({ api, server, repo, token }) {
       const pr = await call('GET', `${r}/pulls/${number}`);
       return { number: pr.number, url: pr.html_url, state: pr.state, head: pr.head?.ref, headRepo: pr.head?.repo?.full_name, base: pr.base?.ref, sha: pr.head?.sha, body: pr.body ?? '', title: pr.title ?? '' };
     },
-    async closePr(number) {
-      await call('PATCH', `${r}/pulls/${number}`, { state: 'closed' });
+    /** Closes a PR; `body` replaces its description in the same call. */
+    async closePr(number, { body } = {}) {
+      await call('PATCH', `${r}/pulls/${number}`, typeof body === 'string' ? { state: 'closed', body: body.slice(0, 65_000) } : { state: 'closed' });
     },
     /** Open PRs into a branch, or from a branch (head is a bare branch name in this repository). */
     async listPrs({ base, head } = {}) {
@@ -120,6 +121,13 @@ export function githubForge({ api, server, repo, token }) {
       const data = await call('GET', `${r}/actions/runs?head_sha=${encodeURIComponent(sha)}&status=failure&per_page=5`);
       const run = Array.isArray(data?.workflow_runs) ? data.workflow_runs.find((x) => !String(x.name ?? '').startsWith('AutoHeal')) : null;
       return run ? String(run.id) : null;
+    },
+    /** The workflow file (e.g. e2e.yml) of a run, or null. */
+    async runWorkflow(runId) {
+      if (!/^\d{1,20}$/.test(String(runId))) return null;
+      const data = await call('GET', `${r}/actions/runs/${runId}`);
+      const file = String(data?.path ?? '').split('@')[0].split('/').pop() ?? '';
+      return /^[\w.-]{1,100}\.ya?ml$/.test(file) ? file : null;
     },
     async dispatchWith(workflow, ref, inputs) {
       await call('POST', `${r}/actions/workflows/${encodeURIComponent(workflow)}/dispatches`, { ref, inputs });

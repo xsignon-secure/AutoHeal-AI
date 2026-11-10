@@ -5,7 +5,7 @@ import http from 'node:http';
 import os from 'node:os';
 import path from 'node:path';
 import { test } from 'node:test';
-import { checkBaselines, main as publishMain, parsePatch, prBranchTarget, sourceComment } from '../scripts/publish.mjs';
+import { checkBaselines, main as publishMain, noFixComment, parsePatch, prBranchTarget, sourceComment } from '../scripts/publish.mjs';
 import { checkFixCommit, parseCommand, runCommand, main as commandMain } from '../scripts/command.mjs';
 import { githubForge } from '../scripts/forge.mjs';
 import { historyOf, parseHistory, recordRun } from '../dist/history.js';
@@ -190,6 +190,12 @@ test('prBranchTarget: only an open PR branch that is not the default or a shared
   assert.equal((await prBranchTarget(forge, 'feature/x', '3')).ok, true);
   assert.match(sourceComment({ fixUrl: 'https://x/pr/2', onBranch: false, fixed: 2, label: 'pull request' }), /\/autoheal apply/);
   assert.match(sourceComment({ fixUrl: null, onBranch: true, fixed: 1, label: 'merge request' }), /pushed 1 test fix onto this branch/);
+  const none = noFixComment('## AutoHeal AI report\n\nOutcome: **unfixed**\n\n| Why | closed without merging in PR #2 @alice |', 'pull request');
+  assert.match(none, /did not open a fix pull request/);
+  assert.match(none, /closed without merging in PR #2/);
+  assert.doesNotMatch(none, /## AutoHeal AI report/);
+  assert.doesNotMatch(none, /@alice/, 'mentions are neutralized');
+  assert.equal(noFixComment(null), null);
 });
 
 async function prBranchRun({ branch, target }) {
@@ -311,10 +317,21 @@ function githubMock() {
     if (req.method === 'GET' && u === '/repos/acme/shop') return [200, { default_branch: 'main' }];
     if (req.method === 'GET' && u === '/repos/acme/shop/pulls/5') return [200, { number: 5, html_url: 'https://gh/acme/shop/pull/5', state: 'open', head: { ref: 'feature/x', sha: 'abc', repo: { full_name: 'acme/shop' } }, base: { ref: 'main' } }];
     if (req.method === 'GET' && u.startsWith('/repos/acme/shop/pulls?state=open') && u.includes('base=feature%2Fx')) return [200, [{ number: 6, html_url: 'https://gh/acme/shop/pull/6', head: { ref: 'autoheal/77', repo: { full_name: 'acme/shop' } }, base: { ref: 'feature/x' }, body: 'Changed the login locator because @alice renamed it' }]];
+    if (req.method === 'GET' && u === '/repos/acme/shop/actions/runs/77') return [200, { id: 77, path: '.github/workflows/e2e.yml' }];
     if (req.method === 'GET') return [200, []];
     return [200, {}];
   });
 }
+
+test('/autoheal explain: a short table from the fix record, no hidden markers copied', async () => {
+  const { explainText } = await import('../scripts/command.mjs');
+  const body = '<!-- autoheal-fixes:W3siZmlsZSI6InRlc3RzL2NhcnQuc3BlYy50cyIsInRlc3QiOiJjYXJ0LnNwZWMudHMg4oC6IGFkZCBhIG11ZyB0byB0aGUgY2FydCIsImJ5IjoiZmluZ2VycHJpbnQiLCJiZWZvcmUiOiJnZXRCeVRlc3RJZCgnYWRkLW11ZycpIiwiYWZ0ZXIiOiJnZXRCeVJvbGUoJ2J1dHRvbicsIHsgbmFtZTogJ0FkZCB0byBjYXJ0JyB9KSJ9LHsiZmlsZSI6InRlc3RzL2xvZ2luLnNwZWMudHMiLCJ0ZXN0IjoibG9naW4uc3BlYy50cyDigLogdXNlciBjYW4gbG9nIGluIiwiYnkiOiJmaW5nZXJwcmludCIsImJlZm9yZSI6ImdldEJ5Um9sZSgnYnV0dG9uJywgeyBuYW1lOiAnTG9nIGluJyB9KSIsImFmdGVyIjoiZ2V0QnlSb2xlKCdidXR0b24nLCB7IG5hbWU6ICdTaWduIGluJyB9KSJ9XQ== -->\n<!-- autoheal-run:eyJ1c2QiOjB9 -->\n## AutoHeal AI: 2 test fixes\n\n### Not changed in this PR\n\n- 🐞 APP_BUG `tests/pricing.spec.ts` › pro plan price: the app looks wrong.\n\nSpend: 0 tokens';
+  const out = explainText(body, 'https://gh/acme/shop/pull/2');
+  assert.match(out, /\| cart\.spec\.ts › add a mug to the cart \| `getByTestId\('add-mug'\)` → `getByRole\('button', \{ name: 'Add to cart' \}\)` \| saved fingerprint, no AI \|/);
+  assert.match(out, /user can log in/);
+  assert.match(out, /Left alone on purpose:[\s\S]*pro plan price/);
+  assert.doesNotMatch(out, /<!--/);
+});
 
 test('/autoheal apply: cherry-picks the AutoHeal commit onto the PR branch and closes the fix PR', async () => {
   const { bare, checkout } = commandRepo();
@@ -324,9 +341,11 @@ test('/autoheal apply: cherry-picks the AutoHeal commit onto the PR branch and c
     forge.pushUrl = bare;
     const reply = await runCommand({ cmd: 'apply', forge, number: '5', commenter: '@​bob', root: checkout, env: {} });
     assert.match(reply, /Applied the AutoHeal fix/);
+    assert.match(reply, /Started `e2e.yml` on it/);
+    assert.ok(calls.some((c) => c.method === 'POST' && c.url === '/repos/acme/shop/actions/workflows/e2e.yml/dispatches' && JSON.parse(c.body).ref === 'feature/x'), 'the failed tests are started on the PR branch');
     assert.match(execFileSync('git', ['show', 'feature/x:tests/login.spec.ts'], { cwd: bare, encoding: 'utf8' }), /Sign in/);
     assert.match(execFileSync('git', ['show', 'feature/x:README.md'], { cwd: bare, encoding: 'utf8' }), /hi/, 'the PR branch keeps its own commits');
-    assert.ok(calls.some((c) => c.method === 'PATCH' && c.url === '/repos/acme/shop/pulls/6' && JSON.parse(c.body).state === 'closed'));
+    assert.ok(calls.some((c) => c.method === 'PATCH' && c.url === '/repos/acme/shop/pulls/6' && JSON.parse(c.body).state === 'closed' && JSON.parse(c.body).body.endsWith('<!-- autoheal-applied -->')), 'closed as applied, so it is not learned as rejected');
     const explain = await runCommand({ cmd: 'explain', forge, number: '5', commenter: '', root: checkout, env: {} });
     assert.match(explain, /@​alice/, 'mentions in the fix PR body are neutralized');
   } finally {
@@ -519,7 +538,7 @@ test('visual: no app change since the baseline is an app bug, the baseline stays
 
 // ---------- WebdriverIO ----------
 
-import { parseWdioJunit, parseWdioReport, wdioKind, isWdioProject, scanChange, frameworkSetting } from '../dist/index.js';
+import { parseWdioJunit, parseWdioReport, wdioKind, wdioFailure, WdioTools, isWdioProject, scanChange, frameworkSetting } from '../dist/index.js';
 
 const WDIO_XML = `<?xml version="1.0" encoding="UTF-8"?>
 <testsuites>
@@ -554,6 +573,24 @@ test('WebdriverIO: JUnit results, failure kinds, framework setting', async () =>
   assert.equal(await isWdioProject(dir), true);
   writeFileSync(path.join(dir, 'playwright.config.ts'), '');
   assert.equal(await isWdioProject(dir), false);
+});
+
+test('WebdriverIO: real reporter output (file URL, quoted values) and its default .log file name', async () => {
+  const xml = WDIO_XML.replace('value="./test/specs/login.e2e.js"', 'value="file://./test/specs/login.e2e.js"');
+  assert.equal(parseWdioJunit(xml)[0].file, './test/specs/login.e2e.js');
+  assert.equal(parseWdioJunit(WDIO_XML.replace('value="./test/specs/login.e2e.js"', 'value="file:///work/my%20app/a.e2e.js"'))[0].file, '/work/my app/a.e2e.js');
+  const f = wdioFailure({ file: 'test/specs/p.e2e.js', title: 'pricing pro plan price', state: 'failed', message: 'Expect $(`#p`) to have text\n\nExpected: "$10"\nReceived: "$12"', stack: '' });
+  assert.equal(f.kind, 'assertion');
+  assert.equal(f.expected, '$10');
+  assert.equal(f.actual, '$12');
+  const dir = mkdtempSync(path.join(os.tmpdir(), 'autoheal-wdiolog-'));
+  writeFileSync(path.join(dir, 'wdio.conf.js'), 'export const config = {};\n');
+  mkdirSync(path.join(dir, 'reports'));
+  writeFileSync(path.join(dir, 'reports', 'wdio-0-0-junit-reporter.log'), xml);
+  const tools = new WdioTools(dir, { log: () => {} });
+  const r = await tools.call('load-report', { report: 'reports' });
+  assert.equal(r.ok, true, r.text);
+  assert.match(r.text, /1 failed/);
 });
 
 test('WebdriverIO anti-cheat: browser.execute and browser.mock are blocked, pause warns', () => {

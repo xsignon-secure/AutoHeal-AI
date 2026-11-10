@@ -25,6 +25,8 @@ import { wrapCommand } from './sandbox.js';
 const PLAYWRIGHT_CONFIGS = ['playwright.config.ts', 'playwright.config.js', 'playwright.config.mjs', 'playwright.config.cjs', 'playwright.config.mts'];
 export const WDIO_CONFIGS = ['wdio.conf.ts', 'wdio.conf.js', 'wdio.conf.mjs', 'wdio.conf.cjs', 'wdio.conf.mts', 'test/wdio.conf.ts', 'test/wdio.conf.js'];
 const MAX_REPORT_BYTES = 20 * 1024 * 1024;
+/** @wdio/junit-reporter names its files wdio-<cid>-junit-reporter.log by default (XML inside). */
+const WDIO_RESULT_FILE = /\.(?:xml|json)$|^wdio-[\w-]*junit-reporter\.log$/i;
 
 async function exists(file: string): Promise<boolean> {
   return stat(file).then(
@@ -44,13 +46,27 @@ export async function wdioConfig(root: string): Promise<string | null> {
   return null;
 }
 
+/** expect-webdriverio prints strings in quotes: "$10" -> $10. */
+const unquote = (v: string): string => (/^"[^"]*"$/.test(v) ? v.slice(1, -1) : v);
+
+function fileUrlPath(url: string): string {
+  const rest = url.slice('file://'.length);
+  try {
+    return decodeURIComponent(rest);
+  } catch {
+    return rest;
+  }
+}
+
 /** @wdio/junit-reporter: each testsuite names its spec in a `file` property. */
 export function parseWdioJunit(xml: string): CypressTest[] {
   const out: CypressTest[] = [];
   const parts = xml.split(/(?=<testsuite[\s>])/);
   for (const part of parts) {
     if (!part.startsWith('<testsuite')) continue;
-    const file = /<property\s+name="file"\s+value="([^"]*)"/.exec(part)?.[1] ?? /<testsuite\b[^>]*\bfile="([^"]*)"/.exec(part)?.[1] ?? '';
+    const raw = /<property\s+name="file"\s+value="([^"]*)"/.exec(part)?.[1] ?? /<testsuite\b[^>]*\bfile="([^"]*)"/.exec(part)?.[1] ?? '';
+    // WebdriverIO writes file URLs: file://./test/specs/a.e2e.js or file:///abs/path.
+    const file = raw.startsWith('file://') ? fileUrlPath(raw) : raw;
     const suite = /<testsuite\b[^>]*\bname="([^"]*)"/.exec(part)?.[1] ?? '';
     for (const t of parseJunit(part)) {
       const title = suite && !t.title.startsWith(suite) ? `${suite} ${t.title}` : t.title;
@@ -123,8 +139,8 @@ export function wdioFailure(test: CypressTest): CypressFailure {
   const rec = /^[ \t]*Received:?[ \t]*(\S.*)$/m.exec(f.message)?.[1];
   if (f.kind === 'assertion') {
     if (exp !== undefined && rec !== undefined) {
-      f.expected = exp.trim();
-      f.actual = rec.trim();
+      f.expected = unquote(exp.trim());
+      f.actual = unquote(rec.trim());
     } else if (values.expected !== undefined && values.actual !== undefined) {
       f.expected = values.expected;
       f.actual = values.actual;
@@ -174,7 +190,7 @@ export class WdioTools extends CypressTools {
         const p = path.join(d, name);
         const s = await stat(p).catch(() => null);
         if (s?.isDirectory()) await walk(p, depth + 1);
-        else if (s?.isFile() && /\.(?:xml|json)$/i.test(name) && s.size <= MAX_REPORT_BYTES) files.push(p);
+        else if (s?.isFile() && WDIO_RESULT_FILE.test(name) && s.size <= MAX_REPORT_BYTES) files.push(p);
       }
     };
     if (st.isDirectory()) await walk(abs, 0);
@@ -239,7 +255,7 @@ export class WdioTools extends CypressTools {
       });
       const tests: CypressTest[] = [];
       for (const name of await readdir(dir).catch(() => [] as string[])) {
-        if (!/\.(?:xml|json)$/.test(name) || name === 'exit.json') continue;
+        if (!WDIO_RESULT_FILE.test(name) || name === 'exit.json') continue;
         const parsed = parseWdioReport(await readFile(path.join(dir, name), 'utf8').catch(() => ''));
         if (parsed) tests.push(...parsed.map((t) => ({ ...t, file: specPath(root, t.file || (safe[0] as string)) })));
       }

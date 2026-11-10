@@ -76,10 +76,14 @@ test('reviews: merged, edited and closed AutoHeal PRs are read; other PRs and fo
     { number: 3, body: fix('tests/c.spec.ts', 'C1', 'C2'), merged_at: null, closed_at: '2026-11-03T00:00:00Z', head: { ref: 'autoheal/3', ...own }, base: own },
     { number: 4, body: fix('tests/d.spec.ts', 'D1', 'D2'), merged_at: null, head: { ref: 'feature', ...own }, base: own },
     { number: 5, body: fix('tests/e.spec.ts', 'E1', 'E2'), merged_at: null, head: { ref: 'autoheal/5', repo: { full_name: 'evil/shop' } }, base: own },
+    { number: 7, body: fix('tests/g.spec.ts', 'G1', 'G2'), merged_at: null, closed_at: '2026-11-04T00:00:00Z', head: { ref: 'autoheal/7', ...own }, base: own },
+    { number: 6, body: `${fix('tests/f.spec.ts', 'F1', 'F2')}\n\n<!-- autoheal-applied -->`, merged_at: null, closed_at: '2026-11-04T00:00:00Z', head: { ref: 'autoheal/6', ...own }, base: own },
   ];
   const sha = (c) => c.repeat(40);
   const routes = {
     '/repos/acme/shop/pulls': pulls,
+    '/repos/acme/shop/issues/3/comments': [{ user: { type: 'User' }, body: 'Applied to `x` with `/autoheal apply`, said a person' }],
+    '/repos/acme/shop/issues/7/comments': [{ user: { type: 'Bot' }, body: 'Applied to `feature/x` with `/autoheal apply` (asked by @bob); closing this pull request.' }],
     '/repos/acme/shop/pulls/1/commits': [{ sha: sha('1'), commit: { message: 'test: AutoHeal fixes for failed run 9' } }],
     '/repos/acme/shop/pulls/2/commits': [{ sha: sha('2'), commit: { message: 'test: AutoHeal fixes for failed run 8' } }, { sha: sha('3'), commit: { message: 'use the test id instead' } }],
     [`/repos/acme/shop/compare/${sha('2')}...${sha('3')}`]: { files: [{ filename: 'tests/b.spec.ts', patch: "-B2\n+getByTestId('b')" }, { filename: 'app/x.ts', patch: 'secret app change' }] },
@@ -92,7 +96,9 @@ test('reviews: merged, edited and closed AutoHeal PRs are read; other PRs and fo
     return { ok: !!body, status: body ? 200 : 404, json: async () => body };
   };
   const h = await reviewHistory({ repo: 'acme/shop', token: 't0k', apiUrl: 'https://api.example.test', fetchFn });
-  assert.deepEqual(h.prs, { merged: 1, edited: 1, closed: 1 });
+  assert.deepEqual(h.prs, { merged: 3, edited: 1, closed: 1 });
+  assert.equal(rejected(h, 'tests/g.spec.ts', 'G1', 'G2'), undefined, 'a fix applied by 0.12.0 (comment only) was accepted too');
+  assert.equal(rejected(h, 'tests/f.spec.ts', 'F1', 'F2'), undefined, 'a fix closed by /autoheal apply was accepted, not rejected');
   assert.ok(seen.every((a) => a === 'Bearer t0k'));
   const edited = h.fixes.find((f) => f.pr === 2);
   assert.equal(edited.outcome, 'edited');
