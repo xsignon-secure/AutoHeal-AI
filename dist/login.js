@@ -35,12 +35,13 @@ const LOCATOR_ONLY = new Set(['click', 'dblclick', 'hover', 'check', 'uncheck'])
  * The value comes after the last " = ", so locators may contain "=".
  */
 export function parseLoginStep(line) {
-    const text = line.trim();
-    const m = /^([a-z]+)\s+(.+)$/i.exec(text);
-    if (!m)
+    const text = line.trim().slice(0, 2000);
+    // Split at the first whitespace by hand: no backtracking regex on user text.
+    const space = text.search(/\s/);
+    const type = (space < 0 ? '' : text.slice(0, space)).toLowerCase();
+    const rest = space < 0 ? '' : text.slice(space + 1).trim();
+    if (!/^[a-z]+$/.test(type) || !rest)
         throw new LoginError(`Login step "${text}": expected "<action> <locator>", e.g. click getByRole('button', { name: 'Sign in' }).`);
-    const type = (m[1] ?? '').toLowerCase();
-    const rest = (m[2] ?? '').trim();
     if (type === 'goto')
         return { type: 'goto', url: rest };
     if (type === 'wait') {
