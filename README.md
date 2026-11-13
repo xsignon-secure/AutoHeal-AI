@@ -145,7 +145,7 @@ To have every normal `pull_request` workflow run as well, give the **publish** s
   with:
     app-id: ${{ vars.AUTOHEAL_APP_ID }}
     private-key: ${{ secrets.AUTOHEAL_APP_KEY }}
-- uses: xsignon-secure/AutoHeal-AI/publish@v0.12.1
+- uses: xsignon-secure/AutoHeal-AI/publish@v0.13.0
   with:
     github-token: ${{ steps.app-token.outputs.token }}
     # ...the other inputs from the template
@@ -299,7 +299,7 @@ issues:
 
 ## Inputs
 
-**Heal action** (`xsignon-secure/AutoHeal-AI@v0.12.1`):
+**Heal action** (`xsignon-secure/AutoHeal-AI@v0.13.0`):
 
 | Input | Default | |
 |---|---|---|
@@ -310,9 +310,10 @@ issues:
 | `run-id`, `commit`, `branch` | the triggering run | The failed run (the template fills these in) |
 | `anthropic-api-key` | | Your Anthropic key (model `claude-opus-5-5` unless `model` is set) |
 | `openai-api-key` | | Your OpenAI key (set `model`) |
-| `base-url` | | OpenAI-compatible endpoint for a local model (set `model`) |
+| `base-url` | | OpenAI-compatible endpoint: OpenRouter or a local model (set `model`) |
+| `api-key` | | Key for `base-url`, such as your OpenRouter key |
 | `model` | | Model id |
-| `price-in`, `price-out` | | USD per million tokens, required for a model AutoHeal has no price for (`0` for a local model) |
+| `price-in`, `price-out` | | USD per million tokens, required for a model AutoHeal has no price for (`0` for a local model; looked up for OpenRouter) |
 | `effort` | `medium` | Anthropic effort: `low` to `max` |
 | `vision` | `auto` | Show the AI the failure screenshot: `auto` (on for Anthropic and OpenAI, off for other endpoints), `true` or `false` |
 | `screenshots` | `true` | Save a before and after screenshot of each kept fix as the run artifact `<result-name>-evidence` (14 days) and link it from the PR. `false` turns it off |
@@ -336,7 +337,7 @@ issues:
 
 Outputs: `outcome` (`fixed`, `blocked`, `app-bug`, `quarantined`, `unfixed`, `nothing-to-do` or `error`), `fixed`, `blocked`, `has-result`.
 
-**Publish action** (`xsignon-secure/AutoHeal-AI/publish@v0.12.1`): `result-dir`, `mode`, `base-branch`, `run-id`, `commit`, `pr-number`, `blocked`, `open-issues`, `allowed-paths`, `allow-warn`, `quarantine-days`, `github-token`, `rerun-workflow` (the test workflow file to start on the fix branch), `fix-target` (`new-pr` or `pr-branch`), `dashboard-url`, `dashboard-secret`. Output: `pr-url`.
+**Publish action** (`xsignon-secure/AutoHeal-AI/publish@v0.13.0`): `result-dir`, `mode`, `base-branch`, `run-id`, `commit`, `pr-number`, `blocked`, `open-issues`, `allowed-paths`, `allow-warn`, `quarantine-days`, `github-token`, `rerun-workflow` (the test workflow file to start on the fix branch), `fix-target` (`new-pr` or `pr-branch`), `dashboard-url`, `dashboard-secret`. Output: `pr-url`.
 
 `allowed-paths` limits which files a fix may change. The default is `**/tests/**, **/test/**, **/e2e/**, **/playwright/**, **/*.spec.*, **/*.test.*, **/*.cy.*, **/test_*.py, **/*_test.py`. If your page objects live somewhere else (for example `src/pages/**`), add that folder. Files that tools load or run on their own (configs, `conftest.py`, `__init__.py`, setup and teardown files, `cypress/support/`, `cypress/plugins/`, `cypress.env.json`, `.pnpmfile.cjs`, gulp and grunt files) are never patched. Keep `allow-warn` and `quarantine-days` the same as in the heal job.
 
@@ -348,10 +349,11 @@ If a fix is blocked by the anti-cheat guard, the publish job fails, so that some
 |---|---|
 | Anthropic (default) | `ANTHROPIC_API_KEY`. The model is `claude-opus-5-5`; change it with `model`. |
 | OpenAI | `OPENAI_API_KEY` and `model` |
+| OpenRouter | `base-url: https://openrouter.ai/api/v1`, `api-key: ${{ secrets.OPENROUTER_API_KEY }}` and `model` (for example `anthropic/claude-sonnet-5.5`). The price is looked up for you. |
 | Local or self-hosted | `base-url` (for example `http://localhost:11434/v1`), `model`, and `price-in: '0'`, `price-out: '0'` |
 | None | No key: AutoHeal still triages, opens issues, quarantines flaky tests and applies rule-based locator fixes |
 
-For a model AutoHeal has no price for, the job stops with a clear error until you set `price-in` and `price-out`, because otherwise the cost limit could not work.
+For a model AutoHeal has no price for (other than OpenRouter models, which are looked up), the job stops with a clear error until you set `price-in` and `price-out`, because otherwise the cost limit could not work.
 
 Your key goes only to that provider. AutoHeal does not pass it to your tests, your app, the engine or the dashboard. With the sandbox on (the default on GitHub-hosted Linux runners), code in your tests or a proposed fix cannot read it from the parent process either. Where the sandbox is off, it could, so use a key with a spend limit, and rotate it if a fix PR ever looks hostile.
 

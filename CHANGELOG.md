@@ -2,6 +2,19 @@
 
 All notable changes to AutoHeal AI. Versions follow [semantic versioning](https://semver.org/).
 
+## 0.13.0 (2026-11-13)
+
+Fixes from a cross-repo audit of AutoHeal, playwright-e2e-mcp, KeepGreen and the demo repo.
+
+### Fixed
+- **OpenRouter could not be used from the GitHub Action.** The heal action had `base-url` but no way to pass the endpoint's key, so OpenRouter and other hosted OpenAI-compatible endpoints only worked locally. New `api-key` input (`AUTOHEAL_API_KEY`).
+- **OpenRouter models needed hand-set prices.** AutoHeal fails closed without a price, so every OpenRouter run stopped unless `price-in`/`price-out` were set. For an OpenRouter `base-url`, AutoHeal now looks the model up in OpenRouter's public model list (no key is sent). Hand-set prices still win.
+- **`autoheal cover --url` refused a deployed app.** Only an app AutoHeal starts itself must be on this machine; an already running staging or preview app now works.
+- **The metrics workflow template ran AutoHeal 0.9.0.** Every template, the README and the demo now pin this version, and a test keeps them in step.
+
+### Changed
+- playwright-e2e-mcp 0.15.0 to 0.16.1: Playwright 1.65, GitHub tokens kept out of test processes, capped CI downloads.
+
 ## 0.12.1 (2026-11-09)
 
 Fixes found by running 0.12.0 for real: a real WebdriverIO project and a public GitHub demo repository ([xsignon-secure/autoheal-demo](https://github.com/xsignon-secure/autoheal-demo)) where AutoHeal healed real PRs and answered real `/autoheal` commands.

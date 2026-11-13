@@ -121,7 +121,7 @@ export function renderTemplate(p: Project): { file: string; text: string } {
       const py = '      - uses: actions/setup-python@v5\n        with:\n          python-version: "3.12"\n\n      - name: Install dependencies and browsers\n';
       text = text.split('      - name: Install dependencies and browsers\n').join(py);
     }
-    return { file: '.github/workflows/autoheal.yml', text: text.split('0.12.1').join(VERSION) };
+    return { file: '.github/workflows/autoheal.yml', text: text.split('0.13.0').join(VERSION) };
   }
   if (p.ci === 'gitlab') {
     let text = read(path.join(PACKAGE_ROOT, 'templates', 'gitlab-ci.yml'));
@@ -129,12 +129,12 @@ export function renderTemplate(p: Project): { file: string; text: string } {
     text = text.replace('image: mcr.microsoft.com/playwright:v1.56.1-noble', `image: ${image}`);
     text = text.replace('AUTOHEAL_REPORT: "."', `AUTOHEAL_REPORT: ${JSON.stringify(p.framework === 'cypress' ? 'cypress' : p.framework === 'pytest' ? '.' : 'playwright-report')}`);
     text = text.split('    - npm ci\n').join(lines.map((l) => `    - ${l}\n`).join(''));
-    return { file: '.gitlab/autoheal.yml', text: text.split('0.12.1').join(VERSION) };
+    return { file: '.gitlab/autoheal.yml', text: text.split('0.13.0').join(VERSION) };
   }
   let text = read(path.join(PACKAGE_ROOT, 'templates', 'circleci-config.yml'));
   if (p.playwrightVersion) text = text.split('mcr.microsoft.com/playwright:v1.56.1-noble').join(`mcr.microsoft.com/playwright:v${p.playwrightVersion}-noble`);
   text = text.split('      - run: npm ci\n').join(lines.map((l) => `      - run: ${l}\n`).join(''));
-  return { file: '.circleci/autoheal.yml', text: text.split('0.12.1').join(VERSION) };
+  return { file: '.circleci/autoheal.yml', text: text.split('0.13.0').join(VERSION) };
 }
 
 /** What the project's own files say about the setup, as checks. */
