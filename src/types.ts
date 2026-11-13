@@ -128,6 +128,8 @@ export interface HealSummary {
   sandbox?: string;
   /** The app the heal job started (start-command), when it started one. */
   app?: string;
+  /** The session the AI's page checks used, when the heal job signed in. */
+  signedIn?: string;
   /** Element fingerprints saved with this change. */
   fingerprints?: number;
   /** Distinct problems among the failures (same broken locator or same wrong value = one). */

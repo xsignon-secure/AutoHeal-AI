@@ -11,6 +11,7 @@
  *   5. FLAKY: quarantine with an expiry; APP_BUG: issue; ENV: report
  *   6. whole-tree heal guard on the result, repo memory, summary
  */
+import { type LoginConfig } from './login.js';
 import { type BudgetLimits } from './budget.js';
 import { type ToolCaller } from './mcp.js';
 import { type Framework } from './cypress.js';
@@ -34,6 +35,8 @@ export interface HealOptions {
     flakyRuns: number;
     mocksBaseUrl?: string;
     appUrl?: string;
+    /** Sign in to the live app before the AI looks at it (needs appUrl; Playwright and pytest). */
+    login?: LoginConfig;
     /** Who owns quarantined tests (e.g. the author of the failing commit). */
     owner?: string;
     budget: BudgetLimits;

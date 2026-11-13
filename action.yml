@@ -70,6 +70,21 @@ inputs:
   start-url:
     description: Address to wait for after start-command (localhost only). Defaults to app-url.
     default: ''
+  login-url:
+    description: For apps behind a login, the login page (e.g. /login). Used with login-steps when the heal job has a live app (start-command or app-url).
+    default: ''
+  login-steps:
+    description: "Login steps, one per line, e.g. fill getByLabel('Password') = {{env:E2E_PASSWORD}}. Secrets come from the step's env (names E2E_*, TEST_*, PW_*, PLAYWRIGHT_*, LOGIN_*), never from here."
+    default: ''
+  login-check:
+    description: A locator only a signed-in user sees (e.g. the Sign out button), so a failed login is caught.
+    default: ''
+  login-totp-env:
+    description: Environment variable with the authenticator secret, if a step types {{totp}}.
+    default: ''
+  session:
+    description: Where the session is saved (default playwright/.auth/user.json). Alone, without login-steps, reuses a session file your setup made.
+    default: ''
   fix-flaky:
     description: Ask the AI for a deterministic fix of a flaky test (proven by at least 10 runs in a row) before quarantining it. Needs an AI key.
     default: 'true'
@@ -176,6 +191,11 @@ runs:
         AUTOHEAL_APP_URL: ${{ inputs.app-url }}
         AUTOHEAL_START_COMMAND: ${{ inputs.start-command }}
         AUTOHEAL_START_URL: ${{ inputs.start-url }}
+        AUTOHEAL_LOGIN_URL: ${{ inputs.login-url }}
+        AUTOHEAL_LOGIN_STEPS: ${{ inputs.login-steps }}
+        AUTOHEAL_LOGIN_CHECK: ${{ inputs.login-check }}
+        AUTOHEAL_LOGIN_TOTP_ENV: ${{ inputs.login-totp-env }}
+        AUTOHEAL_SESSION: ${{ inputs.session }}
         AUTOHEAL_START_TIMEOUT: ${{ inputs.start-timeout }}
         AUTOHEAL_LEARN_REVIEWS: ${{ inputs.learn-from-reviews }}
         AUTOHEAL_FIX_FLAKY: ${{ inputs.fix-flaky }}

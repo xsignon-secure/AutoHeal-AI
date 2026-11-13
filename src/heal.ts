@@ -17,6 +17,7 @@ import { access, mkdir, readdir, readFile, rm, writeFile } from 'node:fs/promise
 import path from 'node:path';
 import { promisify } from 'node:util';
 import { aiFix, aiTriage, relativeImports, safePath, type VerifyOutcome } from './agent.js';
+import { ensureSession, type LoginConfig } from './login.js';
 import { Budget, EMPTY_SNAPSHOT, priceFor, type BudgetLimits, type BudgetSnapshot } from './budget.js';
 import { scanChange, type Verdict } from './cheat.js';
 import { redact } from './redact.js';
@@ -61,6 +62,8 @@ export interface HealOptions {
   flakyRuns: number;
   mocksBaseUrl?: string;
   appUrl?: string;
+  /** Sign in to the live app before the AI looks at it (needs appUrl; Playwright and pytest). */
+  login?: LoginConfig;
   /** Who owns quarantined tests (e.g. the author of the failing commit). */
   owner?: string;
   budget: BudgetLimits;
@@ -439,6 +442,21 @@ export async function heal(options: HealOptions): Promise<HealSummary> {
         await writeFile(abs, original);
       }
       originals.delete(rel);
+    }
+  }
+
+  // Signed-in pages for the AI: log in once through the engine. Like the live app
+  // itself, this is a help, not a must: without it the AI uses the traces.
+  let session: string | undefined;
+  let sessionMade = false;
+  if (options.login && options.appUrl && (framework === 'playwright' || framework === 'pytest')) {
+    const existed = await access(path.join(root, options.login.session)).then(() => true, () => false);
+    try {
+      session = await ensureSession(mcp, options.login, { projectRoot: root, appUrl: options.appUrl, log });
+      sessionMade = !existed;
+      summary.signedIn = session;
+    } catch (error) {
+      log(`Sign-in: ${error instanceof Error ? error.message : String(error)}; the AI sees the pages signed out`);
     }
   }
 
@@ -1131,6 +1149,7 @@ export async function heal(options: HealOptions): Promise<HealSummary> {
           ].filter(Boolean).join('\n'),
           budget,
           ...(options.appUrl ? { appUrl: options.appUrl } : {}),
+          ...(session ? { session } : {}),
           screenshot: null,
           framework,
           verify: (file, content) => verify(failure, file, content),
@@ -1332,6 +1351,7 @@ export async function heal(options: HealOptions): Promise<HealSummary> {
             memory: [memoryText(relevantMemory(memory, failure.file)), hint, options.reviews ? reviewText(options.reviews, failure.file) : '', policy?.protect.length ? `${POLICY_FILE} protects these paths (relative to the repository root); never change files there: ${policy.protect.join(', ')}` : ''].filter(Boolean).join('\n'),
             budget,
             ...(options.appUrl ? { appUrl: options.appUrl } : {}),
+          ...(session ? { session } : {}),
             screenshot,
             framework,
             verify: (file, content) => verify(failure, file, content),
@@ -1561,6 +1581,8 @@ export async function heal(options: HealOptions): Promise<HealSummary> {
     summary.minutesSaved = summary.results.reduce((sum, r) => sum + (MINUTES_SAVED[r.status] ?? 0), 0);
     summary.finishedAt = new Date().toISOString();
     if (!options.mcp) await mcp.close();
+    // The session holds live cookies: never leave one this job made in the checkout.
+    if (session && sessionMade) await rm(path.join(root, session), { force: true }).catch(() => undefined);
   }
   return summary;
 }

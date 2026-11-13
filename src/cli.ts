@@ -197,6 +197,11 @@ async function cmdHeal(argv: string[]): Promise<number> {
       'no-flaky-check': { type: 'boolean' },
       'allow-warn': { type: 'boolean' },
       'setup-sandbox': { type: 'boolean' },
+      session: { type: 'string' },
+      'login-url': { type: 'string' },
+      'login-step': { type: 'string', multiple: true },
+      'login-check': { type: 'string' },
+      'login-totp-env': { type: 'string' },
     },
     strict: true,
   });
@@ -319,6 +324,22 @@ async function cmdHeal(argv: string[]): Promise<number> {
     }
   }
   const liveUrl = app?.url ?? appUrl;
+  // Sign in so the AI sees the pages the tests see. Flags, or AUTOHEAL_LOGIN_* from the Action.
+  const login = loginFromFlags({
+    session: values.session ?? (env.AUTOHEAL_SESSION || undefined),
+    'login-url': values['login-url'] ?? (env.AUTOHEAL_LOGIN_URL || undefined),
+    'login-step': values['login-step'] ?? (env.AUTOHEAL_LOGIN_STEPS ? env.AUTOHEAL_LOGIN_STEPS.split(/\r?\n/).map((s) => s.trim()).filter(Boolean) : undefined),
+    'login-check': values['login-check'] ?? (env.AUTOHEAL_LOGIN_CHECK || undefined),
+    'login-totp-env': values['login-totp-env'] ?? (env.AUTOHEAL_LOGIN_TOTP_ENV || undefined),
+  });
+  if (login) {
+    try {
+      checkLogin(login);
+    } catch (error) {
+      throw new ConfigError(error instanceof Error ? error.message : String(error));
+    }
+    if (!liveUrl) log('Sign-in: login steps are set but there is no live app (start-command or app-url), so they are not used');
+  }
   // Learn from reviews: what happened to earlier AutoHeal PRs (GitHub only, read-only token).
   let reviews: ReviewHistory | undefined;
   let reviewNote: string | undefined;
@@ -371,6 +392,7 @@ async function cmdHeal(argv: string[]): Promise<number> {
     checkFlaky: values['no-flaky-check'] !== true && env.AUTOHEAL_NO_FLAKY_CHECK !== '1',
     flakyRuns: 3,
     ...(liveUrl ? { appUrl: liveUrl } : {}),
+    ...(login && liveUrl ? { login } : {}),
     ...(mocksBaseUrl ? { mocksBaseUrl } : {}),
     ...(ci.owner ? { owner: ci.owner } : {}),
     budget: {

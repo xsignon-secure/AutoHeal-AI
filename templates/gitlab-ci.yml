@@ -33,7 +33,7 @@
 # cypress/autoheal/ (see the README). pytest: keep the JUnit XML and test-results/.
 
 variables:
-  AUTOHEAL_VERSION: "0.14.0"
+  AUTOHEAL_VERSION: "0.15.0"
   # Where the failed test job's artifacts are (a folder in the project).
   AUTOHEAL_REPORT: "."
   # draft-pr (default), pr or comment. GitLab calls them merge requests.

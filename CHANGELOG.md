@@ -2,6 +2,12 @@
 
 All notable changes to AutoHeal AI. Versions follow [semantic versioning](https://semver.org/).
 
+## 0.15.0 (2026-11-13)
+
+### Added
+- **The heal job signs in too.** With a live app (`start-command` or `app-url`), the Action's new `login-url`, `login-steps`, `login-check`, `login-totp-env` and `session` inputs (or the `--login-*` / `--session` flags of `autoheal heal`) sign in through the engine's `save-login` before the AI checks locators, so pages behind a login are inspected as the tests see them. Secrets stay `{{env:NAME}}` from the step's env. A failed sign-in is logged and healing goes on from the traces; the session file the job made is deleted at the end and never packed into a fix. The PR summary says when the AI worked signed in.
+- playwright-e2e-mcp 0.16.2.
+
 ## 0.14.0 (2026-11-13)
 
 ### Added

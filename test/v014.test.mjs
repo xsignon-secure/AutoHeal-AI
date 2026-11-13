@@ -121,3 +121,52 @@ test('cover with a session: pages open signed in, the prompt says so, the test m
   assert.equal(readFileSync(path.join(dir, r.file), 'utf8'), SIGNED_IN);
   assert.deepEqual(e.calls.find((c) => c.name === 'inspect-page').args, { url: 'http://127.0.0.1:3000/account', storageState: SESSION });
 });
+
+import { existsSync } from 'node:fs';
+import { heal } from '../dist/index.js';
+
+function healEngine(dir, { loginOk = true } = {}) {
+  const calls = [];
+  return {
+    calls,
+    async close() {},
+    async call(name, args) {
+      calls.push({ name, args });
+      if (name === 'save-login') {
+        if (!loginOk) return { ok: false, isError: false, text: 'LOGIN FAILED', data: { ok: false, status: 'failed' } };
+        mkdirSync(path.join(dir, 'playwright/.auth'), { recursive: true });
+        writeFileSync(path.join(dir, args.path), '{"cookies":[{"name":"sid"}],"origins":[]}');
+        return { ok: true, isError: false, text: 'SAVED', data: { ok: true, status: 'saved' } };
+      }
+      if (name === 'get-failure') return { ok: false, isError: true, text: 'no failure', data: { ok: false } };
+      return { ok: true, isError: false, text: '', data: { ok: true } };
+    },
+  };
+}
+
+const healOpts = (dir, mcp, extra = {}) => ({
+  projectRoot: dir, report: 'r.json', mode: 'draft-pr', maxFailures: 3, repeatEach: 3, quarantineDays: 14, allowWarn: false, checkFlaky: false, flakyRuns: 3,
+  budget: { maxSteps: 5, maxTokens: 1e5, maxUsd: 1 }, provider: null, mcp, appUrl: 'http://127.0.0.1:3000', ...extra,
+});
+
+test('heal job signs in to the live app, and never leaves the session file behind', async () => {
+  const dir = project();
+  const e = healEngine(dir);
+  const s = await heal(healOpts(dir, e, { login: { session: SESSION, url: '/login', steps: STEPS, check: CHECK } }));
+  assert.equal(s.signedIn, SESSION);
+  assert.equal(e.calls.find((c) => c.name === 'save-login').args.url, 'http://127.0.0.1:3000/login');
+  assert.equal(existsSync(path.join(dir, SESSION)), false, 'the session made by this job is removed');
+
+  // A failed login is reported and healing goes on, signed out.
+  const lines = [];
+  const s2 = await heal(healOpts(dir, healEngine(dir, { loginOk: false }), { login: { session: SESSION, steps: STEPS, check: CHECK }, log: (l) => lines.push(l) }));
+  assert.equal(s2.signedIn, undefined);
+  assert.ok(lines.some((l) => /Sign-in: Login failed/.test(l)), lines.join('\n'));
+  assert.notEqual(s2.outcome, 'error');
+
+  // A session the project already had is kept.
+  mkdirSync(path.join(dir, 'playwright/.auth'), { recursive: true });
+  writeFileSync(path.join(dir, SESSION), '{}');
+  await heal(healOpts(dir, healEngine(dir), { login: { session: SESSION } }));
+  assert.equal(existsSync(path.join(dir, SESSION)), true);
+});
