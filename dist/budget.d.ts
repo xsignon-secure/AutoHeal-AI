@@ -19,6 +19,18 @@ export interface BudgetSnapshot {
     priced: boolean;
 }
 export declare function priceFor(model: string, env?: NodeJS.ProcessEnv): [number, number] | null;
+/**
+ * OpenRouter publishes the price of every model it serves. For an OpenRouter
+ * base URL, look the model up so the dollar limit works without hand-set
+ * prices. A plain GET of the public model list: no key goes with it.
+ */
+export declare function lookupOpenRouterPrice(model: string, baseUrl: string | undefined, fetchFn?: typeof fetch): Promise<[number, number] | null>;
+/**
+ * When the model has no known price, try OpenRouter's list and, if found, set
+ * AUTOHEAL_PRICE_IN / AUTOHEAL_PRICE_OUT in env so every later priceFor() call
+ * (heal, cover, the dashboard upload) agrees. Returns the price in use.
+ */
+export declare function ensurePrice(model: string, env?: NodeJS.ProcessEnv, log?: (line: string) => void, fetchFn?: typeof fetch): Promise<[number, number] | null>;
 export declare class Budget {
     readonly limits: BudgetLimits;
     private readonly price;

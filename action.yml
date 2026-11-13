@@ -24,8 +24,12 @@ inputs:
   openai-api-key:
     description: Your OpenAI API key (set model too).
     default: ''
+  api-key:
+    description: API key for base-url (for example your OpenRouter key)
+    required: false
+    default: ""
   base-url:
-    description: OpenAI-compatible endpoint for a local or self-hosted model (set model too).
+    description: OpenAI-compatible endpoint, such as https://openrouter.ai/api/v1 or a local model (set model and api-key too).
     default: ''
   model:
     description: Model id. Default for Anthropic is claude-opus-5-5.
@@ -155,6 +159,7 @@ runs:
         ANTHROPIC_API_KEY: ${{ inputs.anthropic-api-key }}
         OPENAI_API_KEY: ${{ inputs.openai-api-key }}
         AUTOHEAL_BASE_URL: ${{ inputs.base-url }}
+        AUTOHEAL_API_KEY: ${{ inputs.api-key }}
         AUTOHEAL_MODEL: ${{ inputs.model }}
         AUTOHEAL_EFFORT: ${{ inputs.effort }}
         AUTOHEAL_VISION: ${{ inputs.vision }}

@@ -37,6 +37,59 @@ export function priceFor(model: string, env: NodeJS.ProcessEnv = process.env): [
   return PRICES[model] ?? null;
 }
 
+/**
+ * OpenRouter publishes the price of every model it serves. For an OpenRouter
+ * base URL, look the model up so the dollar limit works without hand-set
+ * prices. A plain GET of the public model list: no key goes with it.
+ */
+export async function lookupOpenRouterPrice(
+  model: string,
+  baseUrl: string | undefined,
+  fetchFn: typeof fetch = fetch,
+): Promise<[number, number] | null> {
+  if (!baseUrl || !model) return null;
+  let host: string;
+  try {
+    host = new URL(baseUrl).hostname;
+  } catch {
+    return null;
+  }
+  if (host !== 'openrouter.ai' && !host.endsWith('.openrouter.ai')) return null;
+  try {
+    const res = await fetchFn('https://openrouter.ai/api/v1/models', { signal: AbortSignal.timeout(10_000) });
+    if (!res.ok) return null;
+    const body = (await res.json()) as { data?: Array<{ id?: string; pricing?: { prompt?: string; completion?: string } }> };
+    const entry = body.data?.find((m) => m.id === model);
+    const pin = Number(entry?.pricing?.prompt);
+    const pout = Number(entry?.pricing?.completion);
+    if (!entry || !Number.isFinite(pin) || !Number.isFinite(pout) || pin < 0 || pout < 0) return null;
+    return [Math.round(pin * 1e12) / 1e6, Math.round(pout * 1e12) / 1e6];
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * When the model has no known price, try OpenRouter's list and, if found, set
+ * AUTOHEAL_PRICE_IN / AUTOHEAL_PRICE_OUT in env so every later priceFor() call
+ * (heal, cover, the dashboard upload) agrees. Returns the price in use.
+ */
+export async function ensurePrice(
+  model: string,
+  env: NodeJS.ProcessEnv = process.env,
+  log: (line: string) => void = () => undefined,
+  fetchFn: typeof fetch = fetch,
+): Promise<[number, number] | null> {
+  const known = priceFor(model, env);
+  if (known) return known;
+  const found = await lookupOpenRouterPrice(model, env.AUTOHEAL_BASE_URL, fetchFn);
+  if (!found) return null;
+  env.AUTOHEAL_PRICE_IN = String(found[0]);
+  env.AUTOHEAL_PRICE_OUT = String(found[1]);
+  log(`OpenRouter price for ${model}: $${found[0]} in / $${found[1]} out per 1M tokens`);
+  return found;
+}
+
 export class Budget {
   private steps = 0;
   private inputTokens = 0;

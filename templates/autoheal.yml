@@ -193,7 +193,7 @@ jobs:
         id: autoheal
         if: steps.run.outputs.skip != 'true'
         # Pin this (and publish below) to a commit SHA if your policy requires it.
-        uses: xsignon-secure/AutoHeal-AI@v0.12.1
+        uses: xsignon-secure/AutoHeal-AI@v0.13.0
         with:
           report: autoheal-artifacts
           mode: ${{ github.event.inputs.mode || 'draft-pr' }}
@@ -234,7 +234,7 @@ jobs:
           path: autoheal-result
 
       - name: Publish
-        uses: xsignon-secure/AutoHeal-AI/publish@v0.12.1
+        uses: xsignon-secure/AutoHeal-AI/publish@v0.13.0
         with:
           # Folders a fix may change. Add yours if page objects live outside tests/ or e2e/.
           # allowed-paths: 'tests/**, e2e/**, pages/**'
@@ -276,7 +276,7 @@ jobs:
       # Runs your tests once with traces on and keeps only short element
       # labels (role, name, test id). No AI, no secrets.
       - name: Learn element fingerprints
-        run: npx -y xsignon-autoheal@0.12.1 learn --out .autoheal-learned
+        run: npx -y xsignon-autoheal@0.13.0 learn --out .autoheal-learned
 
       # The heal job downloads the newest copy of this artifact by itself.
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2

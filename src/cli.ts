@@ -12,7 +12,7 @@ import { fileURLToPath, pathToFileURL } from 'node:url';
 import { parseArgs } from 'node:util';
 import { commentBody, issueBody, issueTitle, jobSummary, prBody } from './evidence.js';
 import { heal } from './heal.js';
-import { priceFor } from './budget.js';
+import { ensurePrice, priceFor } from './budget.js';
 import { ConfigError, providerFromEnv } from './providers/index.js';
 import { redactDeep } from './redact.js';
 import { fetchHistory, HISTORY_FILE, recordRun } from './history.js';
@@ -261,8 +261,8 @@ async function cmdHeal(argv: string[]): Promise<number> {
   }
 
   const provider = providerFromEnv(env);
-  // Fail closed: without a price the dollar limit cannot work.
-  if (provider && provider.name !== 'scripted' && !priceFor(provider.model, env)) {
+  // Fail closed: without a price the dollar limit cannot work. OpenRouter models are looked up.
+  if (provider && provider.name !== 'scripted' && !(await ensurePrice(provider.model, env, log))) {
     throw new ConfigError(
       `AutoHeal has no price for model "${provider.model}", so the cost limit cannot work. Set AUTOHEAL_PRICE_IN and AUTOHEAL_PRICE_OUT (US dollars per million input and output tokens; 0 and 0 for a local model).`,
     );
@@ -704,6 +704,7 @@ async function cmdCover(argv: string[]): Promise<number> {
   const framework = await detectFramework(projectRoot, values.framework);
   const provider = providerFromEnv(env);
   if (!provider) throw new ConfigError('autoheal cover needs an AI key: set ANTHROPIC_API_KEY, OPENAI_API_KEY or AUTOHEAL_BASE_URL.');
+  await ensurePrice(provider.model, env, log);
   const maxUsd = Number(values['max-usd'] ?? env.AUTOHEAL_MAX_USD ?? 1);
   if (!Number.isFinite(maxUsd) || maxUsd <= 0) throw new ConfigError('--max-usd must be a positive number.');
   const runs = Number(values.runs ?? 5);
@@ -716,7 +717,10 @@ async function cmdCover(argv: string[]): Promise<number> {
     app = await startApp({ command: values['start-command'], url, cwd: projectRoot, sandbox: null, log });
     appUrl = app.url;
   }
-  if (appUrl) checkAppUrl(appUrl);
+  // An app AutoHeal starts must be on this machine; an app that is already running
+  // (--url) may be a staging or preview deployment.
+  if (app && appUrl) checkAppUrl(appUrl);
+  else if (appUrl && !/^https?:\/\//i.test(appUrl)) throw new ConfigError('--url must start with http:// or https://');
   const mcp =
     framework === 'cypress' ? new CypressTools(projectRoot, { log }) : framework === 'webdriverio' ? new WdioTools(projectRoot, { log }) : await McpTools.start(projectRoot);
   try {
