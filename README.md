@@ -29,7 +29,7 @@ It is MIT licensed and runs entirely on your own runner or laptop. No AutoHeal s
 | CircleCI | [`templates/circleci-config.yml`](templates/circleci-config.yml) | pull request (GitHub) or merge request (GitLab) |
 | Your machine | `npx xsignon-autoheal fix` | changes in your working tree, nothing committed |
 
-New in 0.12.0: [heal during the run](#heal-during-the-run-playwright) so the run stays green, [fixes on the PR's own branch and `/autoheal` chat commands](#fixes-on-the-prs-branch-and-chat-commands), [visual snapshot triage](#visual-snapshots), [WebdriverIO](#webdriverio), [`autoheal cover`](#write-tests-for-uncovered-flows) for new tests, an [MCP server for AI coding agents](#for-ai-coding-agents), and a [head-to-head benchmark](#benchmark) for any other fixer.
+New in 0.14.0: [`autoheal cover` for flows behind a login](#flows-behind-a-login). New in 0.12.0: [heal during the run](#heal-during-the-run-playwright) so the run stays green, [fixes on the PR's own branch and `/autoheal` chat commands](#fixes-on-the-prs-branch-and-chat-commands), [visual snapshot triage](#visual-snapshots), [WebdriverIO](#webdriverio), [`autoheal cover`](#write-tests-for-uncovered-flows) for new tests, an [MCP server for AI coding agents](#for-ai-coding-agents), and a [head-to-head benchmark](#benchmark) for any other fixer.
 
 Fixes without AI work from day one: a small daily job (or `autoheal learn` once) records what each locator points at, so a renamed button is fixed with no AI tokens. Every PR shows the failed run's screenshot next to the fixed run's, right in the description.
 
@@ -145,7 +145,7 @@ To have every normal `pull_request` workflow run as well, give the **publish** s
   with:
     app-id: ${{ vars.AUTOHEAL_APP_ID }}
     private-key: ${{ secrets.AUTOHEAL_APP_KEY }}
-- uses: xsignon-secure/AutoHeal-AI/publish@v0.13.0
+- uses: xsignon-secure/AutoHeal-AI/publish@v0.14.0
   with:
     github-token: ${{ steps.app-token.outputs.token }}
     # ...the other inputs from the template
@@ -299,7 +299,7 @@ issues:
 
 ## Inputs
 
-**Heal action** (`xsignon-secure/AutoHeal-AI@v0.13.0`):
+**Heal action** (`xsignon-secure/AutoHeal-AI@v0.14.0`):
 
 | Input | Default | |
 |---|---|---|
@@ -337,7 +337,7 @@ issues:
 
 Outputs: `outcome` (`fixed`, `blocked`, `app-bug`, `quarantined`, `unfixed`, `nothing-to-do` or `error`), `fixed`, `blocked`, `has-result`.
 
-**Publish action** (`xsignon-secure/AutoHeal-AI/publish@v0.13.0`): `result-dir`, `mode`, `base-branch`, `run-id`, `commit`, `pr-number`, `blocked`, `open-issues`, `allowed-paths`, `allow-warn`, `quarantine-days`, `github-token`, `rerun-workflow` (the test workflow file to start on the fix branch), `fix-target` (`new-pr` or `pr-branch`), `dashboard-url`, `dashboard-secret`. Output: `pr-url`.
+**Publish action** (`xsignon-secure/AutoHeal-AI/publish@v0.14.0`): `result-dir`, `mode`, `base-branch`, `run-id`, `commit`, `pr-number`, `blocked`, `open-issues`, `allowed-paths`, `allow-warn`, `quarantine-days`, `github-token`, `rerun-workflow` (the test workflow file to start on the fix branch), `fix-target` (`new-pr` or `pr-branch`), `dashboard-url`, `dashboard-secret`. Output: `pr-url`.
 
 `allowed-paths` limits which files a fix may change. The default is `**/tests/**, **/test/**, **/e2e/**, **/playwright/**, **/*.spec.*, **/*.test.*, **/*.cy.*, **/test_*.py, **/*_test.py`. If your page objects live somewhere else (for example `src/pages/**`), add that folder. Files that tools load or run on their own (configs, `conftest.py`, `__init__.py`, setup and teardown files, `cypress/support/`, `cypress/plugins/`, `cypress.env.json`, `.pnpmfile.cjs`, gulp and grunt files) are never patched. Keep `allow-warn` and `quarantine-days` the same as in the heal job.
 
@@ -423,6 +423,29 @@ npx xsignon-autoheal cover --flow "a shopper adds two items and checks out" --ur
 ```
 
 The AI reads your existing tests for style, opens the app's pages, checks each locator, and writes **one** new spec. It is kept only if it passes a guard built for new tests (it must declare a test, make assertions that can fail, act on the app, and use no skips, fakes, fixed waits, forced clicks, retries, environment or file access, or URLs outside the app) and then passes 5 runs in a row (`--runs`). The file is left in your working tree for review. Use `--start-command` and `--start-url` to start the app first, `--file` to choose the path, `--max-usd` for the spend limit.
+
+### Flows behind a login
+
+Most important flows need a signed-in user. Give AutoHeal the login steps and it signs in once through the engine's `save-login`, opens every page as that user, and the new test loads the same session:
+
+```bash
+export E2E_USER=test@example.com E2E_PASSWORD=...   # never on the command line
+npx xsignon-autoheal cover --flow "a customer sees their past orders" --url http://localhost:3000 \
+  --login-url /login \
+  --login-step "fill getByLabel('Email') = {{env:E2E_USER}}" \
+  --login-step "fill getByLabel('Password') = {{env:E2E_PASSWORD}}" \
+  --login-step "click getByRole('button', { name: 'Sign in' })" \
+  --login-check "getByRole('button', { name: 'Sign out' })"
+```
+
+- Secrets are written as `{{env:NAME}}` and filled in by the engine as they are typed, so they never reach the AI, the logs or the test. Only variables named `E2E_*`, `TEST_*`, `PW_*`, `PLAYWRIGHT_*` or `LOGIN_*` can be used. A step that types a password as plain text is refused.
+- Two-factor sign-in: type `{{totp}}` and name the variable with the authenticator secret: `--login-totp-env E2E_TOTP_SECRET`.
+- `--login-check` is a locator only a signed-in user sees. A failed login stops the run before any AI spend on the test.
+- The session is saved to `playwright/.auth/user.json` (`--session` for another path; keep it in `.gitignore`). A saved session that still passes the check is reused.
+- Already create a session in a [Playwright setup project](https://playwright.dev/docs/auth)? Pass just `--session playwright/.auth/user.json` after running it.
+- The new test uses `test.use({ storageState: ... })` (pytest: `@pytest.mark.browser_context_args(storage_state=...)`) unless your config already sets it, and the guard refuses a test that loads any other session file. Your CI must create the same session before the tests run, usually with the setup project.
+
+Steps: `goto <path>`, `fill <locator> = <value>`, `press <locator> = <key>`, `select <locator> = <option>`, `click`, `dblclick`, `hover`, `check`, `uncheck <locator>`, `wait <locator>` or `wait <ms>`. Playwright and pytest-playwright projects.
 
 ## For AI coding agents
 

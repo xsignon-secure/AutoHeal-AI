@@ -36,7 +36,7 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ github.token }}
           DAYS: ${{ github.event.inputs.days || '30' }}
-        run: npx --yes xsignon-autoheal@0.13.0 metrics --days "$DAYS" --json autoheal-metrics.json
+        run: npx --yes xsignon-autoheal@0.14.0 metrics --days "$DAYS" --json autoheal-metrics.json
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: autoheal-metrics

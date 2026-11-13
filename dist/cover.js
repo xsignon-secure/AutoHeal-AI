@@ -13,6 +13,7 @@ import { readdir, readFile, rm, stat, writeFile, mkdir } from 'node:fs/promises'
 import path from 'node:path';
 import { safePath, estimateTokens } from './agent.js';
 import { scanNewTest } from './cheat.js';
+import { sessionFindings, sessionPrompt } from './login.js';
 import { ProviderError } from './providers/types.js';
 const MAX_ATTEMPTS = 4;
 /** A file name from the flow: tests/autoheal-<words>.spec.ts (pytest: tests/test_autoheal_<words>.py). */
@@ -105,7 +106,12 @@ export async function cover(options) {
     const turns = [
         {
             role: 'user',
-            parts: [{ type: 'text', text: `Flow to cover: ${options.flow}\nNew test file: ${file} (framework: ${framework})${options.appUrl ? `\nThe app runs at ${options.appUrl}.` : '\nNo running app: read the app source to find elements.'}` }],
+            parts: [
+                {
+                    type: 'text',
+                    text: `Flow to cover: ${options.flow}\nNew test file: ${file} (framework: ${framework})${options.appUrl ? `\nThe app runs at ${options.appUrl}.` : '\nNo running app: read the app source to find elements.'}${options.session ? `\n${sessionPrompt(options.session, framework)}` : ''}`,
+                },
+            ],
         },
     ];
     let attempts = 0;
@@ -162,9 +168,10 @@ export async function cover(options) {
                         reply(`Only pages of ${origin} can be opened.`, true);
                         continue;
                     }
+                    const signedIn = options.session ? { storageState: options.session } : {};
                     const res = call.name === 'inspect_page'
-                        ? await options.mcp.call('inspect-page', { url: target.toString() }, 120_000)
-                        : await options.mcp.call('validate-selector', { url: target.toString(), selector: String(input.selector ?? '') }, 120_000);
+                        ? await options.mcp.call('inspect-page', { url: target.toString(), ...signedIn }, 120_000)
+                        : await options.mcp.call('validate-selector', { url: target.toString(), selector: String(input.selector ?? ''), ...signedIn }, 120_000);
                     reply(res.text.slice(0, 20_000), !res.ok);
                 }
                 else if (call.name === 'give_up') {
@@ -176,8 +183,9 @@ export async function cover(options) {
                     const content = String(input.content ?? '');
                     const explanation = String(input.explanation ?? '').slice(0, 600);
                     const scan = scanNewTest(content, file, origin);
-                    if (scan.verdict !== 'PASS') {
-                        lastFindings = scan.findings.map((f) => `${f.rule}: ${f.message}`);
+                    const sessionIssues = sessionFindings(content, options.session);
+                    if (scan.verdict !== 'PASS' || sessionIssues.length) {
+                        lastFindings = [...scan.findings.map((f) => `${f.rule}: ${f.message}`), ...sessionIssues];
                         log(`  rejected by the new-test guard: ${lastFindings.join('; ')}`);
                         reply(`Rejected by the new-test guard: ${lastFindings.join('; ')}`, true);
                     }

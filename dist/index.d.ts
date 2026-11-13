@@ -35,4 +35,5 @@ export { fetchHistory, parseHistory, recordRun, historyOf, HISTORY_ARTIFACT, typ
 export { WdioTools, isWdioProject, parseWdioJunit, parseWdioJson, parseWdioReport, wdioKind, wdioFailure } from './wdio.js';
 export { WDIO_PROMPT } from './agent.js';
 export { cover, coverFile, type CoverOptions, type CoverResult } from './cover.js';
+export { DEFAULT_SESSION, LoginError, checkLogin, checkSessionPath, ensureSession, parseLoginStep, sessionFindings, sessionPrompt, type LoginConfig, type LoginStep, } from './login.js';
 export { serveMcp, TOOLS as MCP_TOOLS } from './mcp-server.js';

@@ -27,6 +27,11 @@ export interface CoverOptions {
     framework?: Framework;
     /** Passing runs in a row the new test needs (default 5). */
     runs?: number;
+    /**
+     * A signed-in session (storageState JSON, relative to the project), from
+     * ensureSession. Pages open as that user and the new test must load it.
+     */
+    session?: string;
     log?: (line: string) => void;
 }
 export interface CoverResult {
