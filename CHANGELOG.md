@@ -2,6 +2,14 @@
 
 All notable changes to AutoHeal AI. Versions follow [semantic versioning](https://semver.org/).
 
+## 0.14.0 (2026-11-13)
+
+### Added
+- **`autoheal cover` for flows behind a login.** `--login-step` (repeatable), `--login-url`, `--login-check` and `--login-totp-env` sign in once through the engine's `save-login`, with secrets written as `{{env:E2E_PASSWORD}}` and two-factor codes as `{{totp}}`, so no secret reaches the AI, the logs or the test. Pages then open as the signed-in user and the new test loads the same session (`test.use({ storageState })`, or pytest's `browser_context_args`). `--session <file>` alone reuses a session your Playwright setup project already makes.
+- The new-test guard refuses a test that loads any session file other than the configured one, and a login step that types a password as plain text.
+- `autoheal_cover` (MCP) takes `session`.
+- Library: `ensureSession`, `checkLogin`, `parseLoginStep`, `sessionPrompt`, `sessionFindings` (used by KeepGreen 0.3.0).
+
 ## 0.13.0 (2026-11-13)
 
 Fixes from a cross-repo audit of AutoHeal, playwright-e2e-mcp, KeepGreen and the demo repo.

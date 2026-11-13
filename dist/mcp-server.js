@@ -56,6 +56,7 @@ export const TOOLS = [
                 url: { type: 'string', description: 'The running app, e.g. http://localhost:3000' },
                 file: { type: 'string', description: 'Where to write the test (default from the flow)' },
                 runs: { type: 'integer', minimum: 2, maximum: 20 },
+                session: { type: 'string', description: 'For a flow behind a login: a saved storageState file in the project, e.g. playwright/.auth/user.json (make one with the engine\'s save-login tool or your setup project)' },
             },
             required: ['flow'],
             additionalProperties: false,
@@ -74,6 +75,9 @@ export const TOOLS = [
                 a.push('--file', file);
             if (Number.isInteger(i.runs))
                 a.push('--runs', String(i.runs));
+            const session = str(i.session, 200);
+            if (session)
+                a.push('--session', session);
             return a;
         },
         timeoutMs: 30 * 60_000,

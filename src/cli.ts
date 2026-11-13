@@ -18,6 +18,7 @@ import { redactDeep } from './redact.js';
 import { fetchHistory, HISTORY_FILE, recordRun } from './history.js';
 import { isWdioProject, WdioTools } from './wdio.js';
 import { cover } from './cover.js';
+import { DEFAULT_SESSION, LoginError, checkLogin, ensureSession, type LoginConfig } from './login.js';
 import { Budget } from './budget.js';
 import { McpTools } from './mcp.js';
 import { CypressTools } from './cypress.js';
@@ -56,8 +57,12 @@ Start here:
                          fingerprints, so a broken locator is fixed without AI
   autoheal cover --flow "<what a user does>" [--url <app> | --start-command <cmd> --start-url <url>]
                  [--file <path>] [--runs 5] [--max-usd 1]
+                 [--session <file>] [--login-url /login --login-step "<step>" ...
+                  --login-check "<locator>" --login-totp-env E2E_TOTP_SECRET]
                          write a NEW test for a flow with no test yet; kept only if it
-                         makes real assertions and passes every run (needs an AI key)
+                         makes real assertions and passes every run (needs an AI key).
+                         --login-step logs in first (secrets as {{env:E2E_PASSWORD}});
+                         --session alone reuses a session file you already create
   autoheal mcp           run AutoHeal as an MCP server (stdio) for AI coding agents
 
 In CI (the templates call these):
@@ -693,15 +698,30 @@ async function cmdCover(argv: string[]): Promise<number> {
       'max-usd': { type: 'string' },
       project: { type: 'string' },
       framework: { type: 'string' },
+      session: { type: 'string' },
+      'login-url': { type: 'string' },
+      'login-step': { type: 'string', multiple: true },
+      'login-check': { type: 'string' },
+      'login-totp-env': { type: 'string' },
     },
     strict: true,
   });
   const log = (line: string) => process.stderr.write(`[autoheal] ${line}\n`);
   const env = process.env;
+  const login = loginFromFlags(values);
+  if (login) {
+    try {
+      checkLogin(login);
+    } catch (error) {
+      if (error instanceof LoginError) throw new ConfigError(error.message);
+      throw error;
+    }
+  }
   const flow = (values.flow ?? '').trim();
   if (!flow || flow.length > 2000) throw new ConfigError('--flow is required: describe the user flow in plain words (at most 2000 characters).');
   const projectRoot = path.resolve(values.project ?? '.');
   const framework = await detectFramework(projectRoot, values.framework);
+  if (login && framework !== 'playwright' && framework !== 'pytest') throw new ConfigError(`Signed-in flows work with Playwright and pytest-playwright tests; this project uses ${framework}.`);
   const provider = providerFromEnv(env);
   if (!provider) throw new ConfigError('autoheal cover needs an AI key: set ANTHROPIC_API_KEY, OPENAI_API_KEY or AUTOHEAL_BASE_URL.');
   await ensurePrice(provider.model, env, log);
@@ -724,8 +744,18 @@ async function cmdCover(argv: string[]): Promise<number> {
   const mcp =
     framework === 'cypress' ? new CypressTools(projectRoot, { log }) : framework === 'webdriverio' ? new WdioTools(projectRoot, { log }) : await McpTools.start(projectRoot);
   try {
+    let session: string | undefined;
+    if (login) {
+      try {
+        session = await ensureSession(mcp, login, { projectRoot, ...(appUrl ? { appUrl } : {}), log });
+      } catch (error) {
+        if (error instanceof LoginError) throw new ConfigError(error.message);
+        throw error;
+      }
+    }
     log(`Writing a ${framework} test for: ${flow}`);
     const result = await cover({
+      ...(session ? { session } : {}),
       projectRoot,
       flow,
       ...(values.file ? { file: values.file } : {}),
@@ -748,6 +778,28 @@ async function cmdCover(argv: string[]): Promise<number> {
     await mcp.close();
     await app?.stop().catch(() => undefined);
   }
+}
+
+/** The --session / --login-* flags, or null when the flow needs no login. */
+export function loginFromFlags(values: {
+  session?: string | undefined;
+  'login-url'?: string | undefined;
+  'login-step'?: string[] | undefined;
+  'login-check'?: string | undefined;
+  'login-totp-env'?: string | undefined;
+}): LoginConfig | null {
+  const steps = values['login-step'] ?? [];
+  if (!values.session && !steps.length) {
+    if (values['login-url'] || values['login-check'] || values['login-totp-env']) throw new ConfigError('--login-url, --login-check and --login-totp-env need --login-step (or --session for a saved session).');
+    return null;
+  }
+  return {
+    session: values.session ?? DEFAULT_SESSION,
+    ...(values['login-url'] ? { url: values['login-url'] } : {}),
+    ...(steps.length ? { steps } : {}),
+    ...(values['login-check'] ? { check: values['login-check'] } : {}),
+    ...(values['login-totp-env'] ? { totpEnv: values['login-totp-env'] } : {}),
+  };
 }
 
 /** AutoHeal as an MCP server on stdio, for AI coding agents. */
