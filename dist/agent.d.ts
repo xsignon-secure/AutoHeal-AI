@@ -34,6 +34,8 @@ export interface AgentContext {
     memory: string;
     budget: Budget;
     appUrl?: string;
+    /** A signed-in session (storageState in the project) for the page checks. */
+    session?: string;
     /** The page at the moment of failure, for visual grounding. */
     screenshot?: Screenshot | null;
     maxTokensPerTurn?: number;

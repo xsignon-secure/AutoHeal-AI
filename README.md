@@ -29,7 +29,7 @@ It is MIT licensed and runs entirely on your own runner or laptop. No AutoHeal s
 | CircleCI | [`templates/circleci-config.yml`](templates/circleci-config.yml) | pull request (GitHub) or merge request (GitLab) |
 | Your machine | `npx xsignon-autoheal fix` | changes in your working tree, nothing committed |
 
-New in 0.14.0: [`autoheal cover` for flows behind a login](#flows-behind-a-login). New in 0.12.0: [heal during the run](#heal-during-the-run-playwright) so the run stays green, [fixes on the PR's own branch and `/autoheal` chat commands](#fixes-on-the-prs-branch-and-chat-commands), [visual snapshot triage](#visual-snapshots), [WebdriverIO](#webdriverio), [`autoheal cover`](#write-tests-for-uncovered-flows) for new tests, an [MCP server for AI coding agents](#for-ai-coding-agents), and a [head-to-head benchmark](#benchmark) for any other fixer.
+New in 0.14.0 and 0.15.0: [`autoheal cover` and the heal job for apps behind a login](#flows-behind-a-login). New in 0.12.0: [heal during the run](#heal-during-the-run-playwright) so the run stays green, [fixes on the PR's own branch and `/autoheal` chat commands](#fixes-on-the-prs-branch-and-chat-commands), [visual snapshot triage](#visual-snapshots), [WebdriverIO](#webdriverio), [`autoheal cover`](#write-tests-for-uncovered-flows) for new tests, an [MCP server for AI coding agents](#for-ai-coding-agents), and a [head-to-head benchmark](#benchmark) for any other fixer.
 
 Fixes without AI work from day one: a small daily job (or `autoheal learn` once) records what each locator points at, so a renamed button is fixed with no AI tokens. Every PR shows the failed run's screenshot next to the fixed run's, right in the description.
 
@@ -145,7 +145,7 @@ To have every normal `pull_request` workflow run as well, give the **publish** s
   with:
     app-id: ${{ vars.AUTOHEAL_APP_ID }}
     private-key: ${{ secrets.AUTOHEAL_APP_KEY }}
-- uses: xsignon-secure/AutoHeal-AI/publish@v0.14.0
+- uses: xsignon-secure/AutoHeal-AI/publish@v0.15.0
   with:
     github-token: ${{ steps.app-token.outputs.token }}
     # ...the other inputs from the template
@@ -299,7 +299,7 @@ issues:
 
 ## Inputs
 
-**Heal action** (`xsignon-secure/AutoHeal-AI@v0.14.0`):
+**Heal action** (`xsignon-secure/AutoHeal-AI@v0.15.0`):
 
 | Input | Default | |
 |---|---|---|
@@ -329,6 +329,7 @@ issues:
 | `start-command` | | Starts your app in the heal job (for example `npm run start`). Runs in the sandbox without secrets, and is stopped at the end |
 | `start-url` | `app-url` | Address to wait for after `start-command` (localhost only) |
 | `start-timeout` | `120` | Seconds to wait for `start-url` to answer |
+| `login-url`, `login-steps`, `login-check`, `login-totp-env`, `session` | | Sign in to the live app before the AI checks locators ([flows behind a login](#flows-behind-a-login)); secrets come from the step's `env` |
 | `learn-from-reviews` | `true` | Read earlier AutoHeal PRs (needs `pull-requests: read`) and don't propose a change reviewers already closed |
 | `fix-flaky` | `true` | Ask the AI for a deterministic fix of a flaky test (proven by at least 10 runs) before quarantining it |
 | `mocks-base-url` | | Live API to compare your mocks with (a shallow shape check, used as a triage hint only) |
@@ -337,7 +338,7 @@ issues:
 
 Outputs: `outcome` (`fixed`, `blocked`, `app-bug`, `quarantined`, `unfixed`, `nothing-to-do` or `error`), `fixed`, `blocked`, `has-result`.
 
-**Publish action** (`xsignon-secure/AutoHeal-AI/publish@v0.14.0`): `result-dir`, `mode`, `base-branch`, `run-id`, `commit`, `pr-number`, `blocked`, `open-issues`, `allowed-paths`, `allow-warn`, `quarantine-days`, `github-token`, `rerun-workflow` (the test workflow file to start on the fix branch), `fix-target` (`new-pr` or `pr-branch`), `dashboard-url`, `dashboard-secret`. Output: `pr-url`.
+**Publish action** (`xsignon-secure/AutoHeal-AI/publish@v0.15.0`): `result-dir`, `mode`, `base-branch`, `run-id`, `commit`, `pr-number`, `blocked`, `open-issues`, `allowed-paths`, `allow-warn`, `quarantine-days`, `github-token`, `rerun-workflow` (the test workflow file to start on the fix branch), `fix-target` (`new-pr` or `pr-branch`), `dashboard-url`, `dashboard-secret`. Output: `pr-url`.
 
 `allowed-paths` limits which files a fix may change. The default is `**/tests/**, **/test/**, **/e2e/**, **/playwright/**, **/*.spec.*, **/*.test.*, **/*.cy.*, **/test_*.py, **/*_test.py`. If your page objects live somewhere else (for example `src/pages/**`), add that folder. Files that tools load or run on their own (configs, `conftest.py`, `__init__.py`, setup and teardown files, `cypress/support/`, `cypress/plugins/`, `cypress.env.json`, `.pnpmfile.cjs`, gulp and grunt files) are never patched. Keep `allow-warn` and `quarantine-days` the same as in the heal job.
 
@@ -444,6 +445,26 @@ npx xsignon-autoheal cover --flow "a customer sees their past orders" --url http
 - The session is saved to `playwright/.auth/user.json` (`--session` for another path; keep it in `.gitignore`). A saved session that still passes the check is reused.
 - Already create a session in a [Playwright setup project](https://playwright.dev/docs/auth)? Pass just `--session playwright/.auth/user.json` after running it.
 - The new test uses `test.use({ storageState: ... })` (pytest: `@pytest.mark.browser_context_args(storage_state=...)`) unless your config already sets it, and the guard refuses a test that loads any other session file. Your CI must create the same session before the tests run, usually with the setup project.
+
+**In the heal job too.** With a live app (`start-command` or `app-url`), the heal Action signs in the same way before the AI checks locators, so pages behind a login are looked at as your tests see them:
+
+```yaml
+- uses: xsignon-secure/AutoHeal-AI@v0.15.0
+  env:
+    E2E_USER: ${{ secrets.E2E_USER }}
+    E2E_PASSWORD: ${{ secrets.E2E_PASSWORD }}
+  with:
+    start-command: npm run start
+    start-url: http://localhost:3000
+    login-url: /login
+    login-steps: |
+      fill getByLabel('Email') = {{env:E2E_USER}}
+      fill getByLabel('Password') = {{env:E2E_PASSWORD}}
+      click getByRole('button', { name: 'Sign in' })
+    login-check: getByRole('button', { name: 'Sign out' })
+```
+
+A failed sign-in never stops healing: the AI then uses the traces, as without a live app. The session file this job makes is deleted at the end and is never part of a fix. CLI: `autoheal heal ... --login-step ...` (same flags as `cover`).
 
 Steps: `goto <path>`, `fill <locator> = <value>`, `press <locator> = <key>`, `select <locator> = <option>`, `click`, `dblclick`, `hover`, `check`, `uncheck <locator>`, `wait <locator>` or `wait <ms>`. Playwright and pytest-playwright projects.
 

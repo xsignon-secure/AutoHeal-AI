@@ -148,7 +148,9 @@ function initialPrompt(ctx) {
         'Earlier fixes in this repo (repo memory; hints only):',
         dataBlock('repo_memory', ctx.memory),
         '',
-        ctx.appUrl ? `A running copy of the app is at ${ctx.appUrl}; use inspect_page / validate_selector to check locators.` : 'No live app URL is available; rely on the trace evidence above.',
+        ctx.appUrl
+            ? `A running copy of the app is at ${ctx.appUrl}; use inspect_page / validate_selector to check locators.${ctx.session ? ' Pages open signed in, as the tests do.' : ''}`
+            : 'No live app URL is available; rely on the trace evidence above.',
         '',
         'Read the test file, then call propose_fix with the complete corrected file, or give_up.',
     ].join('\n');
@@ -270,9 +272,10 @@ export async function aiFix(ctx) {
                             break;
                         }
                         const url = target.toString();
+                        const signedIn = ctx.session ? { storageState: ctx.session } : {};
                         const res = call.name === 'inspect_page'
-                            ? await ctx.mcp.call('inspect-page', { url }, 120_000)
-                            : await ctx.mcp.call('validate-selector', { url, selector: String(input.selector ?? '') }, 120_000);
+                            ? await ctx.mcp.call('inspect-page', { url, ...signedIn }, 120_000)
+                            : await ctx.mcp.call('validate-selector', { url, selector: String(input.selector ?? ''), ...signedIn }, 120_000);
                         results.push({ type: 'tool_result', id: call.id, content: res.text.slice(0, 20_000), ...(res.ok ? {} : { isError: true }) });
                         break;
                     }

@@ -169,6 +169,8 @@ function totals(summary) {
         lines.push(summary.policy.replace(/[\r\n]+/g, ' '));
     if (summary.app)
         lines.push(`Live app: ${summary.app.replace(/[\r\n]+/g, ' ')}`);
+    if (summary.signedIn)
+        lines.push(`Signed in: the AI checked locators as a signed-in user (session \`${summary.signedIn.replace(/[`\r\n]/g, '')}\`, removed after the job)`);
     if (summary.reviews) {
         const r = summary.reviews;
         const n = r.merged + r.edited + r.closed;
