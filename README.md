@@ -6,6 +6,8 @@
 npx xsignon-autoheal init     # writes the workflow for your CI and checks your setup
 ```
 
+> 🟢 **Also want new tests, not just fixes?** [**KeepGreen**](https://github.com/xsignon-secure/keepgreen) bundles AutoHeal with an agent that finds the user flows nobody tested and writes proven tests for them. One command sets up both: `npx keepgreen init`.
+
 > **Names:** the npm package is `xsignon-autoheal`, the command it installs is `autoheal` (or `xsignon-autoheal`), and the code lives in the GitHub repo `xsignon-secure/AutoHeal-AI`. They are all the same tool.
 
 Think of it as autonomous quality maintenance: your suite keeps itself green between releases, and every change still comes to you as a reviewable PR with proof.
